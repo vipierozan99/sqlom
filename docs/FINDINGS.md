@@ -1,0 +1,186 @@
+# What actually makes this fast (and what doesn't)
+
+Engineering conclusions from building and measuring sqlom. Numbers are from
+[BENCHMARKS.md](BENCHMARKS.md); the reasoning about *why* is here.
+
+---
+
+## The scaling model, which reframes everything else
+
+A sqlom client is one asyncio event loop under the GIL. It saturates **exactly one
+core** and cannot use more — measured CPU utilization is 0.91–1.00 in every
+configuration tested. Three consequences:
+
+1. **A mapper's efficiency is not a latency feature, it is a core-count feature.**
+   Per request, sqlom saves fractions of a millisecond. Per *core*, it serves ~6x
+   the requests of SQLAlchemy's async ORM. On a fixed core budget that is the whole
+   difference: ~4,400 req/s needs 1 core with sqlom, roughly 6 with the ORM.
+2. **Extra cores do nothing for a single process, and can hurt.** Pinning a client
+   to two cores instead of one cost ~30% more CPU per request (0.308 vs 0.217 ms) —
+   the event loop migrates between cores and loses cache locality.
+3. **You scale by adding processes, and it is linear.** 1 worker → 4398 rps;
+   2 workers on 2 cores → 8739 rps (1.99x), per-worker throughput unchanged.
+
+This also resolves an apparent contradiction. Within one request, hydration is only
+~12% of wall-clock, so making it 4.9x faster buys only ~2.4x end-to-end — the
+driver dominates. But under saturation the binding constraint is *total CPU per
+request*, and there the mapper's share is decisive. **Stage share governs latency;
+total CPU governs throughput.** Both statements are true and they are not in
+conflict.
+
+Corollary worth stating plainly: because the client is the bottleneck in this
+benchmark, the ~6x is a measure of *client CPU efficiency*. A query heavy enough to
+make Postgres the bottleneck would compress it toward 1.0.
+
+---
+
+## Adopted optimizations
+
+### Code-generate the hydrator per model
+
+A model's column layout is fixed and known once, so `compile_hydrator` builds a
+specialized `row -> instance` function whose field stores are ordinary attribute
+assignments. 601 → 148 ns/object versus a reflective `setattr` loop.
+
+Field stores are written as plain `obj.x = v` **on purpose**. CPython 3.11's
+specializing interpreter ([PEP 659](https://peps.python.org/pep-0659/)) quickens
+that into `STORE_ATTR_SLOT` on a slotted class. Anything that looks more clever
+defeats the inline cache:
+
+| construction strategy | ns/object (10 fields) | vs. best |
+|---|---|---|
+| codegen `object.__new__` + tuple-unpack into locals | 157 | 1.00x |
+| `cls(*row)` with a generated `__init__` | 167 | 1.06x |
+| codegen `object.__new__` + `obj.f = row[i]` | 181 | 1.15x |
+| `__new__` + `obj.__dict__ = {...}` literal | 480 | 3.06x |
+| codegen direct slot-descriptor `__set__` calls | 533 | **3.39x** |
+| `object.__new__` + `setattr()` loop | 787 | 5.01x |
+
+Two counterintuitive entries: calling the slot descriptor's `__set__` directly is
+**3.4x slower** than `obj.x = v` (it is an ordinary method call, so no inline
+cache), and every `__dict__` trick loses because 3.11 instances use key-sharing
+dicts that get materialized into real ones.
+
+### Batch the hydrator
+
+`compile_batch_hydrator` unpacks the row in the `for` statement itself
+(`for f0, f1, f2 in rows`) and binds `list.append` once outside the loop: 148 → 123
+ns/object. End-to-end this is within noise, but it is free.
+
+### Code-generate the orjson hook
+
+`compile_json_default` emits a straight-line dict literal with the keys baked in,
+rather than a comprehension over the column map. Cached lazily on the class as
+`__json_default__` via the metaclass's `__getattr__`.
+
+### Two model styles, no performance difference
+
+The README originally claimed stdlib `@dataclass(slots=True)` could not carry a
+class-level query descriptor. That is false. The `__slots__`-vs-class-variable
+collision only bites because both names live on *the class*; attribute lookup on a
+class consults `type(cls).__mro__` first, and **a data descriptor on the metaclass
+wins over the class's own entry**. `@dataclass(slots=True)` rebuilds the class via
+`cls.__class__(...)`, preserving a custom metaclass, so the two compose:
+
+```python
+User.id      # -> ColumnExpr  (metaclass data descriptor wins)
+user.id      # -> 1           (plain slot read)
+```
+
+Both styles measure the same (72 B/object; 1.06 vs 1.10 ms). Pick on ergonomics —
+the dataclass style gets `asdict`, `replace`, `==`, `repr`, pattern matching.
+
+---
+
+## The orjson dataclass trap
+
+Worth its own section because it is silent and expensive.
+
+orjson has serialized `dataclasses.dataclass` **natively since 3.0, with no opt-in
+flag** (`OPT_SERIALIZE_DATACLASS` is literally `0` in 3.11.9, kept only for API
+compatibility). The consequence: **orjson ignores your `default=` hook for anything
+that is a dataclass.**
+
+And its native path has no fast route for slotted ones. It calls
+`PyObject_GetAttr(obj, "__dict__")`; for `slots=True` that raises, so orjson clears
+the error and takes a `#[cold]` fallback that walks `__dataclass_fields__` with two
+`getattr` calls per field. Roughly 300 ns/object of the penalty is just provoking
+and clearing an `AttributeError` on every instance.
+
+| shape | 4 fields | 10 fields | vs. dict (4f) |
+|---|---|---|---|
+| plain `dict` | 68 ns | 137 ns | 1.00x |
+| `@dataclass` no slots (native fast path) | 91 ns | 182 ns | 1.34x |
+| `@dataclass(slots=True)` + `OPT_PASSTHROUGH_DATACLASS` + compiled hook | 182 ns | 377 ns | 2.67x |
+| `@dataclass(slots=True)` (native fallback) | 421 ns | 672 ns | **6.16x** |
+
+**If your models are slotted dataclasses, pass
+`sqlom.DATACLASS_DUMP_OPTION`** (= `orjson.OPT_PASSTHROUGH_DATACLASS`) to route them
+back to the compiled hook. That one flag is worth ~2.3x on the serialization step
+and ~30% end-to-end.
+
+Sources: [orjson README](https://github.com/ijl/orjson#dataclass) ·
+[`dataclass.rs`](https://github.com/ijl/orjson/blob/master/src/serialize/per_type/dataclass.rs) ·
+[CHANGELOG](https://github.com/ijl/orjson/blob/master/CHANGELOG.md) ·
+[issue #83](https://github.com/ijl/orjson/issues/83)
+
+---
+
+## Rejected, with reasons
+
+### attrs
+
+orjson does **not** serialize attrs classes natively — `TypeError: Type is not JSON
+serializable` for both `@define` and `@define(slots=False)`. So attrs still needs a
+`default=` hook, and `attrs.asdict` is ~6x slower than a compiled dict literal
+(1507 vs 236 ns/object).
+
+Since sqlom bypasses `__init__` entirely via `object.__new__`, attrs' generated-init
+advantages don't apply. Attribute read/write and construction measured identical to
+`dataclass(slots=True)` within noise. `@define` also adds a `__weakref__` slot by
+default, making instances 8 bytes larger (set `weakref_slot=False` for parity).
+
+**No remaining advantage for this use case, and orjson support is a strict argument
+for stdlib dataclasses.**
+
+### Non-slotted dataclasses as the default
+
+Tempting, because orjson's native fast path reads `__dict__` directly and makes them
+the fastest object form to serialize (91 vs 182 ns/object). But end-to-end that is
+only a **5% win** (0.873 vs 0.913 ms) for **55% more memory** (113 vs 72 B/object).
+
+Worse, orjson's fast path dumps whatever is in `__dict__` minus underscore-prefixed
+keys, so a stray runtime attribute
+[leaks into the JSON](https://github.com/ijl/orjson/issues/83); the slots path
+correctly filters on `__dataclass_fields__`. Faster, looser, hungrier. Available as
+`@model(slots=False)` for serialization-dominated workloads.
+
+### Streaming the cursor instead of `fetchall()`
+
+Feeding `conn.execute(...)` straight into the batch hydrator to avoid materializing
+an intermediate list of tuples: 0.715 vs 0.706 ms — a wash. `fetchall()` is already
+a C-level loop.
+
+### Further hydration micro-optimization
+
+`conn.execute()` alone costs 0.005 ms of a 0.97 ms request; essentially all of the
+65% "query + fetch" stage is the driver creating Python `int`/`str` objects. An
+object path needs those objects, so that cost is not addressable from sqlom.
+
+---
+
+## Honest limits on the claim
+
+- **The ~6x is over SQLAlchemy's ORM, not over writing it yourself.** Hand-written
+  asyncpg with `dict(record)` reaches 3877 rps against sqlom's 3168 in the same
+  isolated configuration. Against a competent hand-rolled loop, sqlom *loses*
+  slightly; it costs +10–25% CPU over building no objects at all. The value is
+  ergonomics at near-hand-written cost, not beating hand-written code.
+- **Nothing scales past ~c=8 on a 4-vCPU box**, and p99 degrades sharply (2.8 ms at
+  c=8 → 86 ms at c=64) as requests queue on a 10-connection pool. That is pool and
+  core saturation, not a property of any mapper.
+- **DB-side JSON (`json_agg`) beats every object path** by ~2.2x, because it skips
+  both object construction and Python serialization. It is implemented
+  (`Query.to_json_sql`, `DatabaseEngine.fetch_json`) but parked — it is not an
+  object mapper. If your endpoint only ever emits JSON, it is the faster answer and
+  sqlom's object path is the wrong tool.
