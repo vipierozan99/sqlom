@@ -1,0 +1,85 @@
+### RUST DRIVER / DRIVER-BUILT OBJECTS — client core 0, Postgres cores 2,3
+cores: [0]  100 rows/request, pool 10, c=8, median of 3
+
+Output equivalence: all 7 contenders emit identical JSON (7701 bytes)
+
+contender                                          rps  cpu ms/req   util
+-------------------------------------------------------------------------
+asyncpg default + sqlom (TLS, RESET)              4612      0.2167   1.00
+asyncpg fair + sqlom (no TLS/RESET)               6688      0.1495   1.00
+asyncpg held conn + sqlom                         8805      0.1134   1.00
+psqlpy (Rust) pool -> dicts                       3977      0.2511   1.00
+psqlpy (Rust) pool prepared -> dicts              3965      0.2519   1.00
+psqlpy (Rust) held conn -> dicts                  4769      0.2097   1.00
+psqlpy (Rust) held conn -> RUST-BUILT objects     3787      0.2640   1.00
+
+vs. the fair asyncpg baseline (6688 rps, 0.1495 ms CPU/req):
+  asyncpg default + sqlom (TLS, RESET)             0.69x rps     0.69x cpu
+  asyncpg fair + sqlom (no TLS/RESET)              1.00x rps     1.00x cpu
+  asyncpg held conn + sqlom                        1.32x rps     1.32x cpu
+  psqlpy (Rust) pool -> dicts                      0.59x rps     0.60x cpu
+  psqlpy (Rust) pool prepared -> dicts             0.59x rps     0.59x cpu
+  psqlpy (Rust) held conn -> dicts                 0.71x rps     0.71x cpu
+  psqlpy (Rust) held conn -> RUST-BUILT objects    0.57x rps     0.57x cpu
+
+### ANALYTICAL CEILINGS (sqlite decomposition)
+100 rows/request, best-of-7 x 1500, single core
+
+1. Fetch cost vs column count (fixed 100 rows)
+   columns     us/request    us/row
+   1                33.47     0.335
+   2                44.45     0.444
+   3                56.65     0.567
+   4                65.91     0.659
+
+   per extra column :   109.5 ns/row   (creating one Python value)
+   fixed per request:   22.74 us   (tuple alloc x100 + stepping + statement)
+   -> of the 4-column fetch, 66% is value creation and 34% is row/statement overhead
+
+2. Fetch cost vs row count (4 columns)
+   rows        us/request    ns/row
+   1                 5.25    5245.4
+   10               10.59    1059.3
+   100              66.85     668.5
+   1000            609.67     609.7
+
+   per row          :   604.6 ns
+   per statement    :    5.15 us  (execute + prepare lookup)
+
+3. Stage costs in isolation
+   stage                                us/req   ns/row   share
+   sqlite3 fetch (tuples)                65.82    658.2   63.3%
+   hydrate tuples -> slotted objects     13.94    139.4   13.4%
+   orjson.dumps + per-row _default       20.03    200.3   19.3%
+   measured full pipeline               103.97   1039.7  100.0%
+
+==========================================================================
+CEILING 1: driver constructs slotted objects directly
+==========================================================================
+  removable: the row tuple (16.85 us) and the Python
+             hydration loop (13.94 us)
+  NOT removable: creating 400 Python values (43.81 us), the statement (5.15 us),
+             and the JSON step (20.03 us)
+
+  optimistic floor: 68.99 us vs 103.97 us now  ->  1.51x
+  (optimistic because a native builder still allocates the object and
+   writes its slots; it does that in C rather than bytecode, not for free)
+
+==========================================================================
+CEILING 2: Rust extension
+==========================================================================
+  orjson is ALREADY Rust and sqlite3 is already C, so a Rust rewrite can
+  only replace the 13.94 us hydration loop and the per-row
+  _default callback inside the 20.03 us JSON step.
+
+  (a) Rust mapper still returning Python objects:
+      bounded by ceiling 1 — 1.51x — because creating 400 Python
+      values costs 43.81 us (42% of the request) and is unavoidable
+      the moment the API hands back objects with Python field values.
+
+  (b) Rust returning JSON bytes, no Python objects at all:
+      Python value creation vanishes too. Measured anchor for exactly
+      that shape — sqlite's json_group_array, all work below Python:
+      54.53 us vs 103.97 us  ->  1.91x
+      A Rust extension doing rows->JSON could approach this, and it is
+      already reachable today in SQL with no Rust at all.

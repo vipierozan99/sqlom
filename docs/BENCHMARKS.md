@@ -580,7 +580,113 @@ taskset -c 0 python3 benchmarks/optimize_sqlite.py --repeat 5
 
 ---
 
-## 9. What none of this shows
+## 9. Two hypotheticals: a native object builder, and Rust
+
+Asked whether the driver constructing slotted objects directly, or a Rust
+implementation, would help. Both are bounded analytically
+(`benchmarks/estimate_ceilings.py`) and one is testable outright
+(`benchmarks/compare_rust_driver.py`), because a Rust Postgres driver that builds
+Python classes from Rust already exists.
+
+Artifact: [`results/rust_and_ceilings.txt`](../benchmarks/results/rust_and_ceilings.txt)
+
+### The sqlite request, decomposed into what is and isn't removable
+
+Varying column count at fixed rows separates creating Python *values* from per-row
+overhead; varying row count separates per-statement cost. 100 rows/request:
+
+| component | µs/req | note |
+|---|---|---|
+| creating 400 Python values (4 cols × 100 rows) | 43.8 | **109 ns per value** — irreducible if the API returns Python data |
+| row tuples + statement stepping | 16.9 | removable by a native builder |
+| statement execute/prepare | 5.2 | irreducible |
+| Python hydration loop | 13.9 | removable by a native builder |
+| `orjson.dumps` + per-row `_default` | 20.0 | orjson is already Rust |
+| **total** | **104.0** | |
+
+### Ceiling 1 — driver builds the slotted objects directly
+
+Removes the row tuple (16.9 µs) and the Python hydration loop (13.9 µs). Cannot
+remove value creation (43.8), the statement (5.2) or JSON (20.0).
+
+**Optimistic floor 69.0 µs vs 104.0 µs → ≤1.51x**, and optimistic because a native
+builder still allocates each object and writes its slots — in C rather than
+bytecode, not for free.
+
+### Ceiling 2 — a Rust extension
+
+orjson is *already* Rust and sqlite3/asyncpg are already C/Cython, so a Rust rewrite
+can only replace the 13.9 µs hydration loop and the per-row callback inside the JSON
+step. Two variants:
+
+- **Rust mapper still returning Python objects** — bounded by ceiling 1, **≤1.51x**.
+  Creating 400 Python values is 42% of the request and is unavoidable the moment the
+  API hands back objects whose fields are Python values.
+- **Rust returning JSON bytes, no Python objects at all** — then value creation
+  vanishes too. Measured anchor for exactly that shape (sqlite `json_group_array`,
+  all work below Python): 54.5 µs vs 104.0 → **1.91x**. Note this is *already
+  reachable today in SQL with no Rust written*, and is the parked `json_agg` path.
+
+### And the empirical test: a Rust driver is available, and it is slower
+
+[`psqlpy`](https://github.com/psqlpy-python/psqlpy) is built on Rust's
+tokio-postgres, and `QueryResult.as_class()` constructs Python instances **from
+Rust** — precisely ceiling 1. It works with sqlom's `@model` dataclasses unchanged.
+
+Two confounds were measured and controlled first, not assumed: with
+`log_statement=all`, asyncpg's default pool emits **6 log lines per request** (query +
+its multi-statement `RESET ALL`) against psqlpy's **2**; and asyncpg negotiates TLS
+here while psqlpy connects in the clear (`pg_stat_ssl`). The fair baseline therefore
+runs asyncpg with `reset=` no-op and `sslmode=disable`.
+
+Client on core 0, Postgres on cores 2,3, c=8, median of 3, byte-identical output:
+
+| contender | rps | CPU ms/req | vs. fair baseline |
+|---|---|---|---|
+| asyncpg held conn + sqlom | 8805 | 0.1134 | 1.32x |
+| **asyncpg fair + sqlom** (baseline) | **6688** | **0.1495** | **1.00x** |
+| asyncpg default + sqlom (TLS, RESET) | 4612 | 0.2167 | 0.69x |
+| psqlpy held conn → dicts | 4769 | 0.2097 | 0.71x |
+| psqlpy pool → dicts | 3977 | 0.2511 | 0.59x |
+| psqlpy pool, `prepared=True` → dicts | 3965 | 0.2519 | 0.59x |
+| **psqlpy held conn → RUST-BUILT objects** | **3787** | **0.2640** | **0.57x** |
+
+**The Rust driver is 1.4–1.8x slower, and having Rust build the objects is slower
+still than psqlpy's own dict path** (0.57x vs 0.71x). Two readings, and the second
+matters more:
+
+- This is **not** "Rust is slower than Python". It is *this* Rust driver against
+  asyncpg, which is a mature, heavily tuned Cython implementation with binary-protocol
+  codecs and prepared-statement caching. Implementation maturity dominates language
+  choice by a wide margin here.
+- `as_class` being slower than psqlpy's own dicts suggests it constructs via
+  `cls(**kwargs)` — materializing a kwargs dict and invoking `__init__` per row —
+  rather than writing slots directly. **So "the driver builds the objects" is not
+  automatically a win; it depends entirely on how**, and the ≤1.51x ceiling assumes
+  the good version.
+
+### Summary
+
+| hypothetical | bound | evidence |
+|---|---|---|
+| driver builds slotted objects directly | ≤1.51x | analytical; the one real implementation achieves 0.57x |
+| Rust mapper returning Python objects | ≤1.51x | same ceiling — value creation dominates |
+| Rust returning JSON, no Python objects | ~1.9x | measured via `json_group_array`; already available in SQL |
+| *(for comparison)* transport fixes from §6 | 1.61x deployable | measured |
+
+Neither hypothetical beats what is already available without writing any Rust. The
+2.36x in §6 came from fixing the pool and the event loop, and the ~1.9x JSON ceiling
+is reachable today in SQL. **A native rewrite is the worst return on effort of the
+options measured.**
+
+```bash
+taskset -c 0 python3 benchmarks/estimate_ceilings.py
+taskset -c 0 python3 benchmarks/compare_rust_driver.py --repeat 3
+```
+
+---
+
+## 10. What none of this shows
 
 - **No HTTP layer.** The load benchmark drives the data layer directly. A real
   FastAPI/uvicorn stack adds routing, validation and ASGI overhead per request

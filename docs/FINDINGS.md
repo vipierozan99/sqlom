@@ -130,6 +130,41 @@ Against a remote database the mapper is ~15% of CPU and transport dominates; aga
 local one the mapper is ~50% of CPU but its *addressable* part is 16% and already at
 the floor. Further hydration micro-optimization is not where any remaining time is.
 
+### A native rewrite is the worst return on effort measured
+
+Two hypotheticals, bounded in
+[BENCHMARKS §9](BENCHMARKS.md#9-two-hypotheticals-a-native-object-builder-and-rust):
+
+| hypothetical | bound | evidence |
+|---|---|---|
+| driver builds slotted objects directly | ≤1.51x | analytical; the one real implementation achieves **0.57x** |
+| Rust mapper returning Python objects | ≤1.51x | same ceiling — value creation dominates |
+| Rust returning JSON, no Python objects | ~1.9x | measured; already available in SQL today |
+| transport fixes (pool + uvloop) | **1.61x** | measured, deployable |
+
+The binding constraint is that **creating a Python value costs ~109 ns and there are
+four per row** — 42% of a 100-row request. Any API that hands back objects whose
+fields are Python values pays that no matter what language builds them. A native
+builder can only remove the row tuple and the interpreted loop: ≤1.51x, and less in
+practice since it still allocates and writes slots.
+
+The empirical test is the striking part. `psqlpy` is a Rust/tokio-postgres driver
+whose `as_class()` constructs Python instances from Rust — exactly the hypothetical —
+and after controlling for pool policy and TLS it runs at **0.57x** of asyncpg plus
+sqlom's codegen'd Python hydrator. Its Rust object construction is even slower than
+its own dict path, which suggests `cls(**kwargs)` rather than direct slot writes.
+
+Two conclusions worth separating:
+
+1. **Not "Rust is slow".** asyncpg is mature, heavily tuned Cython with
+   binary-protocol codecs; psqlpy is younger. Implementation maturity dominated
+   language choice by a wide margin.
+2. **"The driver builds the objects" is not automatically a win** — it depends how.
+   The ≤1.51x ceiling assumes a builder that writes slots directly.
+
+Neither hypothetical beats what is already available without writing any Rust: 1.61x
+from fixing the pool and event loop, or ~1.9x by pushing shaping into SQL.
+
 ### What to optimize next, in order
 
 Acting on the profile ([BENCHMARKS §6](BENCHMARKS.md#6-acting-on-the-profile-24x-more-throughput-outside-the-mapper))

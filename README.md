@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#9-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#10-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -256,6 +256,13 @@ agree).
 - **The benchmark's loopback connection negotiates TLSv1.3**, which costs ~20% of
   client CPU. Ratios are unaffected (both sides pay it) but absolute throughput is
   understated: 5440 rps with `sslmode=disable` vs 4724 with it on.
+- **A Rust rewrite is the worst return on effort measured.** Creating a Python value
+  costs ~109 ns and there are four per row (42% of a 100-row request) — any API
+  returning objects with Python fields pays that regardless of implementation
+  language, capping a native builder at **≤1.51x**. Tested empirically: `psqlpy`
+  (Rust/tokio-postgres) constructing our slotted dataclasses *from Rust* runs at
+  **0.57x** of asyncpg + sqlom's Python hydrator, once pool policy and TLS are
+  controlled. See [§9](docs/BENCHMARKS.md#9-two-hypotheticals-a-native-object-builder-and-rust).
 - **Most of the remaining throughput is outside the mapper.** asyncpg's pool runs
   `RESET ALL` as a *second round trip* on every release (2.01 queries sent per
   request, verified). Fixing that plus `uvloop` is **1.61x** with no change to sqlom;
