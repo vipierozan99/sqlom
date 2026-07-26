@@ -1,0 +1,31 @@
+cores: client 0, postgres 2,3   c=8   median of 5   duration 5s
+command: taskset -c 0 python3 benchmarks/bench_hold_time.py --limit 1000 --repeat 5 --duration 5 --pools 10,2
+
+NOTE: --limit 100 --repeat 3 is NOT enough to resolve this; two consecutive
+runs at those settings disagreed in sign on both pool sizes. Use 1000 rows,
+where the work being moved across the release point is ~10x the noise.
+
+cores [0]  1000 rows  c=8  median of 5
+
+all three emit identical JSON (77571 bytes)
+
+--- pool 10 ---
+variant                                  rps  cpu ms/req
+--------------------------------------------------------
+sqlom (releases before hydrate)          691      1.4401
+Core: payload inside `async with`        209      4.7816
+Core: payload after release              203      4.9252
+
+  releasing early is worth 0.970x to Core (-3.0%)
+  sqlom vs Core: 3.31x (hold)  vs  3.41x (symmetric)
+
+--- pool 2  (STARVED: fewer connections than workers) ---
+variant                                  rps  cpu ms/req
+--------------------------------------------------------
+sqlom (releases before hydrate)          695      1.4331
+Core: payload inside `async with`        210      4.7002
+Core: payload after release              202      4.9105
+
+  releasing early is worth 0.963x to Core (-3.7%)
+  sqlom vs Core: 3.31x (hold)  vs  3.44x (symmetric)
+

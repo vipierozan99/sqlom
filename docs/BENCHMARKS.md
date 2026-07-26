@@ -1212,6 +1212,61 @@ taskset -c 0 python3 benchmarks/bench_psycopg.py --repeat 3
 # end to end: start the app, then hit /psy-sqlom, /psy-core, /psy-orm
 ```
 
+### Is the connection-handling shape fair?
+
+Both engines take a pooled connection per request through `async with`, the same as
+SQLAlchemy — there is no connection reuse in the library. But the shapes are not
+identical, and the difference is visible in four lines:
+
+```python
+# sqlom.PsycopgEngine.fetch_all
+async with pool.connection() as conn:
+    rows = await (await conn.execute(sql, params)).fetchall()
+return hydrate(rows)          # connection already back in the pool
+
+# the SQLAlchemy Core path in bench_psycopg.py
+async with engine.connect() as conn:
+    result = await conn.execute(stmt)
+    payload = [...]           # still holding the connection
+```
+
+So sqlom occupies a pooled connection for less of each request. Measured answer to
+whether that flatters it: **no, in any configuration tested.** 1000 rows, c=8,
+median of 5:
+
+| | pool 10 | pool 2 (fewer connections than workers) |
+|---|---|---|
+| sqlom (releases before hydrating) | 691 rps | 695 rps |
+| Core, payload inside `async with` | 209 rps | 210 rps |
+| Core, payload after release | 203 rps | 202 rps |
+| *worth to Core* | *−3.0%* | *−3.7%* |
+
+Making Core symmetric makes it **slower**, because it means materialising
+`result.mappings().all()` into an intermediate list with no contention to win back
+in exchange. The shape the other benchmarks use is marginally the better of the two
+*for SQLAlchemy*, so this asymmetry is not inflating any published ratio.
+
+The reason hold time cannot pay here is the fact this suite keeps running into:
+**the client is CPU-bound, not connection-bound.** Starving the pool to 2
+connections against 8 workers moves Core by 1 rps — the workers queue on the GIL,
+not on the pool. Hold time would only start to matter with a client that is *not*
+saturated, which is a different benchmark than any in this document.
+
+⚠️ **How not to measure this.** The first attempt used `--limit 100 --repeat 3`, and
+two consecutive runs disagreed in *sign* on both pool sizes: −5.4% then +4.5% at
+pool 10, **+13.6% then +0.1%** at pool 2. That +13.6% looked exactly like a real
+starved-pool advantage for sqlom and was pure noise — it was one run away from being
+written up as a finding. Resolving it took a 10x larger payload, so the work moved
+across the release point is large relative to the jitter, plus more repeats. Same
+lesson as [correction 5](METHODOLOGY.md#5-publishing-a-single-run-and-ranking-a-tie),
+learned again.
+
+```bash
+taskset -c 0 python3 benchmarks/bench_hold_time.py --limit 1000 --repeat 5 --pools 10,2
+```
+
+Artifact: [`results/hold_time.txt`](../benchmarks/results/hold_time.txt)
+
 ---
 
 ## 15. Auditing the load generator itself
