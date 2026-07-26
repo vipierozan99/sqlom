@@ -27,6 +27,7 @@ Usage:
 import argparse
 import asyncio
 import json
+import os
 import platform
 import statistics
 import sys
@@ -298,6 +299,10 @@ async def main():
 
     env = {
         "python_version": sys.version.split()[0],
+        # Recorded so pinned and unpinned runs are distinguishable after the
+        # fact; see benchmarks/pin_and_run.sh.
+        "client_cpu_affinity": sorted(os.sched_getaffinity(0)),
+        "cpu_count": os.cpu_count(),
         "platform": platform.platform(),
         "sqlalchemy_version": sqlalchemy.__version__,
         "asyncpg_version": asyncpg.__version__,
