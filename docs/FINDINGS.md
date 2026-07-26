@@ -228,9 +228,19 @@ trip. Measured via `_protocol.queries_count`: a pooled request sends **2.01 quer
 versus 1.00 with `reset=` a no-op or a held connection. So half the server round trips
 in the default configuration are cleanup.
 
-The caveat matters: skipping `RESET ALL` lets session state leak between requests
-(`SET`, temp tables, cursors, `LISTEN`, advisory locks). It is safe only while no
-handler touches session state, and it fails silently the day one does.
+**And it is fixable without changing behaviour** — `conditional_reset=True` is now the
+engine default and gets **1.23x against the no-op's 1.24x**, i.e. the whole benefit with
+the semantics intact. `fetch_all`/`fetch_json` run only generated SELECTs, which cannot
+leave session state behind, so those connections are provably clean; `engine.acquire()`
+marks a connection dirty and its release pays the full reset. Two routes that *don't*
+work were measured first
+([BENCHMARKS §12](BENCHMARKS.md#12-fixing-the-pool-reset-without-changing-behaviour)):
+moving the reset to acquire gains nothing (it is still a separate round trip — where it
+happens is irrelevant), and batching it with the query via psycopg3's pipeline mode is
+**2-4x worse**, because pipeline bookkeeping costs more per statement than a loopback
+round trip saves and the extended protocol forces the 4-statement reset to be split
+into 4 prepared statements. `DISCARD ALL` as a single-statement reset is disqualified
+outright: it includes `DEALLOCATE ALL` and breaks the prepared-statement cache.
 
 The remaining gap between no-reset (1.30x) and holding a connection (1.69x) is the
 pool's Python-side cost — `PoolAcquireContext`, holder juggling, acquire/release

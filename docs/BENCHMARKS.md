@@ -828,7 +828,102 @@ taskset -c 0 python3 benchmarks/optimize_pg.py --concurrency 8 --uvloop --no-res
 
 ---
 
-## 12. What none of this shows
+## 12. Fixing the pool reset without changing behaviour
+
+§6 got 1.30x by passing asyncpg `reset=` a no-op, at the cost of leaking session
+state between requests. Three alternatives were tried; the fourth works.
+
+Artifact: [`results/conditional_reset.txt`](../benchmarks/results/conditional_reset.txt)
+
+### What does not work
+
+**Move the reset to acquire instead of release.** Measured with `setup=` doing the
+reset and `reset=` a no-op:
+
+| | rps |
+|---|---|
+| reset on release (asyncpg default) | 5254 |
+| reset on acquire (`setup=`) | 5384 |
+| no reset at all | 6603 |
+
+No gain. **Where the reset happens is irrelevant; that it is a separate round trip
+is the entire cost.**
+
+**Batch it with the query into one round trip.** Right in principle — and the reason
+it fails is specific. asyncpg has no pipeline API at all. psycopg3 does, but pipeline
+mode requires the extended protocol, which rejects multi-statement strings
+(`cannot insert multiple commands into a prepared statement`), so the 4-statement
+reset must be split into 4 separately-prepared statements. Measured on one psycopg3
+connection, 100 rows/request:
+
+| variant | round trips | statements | µs/req |
+|---|---|---|---|
+| no reset | 1 | 1 | 239 |
+| **multi-statement reset, sequential** | **2** | **2** | **322** |
+| split reset, sequential | 5 | 5 | 648 |
+| `RESET ALL` only, pipelined | 1 | 2 | 709 |
+| split reset, pipelined | **1** | 5 | **1292** |
+
+**Pipelining made it 2-4x worse.** psycopg3's pipeline bookkeeping costs far more per
+statement than a loopback round trip saves, so the cheapest way to run a full reset is
+exactly what asyncpg already does — every statement in *one* simple-protocol round
+trip. Pipelining would only pay on a link where RTT dominates per-statement cost.
+
+`DISCARD ALL` looked promising as a single statement covering everything, but it
+includes `DEALLOCATE ALL`: it wipes the prepared-statement cache and the next request
+fails with `prepared statement "_pg3_0" does not exist`. Not viable with prepared
+statements.
+
+### What works: reset only when the connection could be dirty
+
+`DatabaseEngine(conditional_reset=True)` — now the default. `fetch_all` and
+`fetch_json` execute only generated SELECTs comparing columns to bound parameters,
+which cannot leave session state behind, so those connections are provably clean.
+`engine.acquire()` hands out a raw connection and marks it dirty; its release pays the
+full reset.
+
+Async single-threaded, c=8, client core 0, Postgres cores 2,3, median of 3:
+
+| variant | rps | CPU ms/req | resets/req | vs. default |
+|---|---|---|---|---|
+| asyncpg default (always RESET) | 3584 | 0.2773 | — | 1.00x |
+| `reset=`no-op (**leaks session state**) | 4433 | 0.2255 | — | 1.24x |
+| **conditional, pure sqlom traffic** | **4393** | **0.2275** | **0.00** | **1.23x** |
+| conditional, 1 request in 10 uses `acquire()` | 4151 | 0.2404 | 0.10 | 1.16x |
+| conditional, 1 request in 2 uses `acquire()` | 3504 | 0.2841 | 0.50 | 0.98x |
+| `conditional_reset=False` | 3644 | 0.2742 | 0.00 | 1.02x |
+
+**1.23x versus the no-op's 1.24x — the full benefit, with the semantics intact.**
+Correctness verified directly: 20 pure requests issue 0 resets; one `acquire()` + `SET
+statement_timeout='7s'` issues exactly 1; and the next borrower reads `0`, whereas the
+same sequence under `reset=`no-op leaks `9s`.
+
+The gain naturally degrades toward the default as escape-hatch use rises, reaching
+break-even around half of all requests — which is the honest and expected shape.
+
+Worth knowing: a custom `reset=` callback does **not** disable asyncpg's protocol-level
+cleanup. asyncpg still awaits `Connection._reset()` first, which rolls back an open
+transaction and clears client-side listeners. Only the SQL reset is skipped, so even
+the plain no-op variant never leaks an open transaction — the leak is confined to
+`SET`, temp tables, server-side cursors, `LISTEN` and advisory locks.
+
+### A 4% self-inflicted regression found on the way
+
+The first run of this benchmark showed conditional-reset at only 1.15x, and
+`conditional_reset=False` measuring *slower than raw asyncpg at the same reset policy*
+(3218 vs 3361 rps). The engine was regenerating SQL on every request and then running
+a **regex substitution** to renumber `$` placeholders. `Query` now numbers them during
+generation and caches compiled SQL per shape, invalidating on mutation. That closed the
+gap (1.02x for the same-policy engine) and lifted conditional reset from 1.15x to
+1.23x.
+
+```bash
+taskset -c 0 python3 benchmarks/bench_conditional_reset.py --repeat 3
+```
+
+---
+
+## 13. What none of this shows
 
 - **No HTTP layer.** The load benchmark drives the data layer directly. A real
   FastAPI/uvicorn stack adds routing, validation and ASGI overhead per request

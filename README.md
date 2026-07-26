@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#12-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#13-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -272,11 +272,13 @@ agree).
   **0.57x** of asyncpg + sqlom's Python hydrator, once pool policy and TLS are
   controlled. See [§9](docs/BENCHMARKS.md#9-two-hypotheticals-a-native-object-builder-and-rust).
 - **Most of the remaining throughput is outside the mapper.** asyncpg's pool runs
-  `RESET ALL` as a *second round trip* on every release (2.01 queries sent per
-  request, verified). Fixing that plus `uvloop` is **1.61x** with no change to sqlom;
-  holding connections instead of pooling reaches 2.36x. See
+  `RESET ALL` as a *second round trip* on every release (2.01 queries sent per request,
+  verified). `DatabaseEngine(conditional_reset=True)` — the default — recovers **1.23x
+  of the available 1.24x without any behaviour change**, by resetting only connections
+  that `acquire()` handed out raw. Moving the reset to acquire gains nothing, and
+  batching it via psycopg3 pipelining is 2-4x *worse*. See
   [§6](docs/BENCHMARKS.md#6-acting-on-the-profile-24x-more-throughput-outside-the-mapper)
-  — including why the pool fix is a behavioural tradeoff, not a free win.
+  and [§12](docs/BENCHMARKS.md#12-fixing-the-pool-reset-without-changing-behaviour).
 
 ### If you only ever emit JSON, use the database
 

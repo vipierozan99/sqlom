@@ -183,6 +183,19 @@ variant sits at 0.94x. The tell was that the implied cost was physically implaus
 for the operation involved — sanity-check a surprising number against the cost of the
 primitive it supposedly comes from before believing it.
 
+**Benchmark the library's own path, not a hand-rolled stand-in of it.** The
+conditional-reset benchmark first showed the engine *slower than raw asyncpg at the same
+reset policy* (3218 vs 3361 rps). The raw variants precomputed their SQL once outside
+the request; the engine regenerated it per request and then ran a regex to renumber
+placeholders. That 4% was real overhead in the shipped code, and only comparing
+like-for-like exposed it. If your wrapper measures worse than the thing it wraps, that
+is a finding about the wrapper, not a flaw in the comparison.
+
+**All Postgres runs use async single-threaded concurrency at c=8.** A single asyncio
+loop under the GIL saturates one core (§10, §11), so extra client cores are wasted and
+c=1 leaves a third of the core idle on socket wait. c=8 is the saturated,
+representative point; process-level parallelism scales from there linearly.
+
 **Record utilization, not just throughput.** `cpu_ms_per_request` and
 `cpu_utilization` are what explain a throughput difference, and they are what catch
 an impossible result. Throughput alone would not have exposed correction 3.
