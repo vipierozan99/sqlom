@@ -1385,7 +1385,13 @@ Artifact: [`results/locust_end_to_end.txt`](../benchmarks/results/locust_end_to_
   2 — uses all of them, so there is no spare core and no room to scale the
   generator up. That is the ceiling behind locust's `/noop` result.
 - **Narrow shape.** One flat 4-column table of small ints and short strings. No
-  joins, nested shaping, wide rows, large text/JSONB, writes or transactions.
+  joins, nested shaping, wide rows, large text/JSONB or writes.
+- **Transactions exist but are not benchmarked.** `engine.transaction()` is
+  semantically verified on both engines (31 checks in
+  `benchmarks/verify_transactions.py`), and by construction it costs *more* than a
+  plain read — it marks the connection dirty, so its release pays the pool's full
+  session reset. Nothing here measures transaction throughput, and no ratio in this
+  document involves one.
 - **No sampling profiler.** §2 is wall-clock timing of isolated stages, not
   `py-spy`/`pyinstrument`; it attributes cost per stage, not per function.
 - **Not a production system.** No test suite, not packaged, never deployed.

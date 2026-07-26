@@ -5,6 +5,39 @@ from contextlib import asynccontextmanager
 
 from .compile import ASYNCPG_CONVERTERS, compile_batch_hydrator
 from .query import json_bytes as _json_bytes
+from .transaction import _ACTIVE, Transaction
+
+
+class AsyncpgTransaction(Transaction):
+    """asyncpg: `pool.acquire()` is autocommit, so the BEGIN is explicit."""
+
+    __slots__ = ()
+    _placeholder = "$"
+    _dialect = "postgres"
+
+    async def _fetch_rows(self, sql, params):
+        return await self.connection.fetch(sql, *params)
+
+    async def _fetch_value(self, sql, params):
+        return await self.connection.fetchval(sql, *params)
+
+    async def execute(self, sql, *args):
+        return await self.connection.execute(sql, *args)
+
+    def transaction(self, **kwargs):
+        """Nested block. asyncpg turns a nested `transaction()` into a SAVEPOINT."""
+        return _asyncpg_block(self._engine, self.connection, self._depth + 1, kwargs)
+
+
+@asynccontextmanager
+async def _asyncpg_block(engine, conn, depth, kwargs):
+    tx = AsyncpgTransaction(engine, conn, depth)
+    async with conn.transaction(**kwargs):
+        tx._enter()
+        try:
+            yield tx
+        finally:
+            tx._exit()
 
 
 class DatabaseEngine:
@@ -128,6 +161,30 @@ class DatabaseEngine:
             self._mark_dirty(conn)
             yield conn
 
+    @asynccontextmanager
+    async def transaction(self, *, isolation=None, readonly=False, deferrable=False):
+        """Several statements on one connection, committed together.
+
+        Commits on clean exit, rolls back on any exception. Yields a
+        `Transaction` whose `fetch_all`/`fetch_json` take the same `Query`
+        objects and reuse the same compiled hydrators as the engine.
+
+        `isolation` accepts asyncpg's names: "read_committed",
+        "repeatable_read", "serializable". `deferrable` only applies to a
+        serializable read-only transaction.
+
+        Goes through `acquire()`, so the connection is marked dirty and pays the
+        full session reset on release — a transaction body can leave session
+        state behind, which is exactly what the conditional-reset invariant
+        assumes `fetch_all` never does. See sqlom/transaction.py.
+        """
+        kwargs = {"readonly": readonly, "deferrable": deferrable}
+        if isolation is not None:
+            kwargs["isolation"] = isolation
+        async with self.acquire() as conn:
+            async with _asyncpg_block(self, conn, 0, kwargs) as tx:
+                yield tx
+
     def _hydrator_for(self, model):
         # Compiled once per model, then reused for every row of every query.
         hydrator = self._hydrators.get(model)
@@ -148,7 +205,20 @@ class DatabaseEngine:
         counter = itertools.count(1)
         return re.sub(r"\$", lambda _: f"${next(counter)}", sql)
 
+    def _reject_if_in_transaction(self, method):
+        """Inside `self.transaction()` this method would take a *different*
+        pooled connection, so it would not see the transaction's uncommitted
+        writes and would not roll back with it. Fail loudly instead."""
+        active = _ACTIVE.get()
+        if active is not None and active._engine is self:
+            raise RuntimeError(
+                f"engine.{method}() was called inside engine.transaction(); it would "
+                f"run on a different pooled connection and miss the transaction's "
+                f"uncommitted state. Use tx.{method}() instead."
+            )
+
     async def fetch_all(self, query):
+        self._reject_if_in_transaction("fetch_all")
         sql, params = query.to_sql(placeholder="$")
         async with self._require_pool().acquire() as conn:
             rows = await conn.fetch(sql, *params)
@@ -161,6 +231,7 @@ class DatabaseEngine:
         shaping and JSON encoding, and the result goes straight into a
         response body.
         """
+        self._reject_if_in_transaction("fetch_json")
         sql, params = query.to_json_sql(dialect="postgres")
         async with self._require_pool().acquire() as conn:
             payload = await conn.fetchval(sql, *params)

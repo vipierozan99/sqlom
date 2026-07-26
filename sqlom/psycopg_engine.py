@@ -15,8 +15,52 @@ mapper rather than two different transaction policies.
 psycopg3, which suits the positional hydrator directly.
 """
 
+from contextlib import asynccontextmanager
+
 from .compile import PSYCOPG_CONVERTERS, compile_batch_hydrator
 from .query import json_bytes as _json_bytes
+from .transaction import _ACTIVE, Transaction
+
+
+class PsycopgTransaction(Transaction):
+    """psycopg3 connections are transactional already — `pool.connection()`
+    commits on clean exit. `conn.transaction()` is still used explicitly so the
+    block's boundaries are ours rather than the pool's, and so nesting produces
+    real savepoints."""
+
+    __slots__ = ()
+    _placeholder = "%s"
+    _dialect = "psycopg"
+
+    async def _fetch_rows(self, sql, params):
+        cur = await self.connection.execute(sql, params)
+        return await cur.fetchall()
+
+    async def _fetch_value(self, sql, params):
+        cur = await self.connection.execute(sql, params)
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+    async def execute(self, sql, *args):
+        # psycopg binds a sequence, not varargs; None means "no parameters",
+        # which matters because passing () makes psycopg use the extended
+        # protocol and reject multi-statement strings.
+        return await self.connection.execute(sql, args or None)
+
+    def transaction(self, **kwargs):
+        """Nested block — psycopg issues a SAVEPOINT."""
+        return _psycopg_block(self._engine, self.connection, self._depth + 1, kwargs)
+
+
+@asynccontextmanager
+async def _psycopg_block(engine, conn, depth, kwargs):
+    tx = PsycopgTransaction(engine, conn, depth)
+    async with conn.transaction(**kwargs):
+        tx._enter()
+        try:
+            yield tx
+        finally:
+            tx._exit()
 
 
 class PsycopgEngine:
@@ -61,7 +105,61 @@ class PsycopgEngine:
             self._hydrators[model] = hydrator
         return hydrator
 
+    @asynccontextmanager
+    async def acquire(self):
+        """Raw connection access, for anything that is not a `Query`.
+
+        Unlike the asyncpg engine there is no dirty-tracking to do: this engine
+        deliberately keeps psycopg_pool's default reset behaviour, so every
+        connection is already reset on release.
+        """
+        async with self._require_pool().connection() as conn:
+            yield conn
+
+    @asynccontextmanager
+    async def transaction(self, *, isolation=None, readonly=None, deferrable=None):
+        """Several statements on one connection, committed together.
+
+        `isolation` accepts the same names as the asyncpg engine
+        ("read_committed", "repeatable_read", "serializable") and is translated
+        to psycopg's `IsolationLevel`. psycopg sets these on the *connection*
+        rather than per transaction, so they are applied before the block opens
+        — and the pool resets them on release, so they do not leak.
+
+        Note the setters are awaited: on an `AsyncConnection` the corresponding
+        properties are read-only, and assigning to them raises rather than
+        silently doing nothing.
+        """
+        async with self._require_pool().connection() as conn:
+            if isolation is not None:
+                from psycopg import IsolationLevel
+
+                try:
+                    level = IsolationLevel[isolation.upper()]
+                except KeyError:
+                    raise ValueError(
+                        f"unknown isolation level {isolation!r}; expected one of "
+                        f"{', '.join(lvl.name.lower() for lvl in IsolationLevel)}"
+                    ) from None
+                await conn.set_isolation_level(level)
+            if readonly is not None:
+                await conn.set_read_only(readonly)
+            if deferrable is not None:
+                await conn.set_deferrable(deferrable)
+            async with _psycopg_block(self, conn, 0, {}) as tx:
+                yield tx
+
+    def _reject_if_in_transaction(self, method):
+        active = _ACTIVE.get()
+        if active is not None and active._engine is self:
+            raise RuntimeError(
+                f"engine.{method}() was called inside engine.transaction(); it would "
+                f"run on a different pooled connection and miss the transaction's "
+                f"uncommitted state. Use tx.{method}() instead."
+            )
+
     async def fetch_all(self, query):
+        self._reject_if_in_transaction("fetch_all")
         sql, params = query.to_sql(placeholder="%s")
         async with self._require_pool().connection() as conn:
             cur = await conn.execute(sql, params)
@@ -76,6 +174,7 @@ class PsycopgEngine:
         driver would parse the array into Python lists and dicts — the opposite
         of what this method is for.
         """
+        self._reject_if_in_transaction("fetch_json")
         sql, params = query.to_json_sql(dialect="psycopg")
         async with self._require_pool().connection() as conn:
             cur = await conn.execute(sql, params)

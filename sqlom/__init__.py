@@ -12,6 +12,7 @@ from .dataclass_model import DATACLASS_DUMP_OPTION, model
 from .engine import DatabaseEngine
 from .psycopg_engine import PsycopgEngine
 from .query import Query, json_bytes
+from .transaction import Transaction, active_transaction
 
 __all__ = [
     "Column",
@@ -33,4 +34,6 @@ __all__ = [
     "PsycopgEngine",
     "Query",
     "json_bytes",
+    "Transaction",
+    "active_transaction",
 ]

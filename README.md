@@ -15,6 +15,7 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 * **Two schema styles:** a custom-metaclass model, or real stdlib `@dataclass(slots=True)` models that still support `User.id > 100`.
 * **Slotted objects:** 73 B/instance vs 113 B for a `__dict__`-backed equivalent.
 * **Async-first:** Native `asyncpg` pool integration — ~6x SQLAlchemy's async ORM under concurrent load, i.e. ~1 core to serve what the ORM needs ~6 cores for. Costs ~10-25% more CPU than doing no object mapping at all.
+* **Transactions and savepoints:** `async with db.transaction() as tx:` on both engines, with `Query` reads on the transaction's connection, nesting as savepoints, and isolation levels. Calling `engine.fetch_all()` inside a block raises rather than silently using another connection.
 * **Postgres `json_agg` support:** Implemented (`Query.to_json_sql`), but **not the current focus** — see [If you only ever emit JSON](#if-you-only-ever-emit-json-use-the-database).
 
 ---
@@ -165,7 +166,43 @@ async def get_users():
     return Response(content=json_bytes, media_type="application/json")
 ```
 
-### 3. DB-side JSON (not the focus yet)
+### 3. Transactions
+
+`engine.fetch_all()` takes a pooled connection per call and hands it straight back, which is right for a one-shot read and useless for anything atomic — two calls run on two connections. `engine.transaction()` pins one connection for the block, commits on clean exit and rolls back on any exception:
+
+```python
+async with db.transaction() as tx:
+    await tx.execute("UPDATE accounts SET balance = balance - $1 WHERE id = $2", 100, payer)
+    await tx.execute("UPDATE accounts SET balance = balance + $1 WHERE id = $2", 100, payee)
+
+    # Query objects work here too, on the transaction's connection, reusing the
+    # same compiled hydrator — so a read inside a transaction costs what a read
+    # outside it costs.
+    rows = await tx.fetch_all(Query(Account).where(Account.id == payer))
+```
+
+Nesting gives savepoints, so an expected inner failure doesn't discard the outer work:
+
+```python
+async with db.transaction() as tx:
+    await tx.execute(...)                    # kept
+    try:
+        async with tx.transaction() as sp:
+            await sp.execute(...)            # rolled back to the savepoint
+    except ExpectedConflict:
+        pass
+```
+
+`isolation=` takes `"read_committed"`, `"repeatable_read"` or `"serializable"`, plus `readonly=` and `deferrable=`. Both engines support the same API; `PsycopgEngine` translates to psycopg's connection-level setters.
+
+Two things worth knowing:
+
+- **A transaction is slower per statement than a plain read, deliberately.** `DatabaseEngine`'s conditional reset skips the pool's `RESET ALL` round trip on the strength of an invariant — `fetch_all` only ever emits plain parameterised SELECTs, which cannot leave session state behind. A transaction body can run `SET`, `LISTEN`, `CREATE TEMP TABLE` or take advisory locks, so `transaction()` routes through `acquire()` and marks the connection dirty, and its release pays the full reset. That is verified, not assumed: a `SET statement_timeout` inside a block does not reach the next borrower. See [§12](docs/BENCHMARKS.md#12-fixing-the-pool-reset-without-changing-behaviour) for what the reset costs.
+- **Calling `engine.fetch_all()` *inside* a transaction raises.** It would take a different pooled connection, so it would miss the transaction's uncommitted writes and not roll back with it — a bug that returns plausible data. Use `tx.fetch_all()`. The check is a contextvar read on the hot path, measured at +0.11% (inside the noise).
+
+Semantics are verified on both engines by `benchmarks/verify_transactions.py` — 31 checks covering commit, rollback, read-your-writes, isolation from other connections, savepoint depth, the guard, and the session-reset invariant. Artifact: [`results/transactions.txt`](benchmarks/results/transactions.txt).
+
+### 4. DB-side JSON (not the focus yet)
 
 `Query.to_json_sql` / `DatabaseEngine.fetch_json` push row shaping and JSON encoding into the database and hand back response-ready bytes, skipping Python objects entirely. It works and it benchmarks well, but it's a different product than an object mapper — **treat it as experimental and out of scope for now.** The object path above is the one being optimized.
 

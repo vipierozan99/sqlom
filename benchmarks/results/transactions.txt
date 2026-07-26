@@ -1,0 +1,53 @@
+Transaction semantics, verified against live PostgreSQL 16 on both engines.
+command: python3 benchmarks/verify_transactions.py
+
+
+--- asyncpg (DatabaseEngine) ---
+  PASS  commit persists both statements
+  PASS  exception rolls the whole block back
+  PASS  tx sees its own uncommitted rows  — saw 3
+  PASS  others do not see it before commit  — outside saw 2
+  PASS  visible after commit
+  PASS  tx.fetch_all hydrates models  — ids=[101, 102, 103]
+  PASS  tx.fetch_json returns bytes  — b'[{"id" : 101, "name" : "user'
+  PASS  savepoint reports depth 1  — depth=1
+  PASS  savepoint rollback keeps the outer insert  — count=4
+  PASS  engine.fetch_all() inside a transaction raises  — engine.fetch_all() was called inside engine.transaction(); i
+  PASS  active_transaction() is None outside
+  PASS  serializable isolation works
+  PASS  bad isolation name rejected  — ValueError
+  PASS  engine.fetch_all works again after the block
+
+--- psycopg3 (PsycopgEngine) ---
+  PASS  commit persists both statements
+  PASS  exception rolls the whole block back
+  PASS  tx sees its own uncommitted rows  — saw 3
+  PASS  others do not see it before commit  — outside saw 2
+  PASS  visible after commit
+  PASS  tx.fetch_all hydrates models  — ids=[101, 102, 103]
+  PASS  tx.fetch_json returns bytes  — b'[{"id" : 101, "name" : "user'
+  PASS  savepoint reports depth 1  — depth=1
+  PASS  savepoint rollback keeps the outer insert  — count=4
+  PASS  engine.fetch_all() inside a transaction raises  — engine.fetch_all() was called inside engine.transaction(); i
+  PASS  active_transaction() is None outside
+  PASS  serializable isolation works
+  PASS  bad isolation name rejected  — ValueError
+  PASS  engine.fetch_all works again after the block
+
+--- asyncpg: transaction marks the connection dirty ---
+  PASS  transaction triggers the SQL reset  — resets=1
+  PASS  SET inside a transaction does not leak  — next borrower saw '0'
+  PASS  plain fetch_all still skips the reset  — resets=0
+
+31/31 checks passed
+
+--- cost of the in-transaction guard on the read path ---
+engine.fetch_all() checks a contextvar so that calling it inside
+engine.transaction() raises instead of silently using another connection.
+Microbenchmark: ContextVar.get() 54 ns; whole guard 66 ns = 0.015% of a
+0.43 ms request. Paired A/B (one process, alternating rounds, median of 5,
+psycopg pool 10, c=8, core 0):
+
+  with guard      1809 rps   spread 17.3%
+  no guard        1811 rps   spread  8.6%
+  -> guard costs +0.11% (+2 rps), i.e. inside the noise
