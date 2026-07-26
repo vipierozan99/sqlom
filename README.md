@@ -1,6 +1,6 @@
-# ⚡ Velocity: Zero-Overhead Async Data Layer for Python
+# ⚡ sqlom: Zero-Overhead Async Data Layer for Python
 
-`velocity` is a data access library concept for Python built for high-throughput HTTP services (FastAPI, Sanic, Granian). It aims to reduce ORM overhead by skipping session tracking, identity maps, and dynamic class reflection, pairing a **descriptor-driven query builder** with an **`asyncpg`-backed execution engine** that hydrates rows into `@dataclass(slots=True)`-style objects and serializes them via `orjson`.
+`sqlom` is a data access library concept for Python built for high-throughput HTTP services (FastAPI, Sanic, Granian). It aims to reduce ORM overhead by skipping session tracking, identity maps, and dynamic class reflection, pairing a **descriptor-driven query builder** with an **`asyncpg`-backed execution engine** that hydrates rows into `@dataclass(slots=True)`-style objects and serializes them via `orjson`.
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
@@ -21,7 +21,7 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 ## 📦 Installation
 
 ```bash
-pip install velocity-db
+pip install sqlom
 ```
 
 ---
@@ -38,7 +38,7 @@ This is the part worth being honest about: **you cannot combine stdlib `@datacla
 The fix is to stop delegating to `@dataclass` and have the metaclass own both slot generation *and* the descriptor protocol, storing instance values under a shadow name:
 
 ```python
-from velocity import Column, ModelMeta
+from sqlom import Column, ModelMeta
 
 class User(metaclass=ModelMeta):
     __tablename__ = "users"
@@ -87,7 +87,7 @@ class ModelMeta(type):
 from fastapi import FastAPI
 from fastapi.responses import Response
 import orjson
-from velocity import Query, DatabaseEngine, User
+from sqlom import Query, DatabaseEngine, User
 
 app = FastAPI()
 db = DatabaseEngine(dsn="postgresql://user:pass@localhost/db")
