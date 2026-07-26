@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#11-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#12-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -256,12 +256,14 @@ agree).
 - **The benchmark's loopback connection negotiates TLSv1.3**, which costs ~20% of
   client CPU. Ratios are unaffected (both sides pay it) but absolute throughput is
   understated: 5440 rps with `sslmode=disable` vs 4724 with it on.
-- **uvloop is a faster I/O layer, not a faster asyncio.** Worth 1.11x against
-  Postgres over a socket; **1.02x (noise) on the in-process sqlite path**, which does
-  no socket I/O. Likewise asyncio concurrency buys nothing there — 0.93-1.05x from
-  c=1 to c=32, single-threaded, because there is no wait to overlap. Reaching for
-  `aiosqlite` to "make it async" costs 25-40% (it uses a thread). See
-  [§10](docs/BENCHMARKS.md#10-asyncio-concurrency-and-uvloop-on-the-sqlite-path).
+- **Concurrency and uvloop pay exactly the idle fraction.** At c=1 the Postgres client
+  is 0.64 utilized (a third of the core waiting on the socket), so concurrency is worth
+  2.0-2.5x and uvloop 1.05-1.26x. On the in-process sqlite path utilization is already
+  1.00 at c=1, so concurrency is worth **1.00x** and uvloop is noise — and reaching for
+  `aiosqlite` to "make it async" *costs* 25-40%, because it uses a thread. uvloop is an
+  I/O layer, not a faster asyncio. See
+  [§10](docs/BENCHMARKS.md#10-asyncio-concurrency-and-uvloop-on-the-sqlite-path) and
+  [§11](docs/BENCHMARKS.md#11-the-same-matrix-on-postgres-concurrency-and-uvloop-both-matter).
 - **A Rust rewrite is the worst return on effort measured.** Creating a Python value
   costs ~109 ns and there are four per row (42% of a 100-row request) — any API
   returning objects with Python fields pays that regardless of implementation

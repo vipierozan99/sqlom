@@ -130,25 +130,36 @@ Against a remote database the mapper is ~15% of CPU and transport dominates; aga
 local one the mapper is ~50% of CPU but its *addressable* part is 16% and already at
 the floor. Further hydration micro-optimization is not where any remaining time is.
 
-### uvloop is a faster I/O layer, not a faster asyncio
+### Concurrency and uvloop both pay exactly the idle fraction
 
-Measured on both paths
-([BENCHMARKS §10](BENCHMARKS.md#10-asyncio-concurrency-and-uvloop-on-the-sqlite-path)):
+The same matrix run on both backends
+([§10](BENCHMARKS.md#10-asyncio-concurrency-and-uvloop-on-the-sqlite-path),
+[§11](BENCHMARKS.md#11-the-same-matrix-on-postgres-concurrency-and-uvloop-both-matter)):
 
-| | uvloop gain |
-|---|---|
-| Postgres over a socket (§6) | **1.11x** |
-| sqlite in-process, single thread | 1.02-1.03x (noise) |
+| | sqlite (in-process) | Postgres (socket) |
+|---|---|---|
+| client utilization at c=1 | **1.00** | **0.64** |
+| concurrency gain, c=1 → 32 | **1.00x** | **2.0-2.5x** |
+| uvloop gain | 1.02x (noise) | 1.05-1.26x |
+| thread offload (`aiosqlite`) | 0.60-0.79x | n/a |
 
-The swap helps exactly to the extent that the workload touches the network. On the
-sqlite path there are no socket operations, so there is nothing for libuv to do
-faster. Do not treat uvloop as a general "faster asyncio" switch.
+**One number predicts both columns: the fraction of a request spent waiting.** At c=1
+the Postgres client is 0.64 utilized — a third of the core idle on the socket — and
+concurrency reclaims precisely that, reaching 0.99 by c=4 with throughput roughly
+doubled, then flattening because there is no idle left. sqlite is already 1.00 at c=1,
+so there is nothing to reclaim and every variant lands at 0.93-1.05x of a plain
+synchronous loop. You can read the concurrency payoff off the utilization column before
+running a sweep.
 
-The same measurement settles whether asyncio concurrency helps an embedded database:
-it does not. Every single-threaded variant lands at 0.93-1.05x of a plain
-synchronous loop from c=1 to c=32, because there is no wait to overlap — N tasks just
-take turns on one core. A coroutine wrapper is nearly free (one `await
-asyncio.sleep(0)` measures 1.4-2.4 µs), so keep it if you want API symmetry.
+uvloop follows the same rule because it is an **I/O layer, not a faster asyncio**: it
+pays where there are sockets (1.05-1.26x) and does nothing where there are none. Two
+qualifications worth carrying: its gain *shrinks* once the pool RESET is removed
+(1.22x → 1.07x at c=8) because both optimizations reduce work per round trip and
+partly overlap; and the same script gave 1.11x in one session and 1.22x in another, so
+treat single-figure uvloop claims as ±10%.
+
+A coroutine wrapper on a synchronous call is nearly free (one `await asyncio.sleep(0)`
+measures 1.4-2.4 µs), so keep it for API symmetry if you want it.
 
 **But do not reach for `aiosqlite` to "make it async":** it offloads to a worker
 thread, so it is not single-threaded, and it runs at **0.60-0.79x** — every request
@@ -156,11 +167,11 @@ pays a thread handoff and GIL round trip to overlap a wait that was never there.
 (This is the one place uvloop helps, 0.60x → 0.73x, because thread handoff goes
 through `call_soon_threadsafe` and the self-pipe.)
 
-The mirror image is the Postgres path, where concurrency is essential — 4608 rps at
-c=8 against 2249 at c=1 — because 35% of each request is socket wait. **The
-determining question is never the mapper or the loop implementation; it is whether
-the request waits on anything.** For an embedded database the right architecture is
-synchronous calls plus process-level parallelism.
+**The determining question is never the mapper or the loop implementation; it is
+whether the request waits on anything.** For an embedded database the right
+architecture is synchronous calls plus process-level parallelism. For a networked one,
+concurrency plus the pool fix plus uvloop compound to **3.68x** (1888 → 6951 rps) with
+the mapper untouched — which remains the largest lever found anywhere in this repo.
 
 ### A native rewrite is the worst return on effort measured
 

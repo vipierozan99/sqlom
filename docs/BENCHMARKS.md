@@ -753,7 +753,82 @@ taskset -c 0 python3 benchmarks/bench_sqlite_async.py --repeat 5 --concurrency 1
 
 ---
 
-## 11. What none of this shows
+## 11. The same matrix on Postgres: concurrency and uvloop both matter
+
+§10 found that on the in-process sqlite path, asyncio concurrency and uvloop are both
+worth nothing. Running the identical matrix against Postgres is the control, and it
+inverts on both axes. Client pinned to core 0, Postgres to cores 2,3, 100 rows/request,
+pool 10, median of 3.
+
+**Throughput (rps):**
+
+| config | c=1 | c=4 | c=8 | c=32 | c32/c1 |
+|---|---|---|---|---|---|
+| default pool / asyncio | 1888 | 4033 | 4373 | 4701 | **2.49x** |
+| default pool / uvloop | 2325 | 5065 | 5349 | 5255 | 2.26x |
+| `reset=`no-op / asyncio | 2941 | 5353 | 6063 | 5999 | 2.04x |
+| **`reset=`no-op / uvloop** | 3091 | 5982 | 6462 | **6951** | 2.25x |
+
+**Client CPU utilization** — this is the mechanism:
+
+| config | c=1 | c=4 | c=8 | c=32 |
+|---|---|---|---|---|
+| default pool / asyncio | **0.64** | 0.99 | 1.00 | 1.00 |
+| `reset=`no-op / uvloop | **0.60** | 0.99 | 1.00 | 1.00 |
+
+Artifact: [`results/pg_concurrency_uvloop.txt`](../benchmarks/results/pg_concurrency_uvloop.txt)
+
+### Concurrency is worth ~2.0–2.5x here, versus 1.00x on sqlite
+
+At c=1 the client sits at **0.64 utilization** — a third of the core is idle waiting on
+the socket. Concurrency fills exactly that gap: by c=4 utilization is 0.99 and
+throughput has roughly doubled. Past that it flattens, because there is no idle left to
+reclaim and the core is the constraint.
+
+That is the whole difference from §10. sqlite's utilization is 1.00 at c=1 already —
+nothing to overlap, so nothing to gain. **The concurrency payoff equals the idle
+fraction, and you can read it off the utilization column before running a sweep.**
+
+### uvloop: 1.05–1.26x here, versus noise on sqlite
+
+| pool | c=1 | c=4 | c=8 | c=32 |
+|---|---|---|---|---|
+| default pool | 1.23x | **1.26x** | 1.22x | 1.12x |
+| `reset=`no-op | 1.05x | 1.12x | 1.07x | **1.16x** |
+
+Real, and it confirms §10's reading that uvloop is an I/O layer: it pays where there are
+sockets and does nothing where there are none. Two qualifications:
+
+- **The gain shrinks once the pool is fixed** (1.22x → 1.07x at c=8). uvloop and
+  `reset=`no-op partly overlap — both reduce work per socket round trip, and the RESET
+  statement was itself an extra round trip for uvloop to accelerate. Stacking them gives
+  6462 rps rather than the 1.22 × 6063 ≈ 7400 a naive multiplication predicts.
+- **§6 reported 1.11x at c=8 where this matrix shows 1.22x.** Same script, same flags,
+  different session — the server was restarted between them. Treat single-figure uvloop
+  claims as ±10%; the defensible statement is "1.05–1.26x on this workload".
+
+### Side by side
+
+| | sqlite (in-process) | Postgres (socket) |
+|---|---|---|
+| utilization at c=1 | 1.00 | 0.64 |
+| concurrency gain (c=1 → 32) | **1.00x** | **2.0–2.5x** |
+| uvloop gain | 1.02x (noise) | 1.05–1.26x |
+| thread offload (`aiosqlite`) | 0.60–0.79x | n/a |
+| best total, no mapper change | — | **3.68x** (1888 → 6951) |
+
+Both axes are worth nothing on sqlite and a combined 3.68x on Postgres — from
+concurrency, the pool fix and uvloop together, with the mapper untouched throughout.
+**Neither is a property of asyncio or of the mapper; both track one number, the fraction
+of a request spent waiting.**
+
+```bash
+taskset -c 0 python3 benchmarks/optimize_pg.py --concurrency 8 --uvloop --no-reset --repeat 3
+```
+
+---
+
+## 12. What none of this shows
 
 - **No HTTP layer.** The load benchmark drives the data layer directly. A real
   FastAPI/uvicorn stack adds routing, validation and ASGI overhead per request
