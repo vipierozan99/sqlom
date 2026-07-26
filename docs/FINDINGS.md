@@ -67,8 +67,8 @@ configuration tested. Three consequences:
    2 workers on 2 cores → 8739 rps (1.99x), per-worker throughput unchanged.
 
 This also resolves an apparent contradiction. Within one request, hydration is only
-~12% of wall-clock, so making it 4.9x faster buys only ~2.4x end-to-end (2.53 ms
-reflective → 1.03-1.06 ms compiled) — the driver dominates. But under saturation the binding constraint is *total CPU per
+~12% of wall-clock, so making it 4.9x faster buys only ~2.3x end-to-end (3.56 ms
+reflective → 1.39-1.55 ms compiled) — the driver dominates. But under saturation the binding constraint is *total CPU per
 request*, and there the mapper's share is decisive. **Stage share governs latency;
 total CPU governs throughput.** Both statements are true and they are not in
 conflict.
@@ -225,15 +225,15 @@ Two hypotheticals, bounded in
 
 | hypothetical | bound | evidence |
 |---|---|---|
-| driver builds slotted objects directly | ≤1.51x | analytical; the one real implementation achieves **0.57x** |
-| Rust mapper returning Python objects | ≤1.51x | same ceiling — value creation dominates |
+| driver builds slotted objects directly | ≤1.42x | analytical; the one real implementation achieves **0.57x** |
+| Rust mapper returning Python objects | ≤1.42x | same ceiling — value creation dominates |
 | Rust returning JSON, no Python objects | ~1.9x | measured; already available in SQL today |
 | transport fixes (pool + uvloop) | **1.61x** | measured, deployable |
 
 The binding constraint is that **creating a Python value costs ~109 ns and there are
 four per row** — 42% of a 100-row request. Any API that hands back objects whose
 fields are Python values pays that no matter what language builds them. A native
-builder can only remove the row tuple and the interpreted loop: ≤1.51x, and less in
+builder can only remove the row tuple and the interpreted loop: ≤1.42x, and less in
 practice since it still allocates and writes slots.
 
 The empirical test is the striking part. `psqlpy` is a Rust/tokio-postgres driver
@@ -248,7 +248,7 @@ Two conclusions worth separating:
    binary-protocol codecs; psqlpy is younger. Implementation maturity dominated
    language choice by a wide margin.
 2. **"The driver builds the objects" is not automatically a win** — it depends how.
-   The ≤1.51x ceiling assumes a builder that writes slots directly.
+   The ≤1.42x ceiling assumes a builder that writes slots directly.
 
 Neither hypothetical beats what is already available without writing any Rust: 1.61x
 from fixing the pool and event loop, or ~1.9x by pushing shaping into SQL.

@@ -11,7 +11,7 @@ from .compile import (
 from .dataclass_model import DATACLASS_DUMP_OPTION, model
 from .engine import DatabaseEngine
 from .psycopg_engine import PsycopgEngine
-from .query import Query
+from .query import Query, json_bytes
 
 __all__ = [
     "Column",
@@ -32,4 +32,5 @@ __all__ = [
     "DatabaseEngine",
     "PsycopgEngine",
     "Query",
+    "json_bytes",
 ]

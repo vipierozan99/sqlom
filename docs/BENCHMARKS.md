@@ -25,31 +25,94 @@ delta is the object-shaping path. 1,000 rows from a 200,000-row table, 300
 iterations after 30 warmup. All approaches are asserted to emit **byte-identical
 JSON** before timing.
 
+⚠️ **Two corrections were applied to this section after review.** Both are detailed
+below; read them before quoting anything here.
+
+1. **The comparison was unfair, in sqlom's favour.** SQLAlchemy's connection and
+   `Session` were created *inside* the timed closure while the sqlom paths got a
+   connection made once outside it, so SQLAlchemy was charged for pool checkout
+   that sqlom never paid. Fixed; worth **8% of the Core ratio**.
+2. **The machine got ~1.35x slower** between the original run and the re-run, so
+   the absolute milliseconds below are all higher than previously published. This
+   is not the fix — the pre-change tree reproduces today's numbers, not the old
+   ones.
+
 **Median of 5 trials**, with the observed spread across trials:
 
 | approach | median | min | max | spread | vs. ORM |
 |---|---|---|---|---|---|
-| sqlom compiled, per-row hydrator | 1.028 ms | 1.024 | 1.091 | 7% | 6.46x |
-| `@model` dataclass + `OPT_PASSTHROUGH_DATACLASS` | 1.054 ms | 1.013 | 1.067 | 5% | 6.30x |
-| sqlom compiled, batch hydrator | 1.060 ms | 1.014 | 1.072 | 5% | 6.27x |
-| `@model` dataclass, orjson native path | 1.292 ms | 1.248 | 1.325 | 6% | 5.15x |
-| sqlom reflective (`hydrate()` + `as_dict()`) | 2.528 ms | 2.481 | 2.610 | 5% | 2.63x |
-| SQLAlchemy 2.0 Core | 4.252 ms | 3.967 | 4.695 | 17% | 1.56x |
-| SQLAlchemy 2.0 ORM | 6.647 ms | 6.543 | 6.835 | 4% | 1.00x (baseline) |
-| *(DB-side JSON, `json_group_array` — parked)* | *0.467 ms* | *0.452* | *0.487* | *7%* | *14.24x* |
+| `@model` dataclass + `OPT_PASSTHROUGH_DATACLASS` | 1.393 ms | 1.371 | 1.530 | 11% | 6.55x |
+| sqlom compiled, batch hydrator | 1.543 ms | 1.440 | 1.581 | 9% | 5.92x |
+| sqlom compiled, per-row hydrator | 1.553 ms | 1.452 | 1.597 | 9% | 5.88x |
+| `@model` dataclass, orjson native path | 1.896 ms | 1.787 | 2.407 | 33% | 4.82x |
+| sqlom reflective (`hydrate()` + `as_dict()`) | 3.559 ms | 3.460 | 4.040 | 16% | 2.57x |
+| SQLAlchemy 2.0 Core | 5.240 ms | 5.126 | 5.349 | 4% | 1.74x |
+| SQLAlchemy 2.0 ORM | 9.132 ms | 8.834 | 9.177 | 4% | 1.00x (baseline) |
+| *(DB-side JSON, `json_group_array` — parked)* | *0.561 ms* | *0.543* | *0.570* | *5%* | *16.28x* |
 
-⚠️ **The top three rows are a statistical tie.** Their medians span 1.028–1.060 ms
-while each individually varies by 5–7% across trials, and their ordering changes
-from run to run — per-row led this run, batch led two of three earlier runs. Read
-them as "~1.03–1.06 ms, ~6.3x" and do not infer that one compiled variant beats
-another end-to-end. The batch hydrator *is* measurably faster in isolation (123 vs
-148 ns/object, §3), but 25 ns/object over 1,000 rows is 0.025 ms — well inside the
-noise floor of a ~1.05 ms pipeline.
+⚠️ **The top three rows are a statistical tie.** They span 1.393–1.553 ms while
+each individually varies 9–11% across trials, and their ordering changes from run
+to run. Read them as one tier, ~6x the ORM, and do not infer that one compiled
+variant beats another end-to-end. The batch hydrator *is* measurably faster in
+isolation (123 vs 148 ns/object, §3), but 25 ns/object over 1,000 rows is 0.025 ms
+— well inside the noise floor.
 
-What *is* consistent across every run: the tier structure. DB-side JSON (~0.47) ≪
-compiled object paths (~1.03–1.06) < dataclass-native (~1.29) ≪ reflective (~2.53)
-< SQLAlchemy Core (~4.25) < SQLAlchemy ORM (~6.65). And SQLAlchemy Core is the
-noisiest contender at 17% spread, so its 1.56x is the softest number in the table.
+What *is* consistent across every run: the tier structure. DB-side JSON ≪ compiled
+object paths < dataclass-native ≪ reflective < SQLAlchemy Core < SQLAlchemy ORM.
+
+### Correction 1: the connection was hoisted for sqlom but not for SQLAlchemy
+
+The sqlom runners received a `sqlite3.Connection` created once before timing, while
+`run_sqlalchemy_core` and `run_sqlalchemy_orm` opened `engine.connect()` /
+`Session(engine)` **inside** the timed function. SQLAlchemy therefore paid a pool
+checkout on every measured iteration that sqlom did not, and that cost was reported
+as object-mapping overhead. Found in review; it is the same class of error as
+[correction 1](METHODOLOGY.md#1-comparing-different-payloads-inflated-35x-26x).
+
+Sizing it needed a paired instrument, not two suite runs: the effect is smaller than
+the ±14% (Core) and ±27% (ORM) spread between runs. `benchmarks/ab_setup_cost.py`
+times all variants in one process, alternating between them each round:
+
+| | 100 rows | 1000 rows |
+|---|---|---|
+| setup cost charged only to Core | 76 µs (13.8% of Core) | 466 µs (9.0%) |
+| setup cost charged only to the ORM | 26 µs (2.5%) | −93 µs (≈0, noise) |
+| **sqlom vs Core** | 4.74x → **4.16x** (−12.1%) | 4.01x → **3.68x** (−8.3%) |
+| **sqlom vs ORM** | 8.08x → **7.88x** (−2.5%) | 6.48x → **6.54x** (+1.0%) |
+
+The A/B's "before" figure at 1000 rows — 4.01x vs Core — reproduces the previously
+published 4.01x exactly, which is what makes it trustworthy as the instrument: it
+recovers the old number from the old code path, then isolates one variable.
+
+**So the Core ratio was overstated by ~8% and the ORM ratio was not affected.** The
+ORM's own setup is a `Session` on an already-warm pool, which is cheap next to
+hydrating 1,000 instances.
+
+The same script also measures the *opposite* mistake, because it is larger and more
+tempting: hoisting the `Session` out of the loop as well. Its identity map then
+survives between iterations, so every iteration after the first returns
+already-hydrated instances and skips the work being measured — worth **12.9%** in
+the ORM's favour at 100 rows. A per-request `Session` bound to a live connection is
+the only variant that is both realistic and measures hydration every time.
+
+### Correction 2: absolute times moved with the machine, not with the code
+
+Re-running after the fix gave ~1.35x higher absolutes for *every* contender —
+including the sqlom paths, whose timed code the fix does not touch. Rather than
+assume, the entire pre-change tree (library and harness, via `git stash`) was
+checked out and re-run on the same box:
+
+| contender | published (earlier box) | pre-change tree, today | post-fix, today |
+|---|---|---|---|
+| sqlom compiled (batch) | 1.060 ms | 1.389 ms | 1.543 ms |
+| SQLAlchemy Core | 4.252 ms | 5.196 ms | 5.240 ms |
+| SQLAlchemy ORM | 6.647 ms | 9.127 ms | 9.132 ms |
+
+The pre-change tree reproduces *today's* numbers, not the published ones. The box
+became ~1.35x slower between sessions — ordinary for shared cloud CPU, and the
+reason **absolute microseconds in this document must not be compared across
+sections**: §2, §3 and §7 were recorded on the earlier box. Ratios within a section
+are comparable; milliseconds between sections are not.
 
 **This benchmark was checked for the ordering bias that affects the Postgres suite
 ([METHODOLOGY correction 2](METHODOLOGY.md#2-contender-ordering-inside-one-process))
@@ -65,14 +128,22 @@ approach in its own process, both reproduce the same figures:
 | SQLAlchemy Core | 3.919–4.129 | 4.060 | 3.819 |
 | SQLAlchemy ORM | 6.629–6.802 | 6.505 | 6.552 |
 
+The order-check table above was recorded on the earlier box, before correction 1.
+Its purpose is to show the suite is not *order*-biased, which the connection fix
+does not affect — but its absolute values belong to the earlier box, per correction 2.
+
 ```bash
 python3 benchmarks/bench_sqlite.py --rows 200000 --limit 1000 --iterations 300 --warmup 30 --repeat 5
 python3 benchmarks/bench_sqlite.py ... --reverse                    # order check
 python3 benchmarks/bench_sqlite.py ... --only reflective --repeat 3  # isolation check
+python3 benchmarks/ab_setup_cost.py --limits 100,1000 --rounds 7     # correction 1
 ```
 
-Artifact: [`results/sqlite_latest.json`](../benchmarks/results/sqlite_latest.json)
-(all 5 trials per approach), [`results/sqlite_order_check.txt`](../benchmarks/results/sqlite_order_check.txt)
+Artifacts: [`results/sqlite_latest.json`](../benchmarks/results/sqlite_latest.json)
+(all 5 trials per approach), [`results/sqlite_order_check.txt`](../benchmarks/results/sqlite_order_check.txt),
+[`results/sqlite_setup_cost_ab.txt`](../benchmarks/results/sqlite_setup_cost_ab.txt)
+(correction 1), [`results/sqlite_box_drift.txt`](../benchmarks/results/sqlite_box_drift.txt)
+(correction 2)
 
 ---
 
@@ -212,9 +283,7 @@ bash benchmarks/pin_and_run.sh --db-cores 1,2,3 --client-cores 0 -- \
      --only sqlom --concurrency 8 --duration 4 --repeat 3
 ```
 
-Artifacts: [`results/pg_load_100rows.json`](../benchmarks/results/pg_load_100rows.json),
-[`pg_load_1000rows.json`](../benchmarks/results/pg_load_1000rows.json),
-[`core_sweep_1core_client.txt`](../benchmarks/results/core_sweep_1core_client.txt),
+Artifacts: [`core_sweep_1core_client.txt`](../benchmarks/results/core_sweep_1core_client.txt),
 [`multiprocess_scaling.txt`](../benchmarks/results/multiprocess_scaling.txt),
 [`isolated_*.txt`](../benchmarks/results/)
 
@@ -602,15 +671,27 @@ overhead; varying row count separates per-statement cost. 100 rows/request:
 | statement execute/prepare | 5.2 | irreducible |
 | Python hydration loop | 13.9 | removable by a native builder |
 | `orjson.dumps` + per-row `_default` | 20.0 | orjson is already Rust |
-| **total** | **104.0** | |
+| *sum of the itemized stages* | *99.8* | |
+| **measured full pipeline** | **104.0** | the extra 4.2 µs is composition cost no isolated stage captures |
+
+⚠️ **Corrected after review.** That last row used to be missing from the reasoning,
+and it mattered: the floor below was built by *summing* the surviving stages
+(bottom-up) and then divided into the separately *measured* pipeline (top-down), so
+the 4.2 µs nobody could attribute was silently credited to the speedup. Published
+**1.51x**; the correct figure on the same data is **1.42x**. Fixed in
+`estimate_ceilings.py`, which now subtracts from the measured total and prints the
+residual instead of absorbing it.
 
 ### Ceiling 1 — driver builds the slotted objects directly
 
 Removes the row tuple (16.9 µs) and the Python hydration loop (13.9 µs). Cannot
-remove value creation (43.8), the statement (5.2) or JSON (20.0).
+remove value creation (43.8), the statement (5.2), JSON (20.0), or the 4.2 µs of
+composition cost.
 
-**Optimistic floor 69.0 µs vs 104.0 µs → ≤1.51x**, and optimistic because a native
-builder still allocates each object and writes its slots — in C rather than
+**Optimistic floor 73.2 µs vs 104.0 µs → ≤1.42x** on the original data. Re-running
+the corrected script on the current box gives 98.3 vs 134.9 µs → **≤1.37x** (see
+§1 correction 2 for why the absolutes moved). Optimistic either way, because a
+native builder still allocates each object and writes its slots — in C rather than
 bytecode, not for free.
 
 ### Ceiling 2 — a Rust extension
@@ -619,13 +700,14 @@ orjson is *already* Rust and sqlite3/asyncpg are already C/Cython, so a Rust rew
 can only replace the 13.9 µs hydration loop and the per-row callback inside the JSON
 step. Two variants:
 
-- **Rust mapper still returning Python objects** — bounded by ceiling 1, **≤1.51x**.
+- **Rust mapper still returning Python objects** — bounded by ceiling 1, **≤1.42x**.
   Creating 400 Python values is 42% of the request and is unavoidable the moment the
   API hands back objects whose fields are Python values.
 - **Rust returning JSON bytes, no Python objects at all** — then value creation
   vanishes too. Measured anchor for exactly that shape (sqlite `json_group_array`,
-  all work below Python): 54.5 µs vs 104.0 → **1.91x**. Note this is *already
-  reachable today in SQL with no Rust written*, and is the parked `json_agg` path.
+  all work below Python): 54.5 µs vs 104.0 → **1.91x** (2.13x on the re-run). Note
+  this is *already reachable today in SQL with no Rust written*, and is the parked
+  `json_agg` path.
 
 ### And the empirical test: a Rust driver is available, and it is slower
 
@@ -662,15 +744,15 @@ matters more:
 - `as_class` being slower than psqlpy's own dicts suggests it constructs via
   `cls(**kwargs)` — materializing a kwargs dict and invoking `__init__` per row —
   rather than writing slots directly. **So "the driver builds the objects" is not
-  automatically a win; it depends entirely on how**, and the ≤1.51x ceiling assumes
+  automatically a win; it depends entirely on how**, and the ≤1.42x ceiling assumes
   the good version.
 
 ### Summary
 
 | hypothetical | bound | evidence |
 |---|---|---|
-| driver builds slotted objects directly | ≤1.51x | analytical; the one real implementation achieves 0.57x |
-| Rust mapper returning Python objects | ≤1.51x | same ceiling — value creation dominates |
+| driver builds slotted objects directly | ≤1.42x | analytical; the one real implementation achieves 0.57x |
+| Rust mapper returning Python objects | ≤1.42x | same ceiling — value creation dominates |
 | Rust returning JSON, no Python objects | ~1.9x | measured via `json_group_array`; already available in SQL |
 | *(for comparison)* transport fixes from §6 | 1.61x deployable | measured |
 
@@ -916,12 +998,21 @@ Async single-threaded, c=8, client core 0, Postgres cores 2,3, median of 3:
 
 | variant | rps | CPU ms/req | resets/req | vs. default |
 |---|---|---|---|---|
-| asyncpg default (always RESET) | 3584 | 0.2773 | — | 1.00x |
-| `reset=`no-op (**leaks session state**) | 4433 | 0.2255 | — | 1.24x |
+| asyncpg default (always RESET) | 3584 | 0.2773 | n/a | 1.00x |
+| `reset=`no-op (**leaks session state**) | 4433 | 0.2255 | n/a | 1.24x |
 | **conditional, pure sqlom traffic** | **4393** | **0.2275** | **0.00** | **1.23x** |
 | conditional, 1 request in 10 uses `acquire()` | 4151 | 0.2404 | 0.10 | 1.16x |
 | conditional, 1 request in 2 uses `acquire()` | 3504 | 0.2841 | 0.50 | 0.98x |
-| `conditional_reset=False` | 3644 | 0.2742 | 0.00 | 1.02x |
+| `conditional_reset=False` | 3644 | 0.2742 | n/a | 1.02x |
+
+**`resets/req` is `n/a`, not zero, wherever the counter does not apply.**
+`DatabaseEngine.reset_count` instruments only the conditional hook, so it cannot see
+asyncpg's built-in reset. An earlier version of this table printed `0.00` for
+`conditional_reset=False`, which read as "this variant skips the reset" — the exact
+opposite of what it does. Of the three `n/a` rows, `asyncpg default` and
+`conditional_reset=False` reset on *every* release via asyncpg; only `reset=`no-op
+genuinely does not reset, which is the behavioural tradeoff being measured. The
+instrument is now marked rather than the number invented.
 
 **1.23x versus the no-op's 1.24x — the full benefit, with the semantics intact.**
 Correctness verified directly: 20 pure requests issue 0 resets; one `acquire()` + `SET

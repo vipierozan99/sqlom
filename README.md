@@ -21,9 +21,20 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 
 ## 📦 Installation
 
+Not packaged and not on PyPI — `pip install sqlom` installs something else, or
+nothing. This is a benchmarked concept, so the only supported way to run it is from
+a clone:
+
 ```bash
-pip install sqlom
+git clone https://github.com/vipierozan99/sqlom && cd sqlom
+pip install orjson                              # required
+pip install asyncpg                             # for DatabaseEngine
+pip install "psycopg[binary]" psycopg-pool      # for PsycopgEngine
+python3 -c "from sqlom import Query; print('ok')"
 ```
+
+To reproduce the benchmarks as well, see
+[docs/METHODOLOGY.md](docs/METHODOLOGY.md#reproducing).
 
 ---
 
@@ -117,7 +128,10 @@ dataclasses.asdict(user)         # works; so do replace(), ==, repr(), match
 from fastapi import FastAPI
 from fastapi.responses import Response
 import orjson
-from sqlom import Query, DatabaseEngine, User
+from sqlom import Query, DatabaseEngine
+
+from myapp.models import User   # your model, declared as in step 1 above
+                                # (sqlom exports framework primitives only)
 
 app = FastAPI()
 db = DatabaseEngine(dsn="postgresql://user:pass@localhost/db")
@@ -125,6 +139,12 @@ db = DatabaseEngine(dsn="postgresql://user:pass@localhost/db")
 @app.on_event("startup")
 async def startup():
     await db.connect()
+
+@app.on_event("shutdown")
+async def shutdown():
+    # Closes the pool and clears the reference. Skipping this leaks connections
+    # against the server on reload.
+    await db.close()
 
 @app.get("/users")
 async def get_users():
@@ -244,18 +264,24 @@ the request (64% is sqlite3 creating Python values), so every micro-optimization
 — cursor reuse, tuple-index bool, zero-callback dicts, `row_factory` — came in at
 1.04x or worse. See [§8](docs/BENCHMARKS.md#8-what-is-left-in-the-sqlite-path-essentially-nothing).
 
-### Latency: ~6.3x on a single request
+### Latency: ~5.9x on a single request
 
 sqlite micro-benchmark, 1000 rows/response, median of 5 trials, all approaches
-asserted to emit byte-identical JSON:
+asserted to emit byte-identical JSON *and* to be stable across repeated calls:
 
 | approach | median | vs. ORM |
 |---|---|---|
-| sqlom compiled (per-row / batch) and `@model` + passthrough | 1.03–1.06 ms | **~6.3x** |
-| `@model` dataclass, orjson native path | 1.29 ms | 5.2x |
-| sqlom reflective (unoptimized) | 2.53 ms | 2.6x |
-| SQLAlchemy 2.0 Core | 4.25 ms | 1.6x |
-| SQLAlchemy 2.0 ORM | 6.65 ms | 1.0x |
+| sqlom compiled (per-row / batch) and `@model` + passthrough | 1.39–1.55 ms | **~5.9x** |
+| `@model` dataclass, orjson native path | 1.90 ms | 4.8x |
+| sqlom reflective (unoptimized) | 3.56 ms | 2.6x |
+| SQLAlchemy 2.0 Core | 5.24 ms | 1.7x |
+| SQLAlchemy 2.0 ORM | 9.13 ms | 1.0x |
+
+⚠️ These replace an earlier version of this table, for two reasons — both in
+[§1](docs/BENCHMARKS.md#1-sqlite-micro-benchmark-single-request-latency). The old
+comparison timed SQLAlchemy's connection setup but not sqlom's, which overstated the
+Core ratio by ~8%; and the measurement box became ~1.35x slower between runs, which
+moved every absolute figure without changing the ranking.
 
 The first row is three variants that are a **statistical tie** — their ordering
 changes between runs, so they're grouped rather than ranked. Verified free of the
@@ -301,7 +327,7 @@ agree).
 - **A Rust rewrite is the worst return on effort measured.** Creating a Python value
   costs ~109 ns and there are four per row (42% of a 100-row request) — any API
   returning objects with Python fields pays that regardless of implementation
-  language, capping a native builder at **≤1.51x**. Tested empirically: `psqlpy`
+  language, capping a native builder at **≤1.42x**. Tested empirically: `psqlpy`
   (Rust/tokio-postgres) constructing our slotted dataclasses *from Rust* runs at
   **0.57x** of asyncpg + sqlom's Python hydrator, once pool policy and TLS are
   controlled. See [§9](docs/BENCHMARKS.md#9-two-hypotheticals-a-native-object-builder-and-rust).

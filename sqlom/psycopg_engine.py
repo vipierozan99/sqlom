@@ -16,6 +16,7 @@ psycopg3, which suits the positional hydrator directly.
 """
 
 from .compile import PSYCOPG_CONVERTERS, compile_batch_hydrator
+from .query import json_bytes as _json_bytes
 
 
 class PsycopgEngine:
@@ -26,16 +27,32 @@ class PsycopgEngine:
         self._hydrators = {}
 
     async def connect(self):
+        """Open the pool. Idempotent — a second call would otherwise leak the
+        first pool, leaving its connections open with nothing referencing them."""
+        if self.pool is not None:
+            return self.pool
+
         from psycopg_pool import AsyncConnectionPool
 
         # open=False then open() explicitly: constructing an open pool from a
         # running loop is deprecated in psycopg_pool 3.2+.
         self.pool = AsyncConnectionPool(self.conninfo, open=False, **self._pool_kwargs)
         await self.pool.open(wait=True)
+        return self.pool
 
     async def close(self):
-        if self.pool is not None:
-            await self.pool.close()
+        """Close the pool and clear the reference. Safe to call more than once."""
+        pool, self.pool = self.pool, None
+        if pool is not None:
+            await pool.close()
+
+    def _require_pool(self):
+        if self.pool is None:
+            raise RuntimeError(
+                "engine is not connected — await engine.connect() first "
+                "(or it has been closed)"
+            )
+        return self.pool
 
     def _hydrator_for(self, model):
         hydrator = self._hydrators.get(model)
@@ -46,16 +63,21 @@ class PsycopgEngine:
 
     async def fetch_all(self, query):
         sql, params = query.to_sql(placeholder="%s")
-        async with self.pool.connection() as conn:
+        async with self._require_pool().connection() as conn:
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
         return self._hydrator_for(query.model)(rows)
 
     async def fetch_json(self, query):
-        """Result set as JSON bytes built by Postgres, no per-row Python objects."""
+        """Result set as JSON bytes built by Postgres, no per-row Python objects.
+
+        The `psycopg` dialect casts the aggregate to text precisely so this stays
+        true: psycopg registers a json/jsonb loader, so without the cast the
+        driver would parse the array into Python lists and dicts — the opposite
+        of what this method is for.
+        """
         sql, params = query.to_json_sql(dialect="psycopg")
-        async with self.pool.connection() as conn:
+        async with self._require_pool().connection() as conn:
             cur = await conn.execute(sql, params)
             row = await cur.fetchone()
-        payload = row[0]
-        return payload.encode() if isinstance(payload, str) else payload
+        return _json_bytes(row[0] if row else None)

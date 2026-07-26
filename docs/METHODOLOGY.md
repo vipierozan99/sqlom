@@ -1,16 +1,27 @@
 # How to benchmark this honestly
 
-Five claims published in this repo turned out to be wrong. Each was caught by
+Seven claims published in this repo turned out to be wrong. Each was caught by
 attacking the benchmark rather than trusting it, and each came from a distinct
 methodological flaw. They are recorded here because the flaws generalize well
 beyond sqlom.
+
+Two of the seven were found by an automated reviewer (CodeRabbit) on the pull
+request rather than by me, which is worth recording as its own lesson: corrections
+1 through 5 were all found by self-attack, and I had by then written a document
+about how to attack benchmarks — and still shipped a harness that timed one side's
+connection setup and not the other's. **Self-review has a blind spot exactly where
+you are most confident.**
+
+Every figure quoted inside a correction is as-of that correction. Absolute
+milliseconds are not comparable between corrections; see "absolute times drift with
+the machine" under practices.
 
 If you take one thing from this file: **a benchmark result that flatters the thing
 you built should be treated as a bug report until you have tried to break it.**
 
 ---
 
-## The five corrections
+## The seven corrections
 
 ### 1. Comparing different payloads (inflated 3.5x → 2.6x)
 
@@ -115,6 +126,60 @@ three tied variants grouped into one row rather than ranked.
 
 ---
 
+### 6. Timing one side's connection setup and not the other's (Core ratio inflated 8%)
+
+`bench_sqlite.py` handed the sqlom runners a `sqlite3.Connection` created once before
+timing, but built SQLAlchemy's connection (`engine.connect()`) and `Session` *inside*
+the timed closure. So SQLAlchemy paid a pool checkout on every measured iteration
+that sqlom never paid, and that cost was published as object-mapping overhead — in a
+benchmark whose stated purpose was to isolate "the object-shaping path".
+
+This is correction 1 again in a different costume: the contenders were not doing the
+same work. The first time it was the *output* that differed (int vs bool); this time
+it was the *setup*. Both passed a byte-equivalence gate, because a gate compares
+results and cannot see what you timed around them.
+
+Sizing it needed a paired instrument. The effect is ~8% and the suite swings ±14%
+(Core) to ±27% (ORM) between runs, so differencing two runs could not resolve it —
+the first attempt to do so produced a number of the wrong sign for the ORM.
+`ab_setup_cost.py` times every variant in one process, alternating between them each
+round. Result: 76 µs charged to Core at 100 rows (13.8% of Core, 12.1% of the ratio),
+466 µs at 1000 rows (9.0%, 8.3% of the ratio); the ORM's own setup is ~0 because a
+`Session` on a warm pool is cheap next to hydrating 1,000 instances.
+
+The fix has an over-correction that is *larger* than the bug, which is why it is
+worth naming: hoisting the `Session` out of the timed loop as well leaves its
+identity map alive between iterations, so every iteration after the first returns
+already-hydrated instances and skips the work being measured — 12.9% in the ORM's
+favour. Fair is a per-request `Session` on an already-checked-out connection.
+
+> **Generalizes to:** an equivalence gate proves the contenders produced the same
+> answer, not that they were asked the same question. Separately audit what is
+> *inside* each timed region — connection acquisition, session/transaction setup,
+> statement compilation, warmup state — and confirm every contender either pays it or
+> none does. And when a correction makes your own numbers worse, check whether the
+> obvious version of the fix has quietly made someone else's better.
+
+### 7. Mixing a bottom-up floor with a top-down total (ceiling inflated 1.42x → 1.51x)
+
+`estimate_ceilings.py` decomposed a request into stages, then computed the
+hypothetical floor for a native object builder by *summing* the stages that would
+survive. It divided that floor into the separately **measured** full pipeline. But
+the isolated stages summed to 99.8 µs while the measured pipeline was 104.0 µs, and
+that unattributed 4.2 µs of composition cost therefore landed entirely on the
+speedup side of the ratio. Published ≤1.51x; the correct answer on the same data is
+≤1.42x.
+
+Fix: subtract the removable stages *from the measured total*, so numerator and
+denominator share a basis, and print the residual instead of absorbing it.
+
+> **Generalizes to:** never divide a bottom-up estimate into a top-down measurement.
+> If you decompose something, print the sum of the parts next to the measured whole;
+> the gap is real and it has to be assigned somewhere deliberately. A decomposition
+> that adds up to exactly 100% is usually a decomposition that hid its residual.
+
+---
+
 ## Practices this benchmark suite adopts
 
 **Enforce output equivalence before timing.** Both `bench_sqlite.py` and
@@ -136,7 +201,7 @@ harness is a hypothesis about the others, not a verdict — go and measure.
 **Group ties instead of ranking them.** The three fastest sqlite variants span
 1.028–1.060 ms while each varies 5–7% across trials, and their order changes between
 runs. Publishing them as a ranked list would invent a result; they are reported as a
-single ~1.03–1.06 ms tier. Report spread alongside every central value so a reader
+single tier. Report spread alongside every central value so a reader
 can see when a gap is not a gap.
 
 **Never categorize profiler frames by substring on a project name.** The first
@@ -222,6 +287,16 @@ benchmark without a floor has no such tripwire.
 **State the bottleneck.** Every ratio here is measured with the *client* saturated
 and Postgres barely loaded. That is why the mapper's CPU cost is visible at all. Say
 which side is the constraint, or the number is uninterpretable.
+
+**Absolute times drift with the machine; only ratios travel.** Re-running the sqlite
+suite in a later session gave ~1.35x higher times for *every* contender, including
+paths the intervening changes did not touch. Rather than guess, the entire
+pre-change tree was checked out (`git stash`) and re-run on the same box: it
+reproduced the *new* numbers, not the old ones, which pins the cause on the machine.
+Shared cloud CPU is not a stable ruler. So: never compare absolute microseconds
+across sessions or across sections of a document; when a whole table moves in one
+direction by a similar factor, suspect the ruler before the code; and to tell the two
+apart, run the old code again *now* rather than reasoning about it.
 
 **Audit the load generator, and never assume its concurrency.** All end-to-end
 figures came from `httpload.py`, written for this repo. A generator that silently

@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import orjson
 
+from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User
 from sqlom import (
     DATACLASS_DUMP_OPTION,
@@ -257,7 +258,7 @@ def main():
     p.add_argument("--repeat", type=int, default=5)
     p.add_argument("--pin", default=None)
     args = p.parse_args()
-
+    validate(p, args)
     if args.pin:
         import os
         os.sched_setaffinity(0, {int(c) for c in args.pin.split(",")})

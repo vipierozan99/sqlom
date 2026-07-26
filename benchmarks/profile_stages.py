@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import orjson
 
+from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User
 from sqlom import (
     SQLITE_CONVERTERS,
@@ -56,7 +57,7 @@ def main():
     parser.add_argument("--limit", type=int, default=1000)
     parser.add_argument("--number", type=int, default=200)
     args = parser.parse_args()
-
+    validate(parser, args)
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = str(Path(tmpdir) / "bench.sqlite3")
         seed_database(db_path, args.rows)

@@ -32,12 +32,12 @@ import re
 import subprocess
 import sys
 import time
-from collections import defaultdict
 from io import StringIO
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from benchmarks.benchargs import validate
 from benchmarks.bench_pg_load import CONTENDERS, DEFAULT_DSN
 
 from benchmarks import profkit
@@ -50,9 +50,18 @@ def pin(client_cores, db_cores):
     Affinity is inherited across fork(), so pinning the postmaster covers
     backends started afterwards; existing ones are pinned explicitly. Must run
     before the pool is created, or pooled connections keep the old mask.
+
+    Every failure here is reported rather than swallowed. A silently unpinned run
+    still produces a full, plausible profile — it just measures the client and
+    Postgres competing for cores, which is the specific confound pinning exists
+    to remove (METHODOLOGY correction 3). Two ways that used to happen quietly:
+    `ps -eo comm` truncates to 15 characters and the postmaster is only named
+    `postgres` on package installs, so detection can find nothing; and `taskset`
+    fails without privileges. Both left `pinned` looking true.
     """
     os.sched_setaffinity(0, {int(c) for c in client_cores.split(",")})
     postmaster = None
+    warnings = []
     out = subprocess.run(["ps", "-eo", "pid,ppid,comm"], capture_output=True, text=True).stdout
     for line in out.splitlines()[1:]:
         parts = line.split()
@@ -66,9 +75,29 @@ def pin(client_cores, db_cores):
         pids = [postmaster] + subprocess.run(["pgrep", "-P", postmaster],
                                              capture_output=True, text=True).stdout.split()
         for pid in pids:
-            subprocess.run(["taskset", "-a", "-cp", db_cores, pid],
-                           capture_output=True, text=True)
-    return sorted(os.sched_getaffinity(0)), postmaster
+            done = subprocess.run(["taskset", "-a", "-cp", db_cores, pid],
+                                  capture_output=True, text=True)
+            if done.returncode != 0:
+                warnings.append(f"taskset failed for pid {pid}: "
+                                f"{done.stderr.strip() or done.stdout.strip()}")
+        check = subprocess.run(["taskset", "-cp", postmaster],
+                               capture_output=True, text=True)
+        if check.returncode == 0:
+            actual = check.stdout.rsplit(":", 1)[-1].strip()
+            print(f"postgres postmaster pid {postmaster} affinity: {actual}")
+        else:
+            warnings.append(f"could not read back postmaster affinity: "
+                            f"{check.stderr.strip()}")
+    else:
+        warnings.append(
+            "could not identify the postgres postmaster — Postgres is NOT pinned, "
+            "so it is competing with the client for cores and this profile does "
+            "not measure what it claims"
+        )
+
+    for warning in warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    return sorted(os.sched_getaffinity(0)), postmaster, warnings
 
 
 async def build(name, dsn, pool_size, limit):
@@ -78,44 +107,12 @@ async def build(name, dsn, pool_size, limit):
     return label, request, teardown
 
 
-def rollup(stats, total_cpu=None, attribute_builtins=True):
-    """Aggregate per-function self-CPU into per-library shares.
-
-    A flat rollup misattributes C builtins: `object.__new__` and `list.append`
-    are almost entirely *caused by* sqlom's generated hydrator, but their frames
-    live in no library at all and land in "stdlib". So by default each builtin's
-    self time is redistributed to its callers in proportion to call counts, one
-    level up. Pass attribute_builtins=False for the raw flat view.
-    """
-    entries = stats.stats
-    buckets = defaultdict(float)
-
-    for key, (_cc, _nc, tottime, _ct, callers) in entries.items():
-        filename, _lineno, funcname = key
-        own = categorize(filename, funcname)
-        # Only redistribute *generic* builtins. A C function that belongs to a
-        # real library (orjson.dumps, asyncpg internals) is doing that library's
-        # work and must keep its own time.
-        is_builtin = filename == "~" and own == "stdlib / other"
-        if is_builtin and attribute_builtins and callers:
-            total_calls = sum(c[1] for c in callers.values()) or 1
-            for ckey, cval in callers.items():
-                cfile, _cl, cfunc = ckey
-                buckets[categorize(cfile, cfunc)] += tottime * cval[1] / total_calls
-        else:
-            buckets[own] += tottime
-
-    return sorted(buckets.items(), key=lambda kv: -kv[1])
-
-
-def top_functions(stats, n):
-    rows = []
-    for (filename, lineno, funcname), (_cc, nc, tottime, cumtime, _cal) in stats.stats.items():
-        short = Path(filename).name if filename not in ("~", "<string>") else filename
-        where = f"{short}:{lineno}({funcname})"
-        rows.append((nc, tottime, cumtime, where))
-    rows.sort(key=lambda r: -r[1])
-    return rows[:n]
+# `rollup`, `top_functions` and `categorize` are imported from profkit above.
+# Earlier revisions of this file carried private copies of the first two, which
+# silently shadowed the shared ones — the exact drift profkit was extracted to
+# prevent. `report()` below still does its own printing rather than calling
+# profkit.print_rollup, because it adds explanatory lines this profile needs and
+# the checked-in artifact quotes that wording; only the *logic* is shared.
 
 
 async def profile_one(name, args):
@@ -281,11 +278,21 @@ async def main():
     p.add_argument("--pin", default=None, metavar="CLIENT:DB",
                    help="pin client and Postgres to core sets, e.g. 0:2,3")
     args = p.parse_args()
-
+    validate(p, args)
     if args.pin:
         client_cores, db_cores = args.pin.split(":")
-        aff, pm = pin(client_cores, db_cores)
-        print(f"client pinned to cores {aff}; postgres (pid {pm}) -> cores {db_cores}")
+        aff, pm, warnings = pin(client_cores, db_cores)
+        if pm is None:
+            print(f"client pinned to cores {aff}; POSTGRES NOT PINNED", file=sys.stderr)
+        else:
+            print(f"client pinned to cores {aff}; postgres (pid {pm}) -> cores {db_cores}")
+        if warnings:
+            # Refusing to run is the point: a pinned profile that silently ran
+            # unpinned would be published as though the cores were disjoint.
+            print("refusing to profile with pinning in an unknown state; "
+                  "fix the above or drop --pin to profile unpinned deliberately",
+                  file=sys.stderr)
+            return 1
     else:
         print(f"client cores: {sorted(os.sched_getaffinity(0))} (not pinned by this script)")
     print(f"rows/request: {args.limit}, pool: {args.pool_size}")

@@ -42,6 +42,7 @@ import sqlalchemy
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from benchmarks.benchargs import validate
 from benchmarks.models import TABLE_NAME, User, UserORM, users_table
 from sqlom import (
     ASYNCPG_CONVERTERS,
@@ -286,7 +287,7 @@ async def main():
     )
     parser.add_argument("--repeat", type=int, default=1, help="repeat each cell N times")
     args = parser.parse_args()
-
+    validate(parser, args)
     if args.seed_only:
         await seed(args.dsn, args.rows)
         return 0

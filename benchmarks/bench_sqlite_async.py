@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import orjson
 
+from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User
 from sqlom import SQLITE_CONVERTERS, Query, compile_batch_hydrator, compile_json_default
 
@@ -186,7 +187,7 @@ def main():
     p.add_argument("--pin", default=None)
     p.add_argument("--skip-equivalence", action="store_true")
     args = p.parse_args()
-
+    validate(p, args)
     if args.pin:
         os.sched_setaffinity(0, {int(c) for c in args.pin.split(",")})
     levels = [int(c) for c in args.concurrency.split(",")]

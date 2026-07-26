@@ -37,6 +37,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import psycopg
 
+from benchmarks.benchargs import validate
+
 DSN = "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
 SQL = "SELECT id,name,email,is_active FROM users WHERE is_active=%s AND id>%s LIMIT %s"
 MULTI = "SELECT pg_advisory_unlock_all(); CLOSE ALL; UNLISTEN *; RESET ALL;"
@@ -207,6 +209,7 @@ async def main():
     p.add_argument("--concurrency", type=int, default=8)
     p.add_argument("--duration", type=float, default=3.0)
     args = p.parse_args()
+    validate(p, args)
 
     print(f"cores: {sorted(os.sched_getaffinity(0))}   psycopg {psycopg.__version__}\n")
     await per_request_costs(args)

@@ -80,6 +80,11 @@ echo
 printf '%-6s %-10s %10s %10s %12s\n' "conns" "sockets" "rps" "mean ms" "in flight"
 printf '%.0s-' {1..52}; echo
 
+# A verification script that prints a mismatch and still exits 0 is worse than
+# no verification: the run gets recorded as evidence and nothing surfaces the
+# failure. Every check below contributes to this status.
+STATUS=0
+
 for n in ${LEVELS//,/ }; do
     out="$(mktemp)"
     taskset -c "$CLIENT_CORE" python3 "$HERE/httpload.py" --port "$PORT" \
@@ -89,16 +94,35 @@ for n in ${LEVELS//,/ }; do
     # Sample mid-run, after warmup has finished and all connections are open.
     sleep "$(python3 -c "print($DURATION / 2 + 1)")"
     sockets="$(count_established)"
-    wait "$hl"
+    if ! wait "$hl"; then
+        printf '%-6s %s\n' "$n" "GENERATOR FAILED: $(tail -1 "$out")"
+        rm -f "$out"; STATUS=1; continue
+    fi
 
     read -r _ _ rps mean _ _ _ _ < "$out"
     rm -f "$out"
     inflight=$(python3 -c "print(f'{$rps * $mean / 1000:.2f}')")
-    ok=$([[ "$sockets" == "$n" ]] && echo "" || echo "  <-- expected $n")
-    printf '%-6s %-10s %10s %10s %12s%s\n' "$n" "$sockets" "$rps" "$mean" "$inflight" "$ok"
+    notes=""
+    if [[ "$sockets" != "$n" ]]; then
+        notes+="  <-- sockets != $n"; STATUS=1
+    fi
+    # Little's Law within 10%: tighter would flag ordinary jitter, looser would
+    # miss a generator running at half the requested concurrency.
+    if ! python3 -c "import sys; sys.exit(0 if abs($inflight - $n) / $n <= 0.10 else 1)"; then
+        notes+="  <-- in flight != $n"; STATUS=1
+    fi
+    printf '%-6s %-10s %10s %10s %12s%s\n' "$n" "$sockets" "$rps" "$mean" "$inflight" "$notes"
 done
 
 echo
 echo "Reading this: 'sockets' must equal 'conns' (observation), 'in flight' must"
 echo "equal 'conns' (Little's Law), and rps must rise with conns up to the knee."
 echo "All three failing the same way would mean the generator is serialising."
+if [[ "$STATUS" -ne 0 ]]; then
+    echo
+    echo "VERIFICATION FAILED — do not treat this run as evidence of concurrency."
+else
+    echo
+    echo "All checks passed."
+fi
+exit "$STATUS"

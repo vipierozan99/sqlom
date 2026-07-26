@@ -6,10 +6,9 @@ Committed as evidence so the tables there can be traced to a real run.
 | file | what it is |
 |---|---|
 | `sqlite_latest.json` | sqlite micro-benchmark, 200k rows, 1000 rows/response, 300 iterations x **5 trials** per approach. Includes the env block and per-trial mean/median/p95; quote medians. |
+| `sqlite_setup_cost_ab.txt` | **Fairness correction.** Paired A/B, one process, interleaved: SQLAlchemy's connection/`Session` setup timed inside the loop vs hoisted, at 100 and 1000 rows. Sizes the ~8% the Core ratio was overstated by, and the 12.9% an over-hoisted `Session` would have flattered the ORM by. |
+| `sqlite_box_drift.txt` | Proof that the sqlite absolutes moved ~1.35x because the *machine* changed, not the code: the whole pre-change tree re-run on the current box reproduces the current numbers, not the published ones. |
 | `sqlite_order_check.txt` | Ordering-bias check for the sqlite suite: three forward runs, one `--reverse` run, and per-approach isolated runs. Shows the sqlite suite is *not* order-biased. |
-| `pg_load_100rows.json` | Postgres load sweep, 100 rows/request, c=1,8,32,64. **Combined suite — ordering-biased**, kept for shape not ratios. |
-| `pg_load_1000rows.json` | Same at 1000 rows/request, c=1,8,32. Also combined-suite. |
-| `pg_load_100rows_pinned.json` | Combined suite with client on cores 0,1 and Postgres on 2,3. Superseded — the 2-core client was a mistake (see METHODOLOGY correction 3). |
 | `isolated_pinned_raw.txt` | sqlom and the two hand-written asyncpg baselines, **isolated** (one process each), 3 trials, client 2 cores. |
 | `isolated_pinned_sqlalchemy.txt` | SQLAlchemy async Core and ORM, isolated, 3 trials, client 2 cores. |
 | `isolated_unpinned.txt` | sqlom, async ORM and the codegen-dict floor, isolated, 3 trials, 4 cores shared. |
@@ -30,6 +29,14 @@ Committed as evidence so the tables there can be traced to a real run.
 | `optimize_sqlite.txt` | Attempts to optimize the sqlite path further (cursor reuse, tuple-index bool, zero-callback dicts, `row_factory`, no-slots, no-objects) against a fetch-only floor. Mostly a negative result. |
 | `optimize_stack.txt` | Stacked optimizations (uvloop / pool `reset=` no-op / held connection / no TLS), client core 0, Postgres cores 2,3, median of 3, one config per process. |
 | `multiprocess_scaling.txt` | 1 vs 2 sqlom worker processes, one core each, Postgres on cores 2,3. |
+
+Three combined-suite sweeps (`pg_load_100rows.json`, `pg_load_1000rows.json`,
+`pg_load_100rows_pinned.json`) were **removed** rather than kept. They predated the
+runner's affinity/CPU metadata and per-result `trial` field, so the checked-in
+`bench_pg_load.py` could not reproduce them — and they were already marked
+ordering-biased and non-quotable, so no table in BENCHMARKS.md drew on them. An
+artifact that cannot be regenerated from the code in the repo is a liability, not
+evidence. The isolated and `core_sweep_*` files above back every published figure.
 
 Anything labelled *combined suite* ran all contenders in a single process and is
 biased by contender order; see

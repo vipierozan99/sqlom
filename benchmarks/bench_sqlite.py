@@ -37,6 +37,7 @@ import sqlalchemy
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User, UserDC, UserORM, users_table
 from sqlom import (
     DATACLASS_DUMP_OPTION,
@@ -150,7 +151,16 @@ def run_sqlom_db_json(conn, limit):
     return _iteration
 
 
-def run_sqlalchemy_core(engine, limit):
+def run_sqlalchemy_core(sa_conn, limit):
+    """SQLAlchemy Core against an already-checked-out connection.
+
+    The connection is hoisted out of the timed closure on purpose. The sqlom
+    paths above receive a `sqlite3.Connection` created once, so timing
+    `engine.connect()` inside the loop would charge Core for a pool checkout
+    that sqlom never pays here and call the difference object mapping. Measured,
+    that was 12% of Core's per-request time at 100 rows — small, but it is
+    exactly the kind of asymmetry this suite exists to avoid.
+    """
     stmt = (
         select(users_table)
         .where(users_table.c.is_active == 1)
@@ -159,17 +169,30 @@ def run_sqlalchemy_core(engine, limit):
     )
 
     def _iteration():
-        with engine.connect() as conn:
-            result = conn.execute(stmt)
-            # orjson requires exact `str` keys; SQLAlchemy's RowMapping keys
-            # are `quoted_name` (a str subclass), so cast explicitly.
-            payload = [{str(k): v for k, v in m.items()} for m in result.mappings()]
+        result = sa_conn.execute(stmt)
+        # orjson requires exact `str` keys; SQLAlchemy's RowMapping keys
+        # are `quoted_name` (a str subclass), so cast explicitly.
+        payload = [{str(k): v for k, v in m.items()} for m in result.mappings()]
         return orjson.dumps(payload)
 
     return _iteration
 
 
-def run_sqlalchemy_orm(engine, limit):
+def run_sqlalchemy_orm(sa_conn, limit):
+    """SQLAlchemy ORM: fresh `Session` per iteration, hoisted connection.
+
+    Two asymmetries pull in opposite directions here, so neither extreme is fair:
+
+    * Creating the `Session` from the *engine* inside the loop also charges a
+      pool checkout, which sqlom does not pay (~5% of the ORM's time).
+    * Hoisting the `Session` itself out of the loop is worse in the other
+      direction: its identity map would survive between iterations, so every
+      iteration after the first returns already-hydrated instances and skips the
+      work being measured. That flatters the ORM by ~12%.
+
+    A per-request session bound to a live connection is both realistic and the
+    only variant that measures hydration on every iteration.
+    """
     stmt = (
         select(UserORM)
         .where(UserORM.is_active == 1)
@@ -179,7 +202,7 @@ def run_sqlalchemy_orm(engine, limit):
     column_names = [str(c.name) for c in UserORM.__table__.columns]
 
     def _iteration():
-        with Session(engine) as session:
+        with Session(bind=sa_conn) as session:
             users = session.execute(stmt).scalars().all()
             payload = [{name: getattr(u, name) for name in column_names} for u in users]
         return orjson.dumps(payload)
@@ -254,7 +277,7 @@ def main():
     parser.add_argument("--repeat", type=int, default=1, help="repeat each approach N times")
     parser.add_argument("--reverse", action="store_true", help="reverse approach order")
     args = parser.parse_args()
-
+    validate(parser, args)
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = str(Path(tmpdir) / "bench.sqlite3")
         seed_database(db_path, args.rows)
@@ -262,6 +285,10 @@ def main():
         raw_conn = sqlite3.connect(db_path)
         core_engine = create_engine(f"sqlite:///{db_path}")
         orm_engine = create_engine(f"sqlite:///{db_path}")
+        # Checked out once, like raw_conn above, so no contender is timed on
+        # connection acquisition. See run_sqlalchemy_core's docstring.
+        core_conn = core_engine.connect()
+        orm_conn = orm_engine.connect()
 
         cases = [
             ("sqlom reflective (hydrate)", run_sqlom_reflective(raw_conn, args.limit)),
@@ -270,8 +297,8 @@ def main():
             ("dataclass slots (orjson native)", run_dataclass_native(raw_conn, args.limit)),
             ("dataclass slots (passthrough)", run_dataclass_passthrough(raw_conn, args.limit)),
             ("sqlom DB-side JSON", run_sqlom_db_json(raw_conn, args.limit)),
-            ("SQLAlchemy Core", run_sqlalchemy_core(core_engine, args.limit)),
-            ("SQLAlchemy ORM", run_sqlalchemy_orm(orm_engine, args.limit)),
+            ("SQLAlchemy Core", run_sqlalchemy_core(core_conn, args.limit)),
+            ("SQLAlchemy ORM", run_sqlalchemy_orm(orm_conn, args.limit)),
         ]
 
         if args.only:
@@ -283,17 +310,25 @@ def main():
             cases = list(reversed(cases))
 
         # Fairness gate: identical bytes, or the comparison is meaningless.
+        #
+        # Every query here is `LIMIT` without `ORDER BY`, which SQL does not
+        # promise to answer with the same rows twice — the engine may return any
+        # matching subset. So the gate checks two things, not one: that each
+        # approach is *self*-consistent across repeated calls, and that all of
+        # them agree. Checking only the second would pass happily if every
+        # contender were independently unstable.
         if not args.skip_equivalence:
             reference_name, reference = cases[0][0], cases[0][1]()
-            for name, fn in cases[1:]:
-                got = fn()
-                if got != reference:
-                    print(f"FAIL: {name!r} output differs from {reference_name!r}", file=sys.stderr)
-                    print(f"  {reference_name}: {reference[:160]!r}", file=sys.stderr)
-                    print(f"  {name}: {got[:160]!r}", file=sys.stderr)
-                    return 1
+            for name, fn in cases:
+                for _ in range(3):
+                    if fn() != reference:
+                        print(f"FAIL: {name!r} is not deterministic across calls, or "
+                              f"differs from {reference_name!r}", file=sys.stderr)
+                        print(f"  {reference_name}: {reference[:160]!r}", file=sys.stderr)
+                        print(f"  {name}: {fn()[:160]!r}", file=sys.stderr)
+                        return 1
             print(f"Output equivalence: all {len(cases)} approaches emit identical JSON "
-                  f"({len(reference)} bytes)\n")
+                  f"({len(reference)} bytes), stable over 3 repeats each\n")
 
         results = []
         for name, fn in cases:
@@ -303,6 +338,10 @@ def main():
                 row["trial"] = trial
                 results.append(row)
 
+        core_conn.close()
+        orm_conn.close()
+        core_engine.dispose()
+        orm_engine.dispose()
         raw_conn.close()
 
     env = {

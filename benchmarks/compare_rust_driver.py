@@ -35,6 +35,7 @@ import asyncpg
 import orjson
 from psqlpy import ConnectionPool
 
+from benchmarks.benchargs import validate
 from benchmarks.models import TABLE_NAME, User, UserDC
 from sqlom import (
     ASYNCPG_CONVERTERS,
@@ -185,7 +186,7 @@ async def main():
     p.add_argument("--repeat", type=int, default=3)
     p.add_argument("--skip-equivalence", action="store_true")
     args = p.parse_args()
-
+    validate(p, args)
     print(f"cores: {sorted(os.sched_getaffinity(0))}  "
           f"{args.limit} rows/request, pool {args.pool_size}, c={args.concurrency}, "
           f"median of {args.repeat}\n")

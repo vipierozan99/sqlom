@@ -1,4 +1,5 @@
-Output equivalence: all variants emit identical JSON (7701 bytes)
+Output equivalence: all JSON-producing variants emit identical JSON (7701 bytes)
+(the "FLOOR: fetch only, no JSON" row below produces no JSON and is excluded)
 
 100 rows/request, median of 5 x 3000 requests, single-threaded
 

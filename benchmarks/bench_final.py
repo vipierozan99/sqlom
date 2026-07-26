@@ -44,6 +44,7 @@ import orjson
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from benchmarks.benchargs import validate
 from benchmarks.models import UserORM, users_table
 from benchmarks.models import User
 from sqlom import DatabaseEngine, Query, compile_json_default
@@ -201,7 +202,7 @@ def main():
     p.add_argument("--no-uvloop", dest="uvloop", action="store_false")
     p.add_argument("--skip-equivalence", action="store_true")
     args = p.parse_args()
-
+    validate(p, args)
     if args.uvloop:
         import uvloop
         return uvloop.run(run_all(args))

@@ -1,0 +1,37 @@
+paired A/B, one process, 7 interleaved rounds x 120 iterations, median of rounds
+variants alternate within each round, so drift hits all of them equally
+
+--- 100 rows/request (7701 bytes) ---
+variant                                        ms   spread
+----------------------------------------------------------
+sqlom compiled (batch)                      0.135    57.9%
+Core: connect() in loop (old)               0.625    10.1%
+Core: hoisted (new)                         0.574     2.5%
+ORM: Session(engine) in loop (old)          1.093    34.5%
+ORM: fresh Session, hoisted conn (new)      1.029    31.3%
+ORM: Session hoisted too (WRONG)            0.972    27.7%
+
+  setup cost charged to Core only:     51 us (8.9% of Core)
+  setup cost charged to ORM only :     64 us (6.3% of the ORM)
+  identity-map reuse would flatter the ORM by 5.9%
+
+  sqlom vs Core    4.63x before  ->   4.25x after   (-8.2%)
+  sqlom vs ORM     8.09x before  ->   7.62x after   (-5.9%)
+
+--- 1000 rows/request (77535 bytes) ---
+variant                                        ms   spread
+----------------------------------------------------------
+sqlom compiled (batch)                      1.396    22.7%
+Core: connect() in loop (old)               5.675    18.8%
+Core: hoisted (new)                         5.211    10.2%
+ORM: Session(engine) in loop (old)          8.978     5.4%
+ORM: fresh Session, hoisted conn (new)      9.188     3.7%
+ORM: Session hoisted too (WRONG)            9.123     8.4%
+
+  setup cost charged to Core only:    464 us (8.9% of Core)
+  setup cost charged to ORM only :   -210 us (-2.3% of the ORM)
+  identity-map reuse would flatter the ORM by 0.7%
+
+  sqlom vs Core    4.06x before  ->   3.73x after   (-8.2%)
+  sqlom vs ORM     6.43x before  ->   6.58x after   (+2.3%)
+

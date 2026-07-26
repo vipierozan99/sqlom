@@ -38,6 +38,7 @@ import orjson
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from benchmarks.benchargs import validate
 from benchmarks import profkit
 from benchmarks.models import DDL, TABLE_NAME, User, UserORM, users_table
 from sqlom import (
@@ -218,7 +219,7 @@ def main():
     p.add_argument("--sampler", action="store_true")
     p.add_argument("--pin", default=None, help="pin this process to these cores, e.g. 0")
     args = p.parse_args()
-
+    validate(p, args)
     if args.pin:
         os.sched_setaffinity(0, {int(c) for c in args.pin.split(",")})
     print(f"cores: {sorted(os.sched_getaffinity(0))}   rows/request: {args.limit}   "

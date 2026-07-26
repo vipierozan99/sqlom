@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import orjson
 
+from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User
 from sqlom import SQLITE_CONVERTERS, compile_batch_hydrator, compile_json_default
 
@@ -75,6 +76,7 @@ def main():
     p.add_argument("--number", type=int, default=2000)
     p.add_argument("--pin", default=None)
     args = p.parse_args()
+    validate(p, args)
     if args.pin:
         import os
         os.sched_setaffinity(0, {int(c) for c in args.pin.split(",")})
@@ -154,9 +156,28 @@ def main():
         print(f"  NOT removable: creating {4 * L} Python values "
               f"({value_creation * 1e6:.2f} us), the statement ({per_stmt * 1e6:.2f} us),")
         print(f"             and the JSON step ({t_json_obj * 1e6:.2f} us)")
-        floor1 = value_creation + per_stmt + t_json_obj
+
+        # The stages are timed in isolation and do not add up to the pipeline
+        # measured end to end -- composing them costs something the parts don't
+        # show. An earlier version of this script built the floor by *summing*
+        # the surviving stages and then divided it into the *measured* total,
+        # which quietly credited the whole residual to the speedup and published
+        # 1.51x instead of ~1.42x. Subtract from the measured total instead, so
+        # the numerator and denominator sit on the same basis, and print the
+        # residual rather than burying it.
+        stage_sum = t_fetch + t_hyd + t_json_obj
+        residual = t_full - stage_sum
+        removable = tuple_overhead + t_hyd
+        floor1 = t_full - removable
+        print(f"\n  stage sum {stage_sum * 1e6:.2f} us vs measured pipeline "
+              f"{t_full * 1e6:.2f} us -> {residual * 1e6:+.2f} us unattributed")
+        print(f"  ({abs(residual) / t_full * 100:.1f}% of the request is composition cost the "
+              f"isolated stages\n   do not capture; it is left in the floor rather than "
+              f"assumed removable)")
         print(f"\n  optimistic floor: {floor1 * 1e6:.2f} us vs {t_full * 1e6:.2f} us now"
               f"  ->  {t_full / floor1:.2f}x")
+        print(f"  = measured {t_full * 1e6:.2f} - tuple {tuple_overhead * 1e6:.2f} "
+              f"- hydration {t_hyd * 1e6:.2f}")
         print("  (optimistic because a native builder still allocates the object and")
         print("   writes its slots; it does that in C rather than bytecode, not for free)")
 

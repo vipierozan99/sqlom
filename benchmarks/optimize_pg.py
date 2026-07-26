@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import asyncpg
 import orjson
 
+from benchmarks.benchargs import validate
 from benchmarks.bench_pg_load import DEFAULT_DSN
 from benchmarks.models import TABLE_NAME, User
 from sqlom import ASYNCPG_CONVERTERS, Query, compile_batch_hydrator, compile_json_default
@@ -154,7 +155,7 @@ def main():
     p.add_argument("--uvloop", action="store_true")
     p.add_argument("--label", default=None)
     args = p.parse_args()
-
+    validate(p, args)
     if args.uvloop:
         import uvloop
 
@@ -168,8 +169,12 @@ def main():
     rps = statistics.median(t["rps"] for t in trials)
     cpu = statistics.median(t["cpu_ms"] for t in trials)
     util = statistics.median(t["utilization"] for t in trials)
+    # Name the loop implementation without instantiating one: a bare
+    # new_event_loop() here allocated a loop and its self-pipe file descriptors
+    # purely to read a class name, and never closed either.
+    loop_name = type(asyncio.get_event_loop_policy()).__module__.split(".")[0]
     print(f"RESULT\t{label}\t{rps:.0f}\t{cpu:.4f}\t{util:.2f}\t"
-          f"cores={sorted(os.sched_getaffinity(0))}\tloop={type(asyncio.new_event_loop()).__name__}")
+          f"cores={sorted(os.sched_getaffinity(0))}\tloop={loop_name}")
     return 0
 
 

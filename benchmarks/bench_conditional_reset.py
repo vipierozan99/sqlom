@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import asyncpg
 import orjson
 
+from benchmarks.benchargs import validate
 from benchmarks.models import User
 from sqlom import (
     ASYNCPG_CONVERTERS,
@@ -137,7 +138,7 @@ async def main():
     p.add_argument("--warmup", type=int, default=30)
     p.add_argument("--repeat", type=int, default=3)
     args = p.parse_args()
-
+    validate(p, args)
     variants = [
         ("asyncpg default (always RESET)",
          lambda: make_raw(args.limit, args.pool_size, None)),
@@ -152,6 +153,14 @@ async def main():
         ("conditional=False (engine, always RESET)",
          lambda: make_engine(args.limit, args.pool_size, False)),
     ]
+    # `DatabaseEngine.reset_count` only counts resets issued by the *conditional*
+    # hook. When conditional_reset=False the hook is never installed, so asyncpg
+    # runs its own built-in reset and the counter stays at 0 — which reads as
+    # "this variant skips the reset", the exact opposite of the truth. Report n/a
+    # for any variant the counter does not instrument.
+    instrumented = {"conditional, pure sqlom traffic",
+                    "conditional, 1 in 10 uses acquire()",
+                    "conditional, 1 in 2 uses acquire()"}
 
     print(f"cores: {sorted(os.sched_getaffinity(0))}  {args.limit} rows/request, "
           f"pool {args.pool_size}, async single-thread c={args.concurrency}, "
@@ -169,7 +178,7 @@ async def main():
                 rps, cpu, util = await load(request, args.concurrency,
                                             args.duration, args.warmup)
                 trials.append((rps, cpu))
-                if db:
+                if db is not None and name in instrumented:
                     # requests completed this trial ~= rps * duration
                     resets.append((db.reset_count - before) / max(1, rps * args.duration))
             finally:
@@ -178,6 +187,7 @@ async def main():
                     await r
         rps = statistics.median(t[0] for t in trials)
         cpu = statistics.median(t[1] for t in trials)
+        # n/a means "not instrumented", never "zero resets" — see above.
         rst = f"{statistics.median(resets):.2f}" if resets else "n/a"
         results[name] = rps
         print(f"{name:<42}{rps:>8.0f}{cpu:>12.4f}{rst:>12}")

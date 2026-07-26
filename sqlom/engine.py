@@ -4,6 +4,7 @@ import weakref
 from contextlib import asynccontextmanager
 
 from .compile import ASYNCPG_CONVERTERS, compile_batch_hydrator
+from .query import json_bytes as _json_bytes
 
 
 class DatabaseEngine:
@@ -62,16 +63,39 @@ class DatabaseEngine:
         self.reset_count = 0
 
     async def connect(self):
+        """Open the pool. Idempotent: a second call reuses the existing pool.
+
+        Without that guard a stray second `connect()` would silently replace the
+        pool reference and leak the first one — its connections stay open against
+        the server with nothing left holding them.
+        """
+        if self.pool is not None:
+            return self.pool
+
         import asyncpg
 
         kwargs = dict(self._pool_kwargs)
         if self.conditional_reset:
             kwargs["reset"] = self._reset_if_dirty
         self.pool = await asyncpg.create_pool(self.dsn, **kwargs)
+        return self.pool
 
     async def close(self):
-        if self.pool is not None:
-            await self.pool.close()
+        """Close the pool and drop the reference, so a later `connect()` opens a
+        fresh one by design rather than by overwriting a closed object. Safe to
+        call more than once."""
+        pool, self.pool = self.pool, None
+        if pool is not None:
+            await pool.close()
+        self._dirty.clear()
+
+    def _require_pool(self):
+        if self.pool is None:
+            raise RuntimeError(
+                "engine is not connected — await engine.connect() first "
+                "(or it has been closed)"
+            )
+        return self.pool
 
     @staticmethod
     def _real(conn):
@@ -100,7 +124,7 @@ class DatabaseEngine:
         """Raw connection access. Marks the connection dirty, so it gets the
         full session reset on release — use this for anything that is not a
         `Query`, including transactions, `SET`, `LISTEN` and DDL."""
-        async with self.pool.acquire() as conn:
+        async with self._require_pool().acquire() as conn:
             self._mark_dirty(conn)
             yield conn
 
@@ -126,7 +150,7 @@ class DatabaseEngine:
 
     async def fetch_all(self, query):
         sql, params = query.to_sql(placeholder="$")
-        async with self.pool.acquire() as conn:
+        async with self._require_pool().acquire() as conn:
             rows = await conn.fetch(sql, *params)
         return self._hydrator_for(query.model)(rows)
 
@@ -138,6 +162,6 @@ class DatabaseEngine:
         response body.
         """
         sql, params = query.to_json_sql(dialect="postgres")
-        async with self.pool.acquire() as conn:
+        async with self._require_pool().acquire() as conn:
             payload = await conn.fetchval(sql, *params)
-        return payload.encode() if isinstance(payload, str) else payload
+        return _json_bytes(payload)

@@ -42,6 +42,7 @@ import orjson
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from benchmarks.benchargs import validate
 from benchmarks.models import User, UserORM, users_table
 from sqlom import PsycopgEngine, Query, compile_json_default
 
@@ -175,7 +176,7 @@ def main():
     p.add_argument("--skip-equivalence", action="store_true")
     p.add_argument("--loops", default="asyncio,uvloop")
     args = p.parse_args()
-
+    validate(p, args)
     print(f"cores: {sorted(os.sched_getaffinity(0))}   {args.limit} rows/request   "
           f"pool {args.pool_size}   async single-thread c={args.concurrency}   "
           f"median of {args.repeat}")
