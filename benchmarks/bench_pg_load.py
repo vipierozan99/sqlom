@@ -270,6 +270,14 @@ async def main():
     parser.add_argument("--seed-only", action="store_true")
     parser.add_argument("--out", default=None)
     parser.add_argument("--skip-equivalence", action="store_true")
+    parser.add_argument(
+        "--only",
+        default=None,
+        help="run only contenders whose name contains this substring. Use to "
+             "isolate a contender from ordering effects (earlier contenders can "
+             "warm caches / shift CPU frequency for later ones).",
+    )
+    parser.add_argument("--repeat", type=int, default=1, help="repeat each cell N times")
     args = parser.parse_args()
 
     if args.seed_only:
@@ -277,11 +285,18 @@ async def main():
         return 0
 
     levels = [int(c) for c in args.concurrency.split(",")]
+    contenders = {
+        k: v for k, v in CONTENDERS.items()
+        if args.only is None or args.only.lower() in k.lower()
+    }
+    if not contenders:
+        print(f"no contender matches {args.only!r}", file=sys.stderr)
+        return 1
 
     # Fairness gate: identical bytes, or the comparison means nothing.
     if not args.skip_equivalence:
         outputs = {}
-        for name, factory in CONTENDERS.items():
+        for name, factory in contenders.items():
             request, teardown = await factory(args.dsn, args.pool_size, args.limit)
             outputs[name] = await request()
             await teardown()
@@ -318,64 +333,54 @@ async def main():
     print()
 
     results = []
-    for name, factory in CONTENDERS.items():
+    for name, factory in contenders.items():
         for level in levels:
-            request, teardown = await factory(args.dsn, args.pool_size, args.limit)
-            try:
-                stats = await run_load(request, level, args.duration, args.warmup)
-            finally:
-                await teardown()
-            stats["approach"] = name
-            results.append(stats)
-            print(
-                f"  {name:<32} c={level:<4} "
-                f"{stats['throughput_rps']:>9.0f} rps  "
-                f"p50 {stats['p50_ms']:>7.2f} ms  p99 {stats['p99_ms']:>7.2f} ms  "
-                f"cpu {stats['cpu_ms_per_request']:>6.3f} ms/req"
-            )
+            for trial in range(args.repeat):
+                request, teardown = await factory(args.dsn, args.pool_size, args.limit)
+                try:
+                    stats = await run_load(request, level, args.duration, args.warmup)
+                finally:
+                    await teardown()
+                stats["approach"] = name
+                stats["trial"] = trial
+                results.append(stats)
+                tag = f" t{trial}" if args.repeat > 1 else ""
+                print(
+                    f"  {name:<32} c={level:<4}{tag} "
+                    f"{stats['throughput_rps']:>9.0f} rps  "
+                    f"p50 {stats['p50_ms']:>7.2f} ms  p99 {stats['p99_ms']:>7.2f} ms  "
+                    f"cpu {stats['cpu_ms_per_request']:>6.3f} ms/req"
+                )
         print()
 
+    def agg(name, c, key):
+        vals = [r[key] for r in results if r["approach"] == name and r["concurrency"] == c]
+        return statistics.median(vals) if vals else float("nan")
+
     print("=" * 78)
-    print(f"{'throughput (req/s)':<32}" + "".join(f"{f'c={c}':>11}" for c in levels))
+    label = "throughput (req/s)" + (" [median]" if args.repeat > 1 else "")
+    print(f"{label:<32}" + "".join(f"{f'c={c}':>11}" for c in levels))
     print("-" * 78)
-    for name in CONTENDERS:
-        row = [r for r in results if r["approach"] == name]
-        cells = "".join(
-            f"{next(x['throughput_rps'] for x in row if x['concurrency'] == c):>11.0f}"
-            for c in levels
-        )
-        print(f"{name:<32}{cells}")
+    for name in contenders:
+        print(f"{name:<32}" + "".join(f"{agg(name, c, 'throughput_rps'):>11.0f}" for c in levels))
 
     baseline = "SQLAlchemy async ORM"
-    print()
-    print(f"{'speedup vs ' + baseline:<32}" + "".join(f"{f'c={c}':>11}" for c in levels))
-    print("-" * 78)
-    for name in CONTENDERS:
-        cells = ""
-        for c in levels:
-            mine = next(
-                x["throughput_rps"]
-                for x in results
-                if x["approach"] == name and x["concurrency"] == c
+    if baseline in contenders:
+        print()
+        print(f"{'speedup vs ' + baseline:<32}" + "".join(f"{f'c={c}':>11}" for c in levels))
+        print("-" * 78)
+        for name in contenders:
+            cells = "".join(
+                f"{agg(name, c, 'throughput_rps') / agg(baseline, c, 'throughput_rps'):>10.2f}x"
+                for c in levels
             )
-            base = next(
-                x["throughput_rps"]
-                for x in results
-                if x["approach"] == baseline and x["concurrency"] == c
-            )
-            cells += f"{mine / base:>10.2f}x"
-        print(f"{name:<32}{cells}")
+            print(f"{name:<32}{cells}")
 
     print()
     print(f"{'client CPU ms per request':<32}" + "".join(f"{f'c={c}':>11}" for c in levels))
     print("-" * 78)
-    for name in CONTENDERS:
-        row = [r for r in results if r["approach"] == name]
-        cells = "".join(
-            f"{next(x['cpu_ms_per_request'] for x in row if x['concurrency'] == c):>11.3f}"
-            for c in levels
-        )
-        print(f"{name:<32}{cells}")
+    for name in contenders:
+        print(f"{name:<32}" + "".join(f"{agg(name, c, 'cpu_ms_per_request'):>11.3f}" for c in levels))
 
     if args.out:
         Path(args.out).write_text(json.dumps({"env": env, "results": results}, indent=2))

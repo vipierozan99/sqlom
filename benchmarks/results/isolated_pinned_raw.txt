@@ -1,0 +1,28 @@
+########## isolated: sqlom ##########
+  sqlom (compiled)                 c=1    t0       857 rps  p50    1.14 ms  p99    2.98 ms  cpu  0.572 ms/req
+  sqlom (compiled)                 c=1    t1       848 rps  p50    1.17 ms  p99    2.63 ms  cpu  0.604 ms/req
+  sqlom (compiled)                 c=1    t2       821 rps  p50    1.20 ms  p99    2.60 ms  cpu  0.616 ms/req
+  sqlom (compiled)                 c=8    t0      3168 rps  p50    2.01 ms  p99   10.33 ms  cpu  0.308 ms/req
+  sqlom (compiled)                 c=8    t1      3119 rps  p50    2.02 ms  p99    8.80 ms  cpu  0.317 ms/req
+  sqlom (compiled)                 c=8    t2      3407 rps  p50    1.97 ms  p99    7.40 ms  cpu  0.290 ms/req
+sqlom (compiled)                        848       3168
+sqlom (compiled)                      0.604      0.308
+########## isolated: codegen dict ##########
+  raw asyncpg + codegen dict       c=1    t0      1237 rps  p50    0.67 ms  p99    2.08 ms  cpu  0.441 ms/req
+  raw asyncpg + codegen dict       c=1    t1      1534 rps  p50    0.46 ms  p99    1.76 ms  cpu  0.373 ms/req
+  raw asyncpg + codegen dict       c=1    t2      1068 rps  p50    0.90 ms  p99    2.77 ms  cpu  0.503 ms/req
+  raw asyncpg + codegen dict       c=8    t0      3478 rps  p50    1.93 ms  p99    6.63 ms  cpu  0.278 ms/req
+  raw asyncpg + codegen dict       c=8    t1      4262 rps  p50    1.70 ms  p99    4.23 ms  cpu  0.233 ms/req
+  raw asyncpg + codegen dict       c=8    t2      4039 rps  p50    1.76 ms  p99    4.61 ms  cpu  0.247 ms/req
+raw asyncpg + codegen dict             1237       4039
+raw asyncpg + codegen dict            0.441      0.247
+########## isolated: dict(Record) ##########
+  raw asyncpg + dict(Record)       c=1    t0      1309 rps  p50    0.61 ms  p99    1.94 ms  cpu  0.433 ms/req
+  raw asyncpg + dict(Record)       c=1    t1      1047 rps  p50    0.97 ms  p99    2.01 ms  cpu  0.521 ms/req
+  raw asyncpg + dict(Record)       c=1    t2      1313 rps  p50    0.61 ms  p99    1.81 ms  cpu  0.431 ms/req
+  raw asyncpg + dict(Record)       c=8    t0      3818 rps  p50    1.91 ms  p99    5.07 ms  cpu  0.261 ms/req
+  raw asyncpg + dict(Record)       c=8    t1      3945 rps  p50    1.89 ms  p99    4.02 ms  cpu  0.252 ms/req
+  raw asyncpg + dict(Record)       c=8    t2      3877 rps  p50    1.87 ms  p99    5.12 ms  cpu  0.257 ms/req
+raw asyncpg + dict(Record)             1309       3877
+raw asyncpg + dict(Record)            0.433      0.257
+ALLDONE
