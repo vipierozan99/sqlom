@@ -237,9 +237,18 @@ work were measured first
 ([BENCHMARKS §12](BENCHMARKS.md#12-fixing-the-pool-reset-without-changing-behaviour)):
 moving the reset to acquire gains nothing (it is still a separate round trip — where it
 happens is irrelevant), and batching it with the query via psycopg3's pipeline mode is
-**2-4x worse**, because pipeline bookkeeping costs more per statement than a loopback
-round trip saves and the extended protocol forces the 4-statement reset to be split
-into 4 prepared statements. `DISCARD ALL` as a single-statement reset is disqualified
+**4x worse at c=8** (771 vs 3309 rps) for a reason worth knowing: an *empty* pipeline —
+no statements queued at all — costs **221 µs**, while the reset it would absorb costs
+176 µs as a second round trip. The overhead is a fixed per-pipeline cost 1.3x larger
+than the thing it removes, not a per-statement one (reusing cursors changes nothing).
+The extended protocol also forces the 4-statement reset to be split into 4 prepared
+statements, since pipeline mode rejects multi-statement strings.
+
+The inverse is the useful rule: **pipelining pays when its fixed cost is amortised over
+many statements.** psycopg3's `executemany` is built on pipeline mode and is 5.0x faster
+than looping `execute()` over 100 INSERTs (229 vs 1137 µs/statement) for exactly that
+reason. Paying pipeline setup per request to save one statement's round trip is the
+opposite trade. `DISCARD ALL` as a single-statement reset is disqualified
 outright: it includes `DEALLOCATE ALL` and breaks the prepared-statement cache.
 
 The remaining gap between no-reset (1.30x) and holding a connection (1.69x) is the

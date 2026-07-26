@@ -196,6 +196,14 @@ loop under the GIL saturates one core (§10, §11), so extra client cores are wa
 c=1 leaves a third of the core idle on socket wait. c=8 is the saturated,
 representative point; process-level parallelism scales from there linearly.
 
+**Measure the fixed cost of a mechanism before blaming its variable cost.** The first
+explanation for pipelining losing was "per-statement bookkeeping" — plausible, and
+wrong. Timing an *empty* pipeline (221 µs, no statements queued) showed the cost is
+fixed per pipeline, and reusing cursors rather than allocating five per request changed
+nothing, which ruled the per-statement theory out. When something is slower than
+expected, add the degenerate case — zero statements, zero rows, zero work — to the
+table; it separates fixed from variable cost in one measurement.
+
 **Record utilization, not just throughput.** `cpu_ms_per_request` and
 `cpu_utilization` are what explain a throughput difference, and they are what catch
 an impossible result. Throughput alone would not have exposed correction 3.

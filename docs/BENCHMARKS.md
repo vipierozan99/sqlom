@@ -849,25 +849,55 @@ reset and `reset=` a no-op:
 No gain. **Where the reset happens is irrelevant; that it is a separate round trip
 is the entire cost.**
 
-**Batch it with the query into one round trip.** Right in principle — and the reason
-it fails is specific. asyncpg has no pipeline API at all. psycopg3 does, but pipeline
-mode requires the extended protocol, which rejects multi-statement strings
-(`cannot insert multiple commands into a prepared statement`), so the 4-statement
-reset must be split into 4 separately-prepared statements. Measured on one psycopg3
-connection, 100 rows/request:
+**Batch it with the query into one round trip.** Right in principle. The reason it
+fails is specific, and an earlier revision of this section got it wrong — it claimed
+"pipeline bookkeeping costs more per statement than the round trip saves". The real
+cause is a **fixed per-pipeline cost**, not a per-statement one.
+
+First, a protocol constraint: pipeline mode requires the extended protocol, which
+rejects multi-statement strings (`cannot insert multiple commands into a prepared
+statement`), so the 4-statement reset has to be split into 4 separately-prepared
+statements. Then, measured on one psycopg3 connection, 100 rows/request, median of 5:
 
 | variant | round trips | statements | µs/req |
 |---|---|---|---|
-| no reset | 1 | 1 | 239 |
-| **multi-statement reset, sequential** | **2** | **2** | **322** |
-| split reset, sequential | 5 | 5 | 648 |
-| `RESET ALL` only, pipelined | 1 | 2 | 709 |
-| split reset, pipelined | **1** | 5 | **1292** |
+| query only, no pipeline | 1 | 1 | 289.5 |
+| **EMPTY pipeline — no statements at all** | **0** | **0** | **221.1** |
+| multi-statement reset + query, sequential | 2 | 2 | 465.6 |
+| `RESET ALL` + query, pipelined | 1 | 2 | 1042.4 |
+| split reset + query, pipelined | 1 | 5 | 1704.3 |
 
-**Pipelining made it 2-4x worse.** psycopg3's pipeline bookkeeping costs far more per
-statement than a loopback round trip saves, so the cheapest way to run a full reset is
-exactly what asyncpg already does — every statement in *one* simple-protocol round
-trip. Pipelining would only pay on a link where RTT dominates per-statement cost.
+The empty-pipeline row is the whole answer: **entering and leaving pipeline mode costs
+221 µs, while the reset it would absorb costs 176 µs as a second round trip.** The
+overhead is 1.3x the cost it is meant to remove, before a single statement is queued.
+Reusing cursors instead of allocating five per request changes nothing (1636 → 1651 µs
+in a side test), confirming the cost is fixed rather than per-statement.
+
+At c=8 async single-threaded the consequence is severe:
+
+| variant | rps | CPU ms/req |
+|---|---|---|
+| query only, no reset | 5923 | 0.1661 |
+| multi-statement reset + query, sequential | 3309 | 0.3021 |
+| split reset + query, **pipelined** | **771** | 1.2875 |
+
+**And the flip side — when pipelining *does* pay.** psycopg3's `executemany` is itself
+built on pipeline mode, and even "rides" an existing pipeline "in order to avoid
+sending unnecessary Sync" (`cursor_async.py:129`), which is the library conceding that
+pipeline setup is worth avoiding. It wins by amortising that one fixed cost over many
+statements:
+
+| 100 INSERTs | µs/batch | µs/statement |
+|---|---|---|
+| `execute()` one at a time | 113 677 | 1136.8 |
+| `executemany()` (pipelined internally) | **22 871** | **228.7** |
+
+**5.0x faster** — one pipeline setup spread across 100 statements. So the rule is:
+pipelining pays when its fixed cost is amortised over many statements, and loses when
+it is paid per request to save one statement's round trip. Our case is the second.
+
+Note that `executemany` could not express this problem anyway — it runs *one* command
+with a sequence of inputs, so it cannot batch a reset together with a query.
 
 `DISCARD ALL` looked promising as a single statement covering everything, but it
 includes `DEALLOCATE ALL`: it wipes the prepared-statement cache and the next request
@@ -919,7 +949,11 @@ gap (1.02x for the same-policy engine) and lifted conditional reset from 1.15x t
 
 ```bash
 taskset -c 0 python3 benchmarks/bench_conditional_reset.py --repeat 3
+taskset -c 0 python3 benchmarks/bench_pipeline_reset.py --repeat 5   # the pipeline analysis
 ```
+
+Artifacts: [`results/conditional_reset.txt`](../benchmarks/results/conditional_reset.txt),
+[`results/pipeline_reset.txt`](../benchmarks/results/pipeline_reset.txt)
 
 ---
 
