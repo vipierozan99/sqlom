@@ -10,11 +10,12 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 
 ## 🎯 Key Features (proposed)
 
-* **Postgres `json_agg` support:** Push row shaping *and* JSON encoding into Postgres instead of doing it in Python. Listed first because it measured as by far the biggest win — see [Performance](#-performance).
-* **Compiled hydration:** A per-model `row -> object` function is code-generated once, so field stores are plain `STORE_ATTR` bytecode against a fixed slot rather than a `setattr()` loop. ~4.9x faster than the reflective path *in isolation* (but see the honest framing below — hydration is only ~12% of the pipeline).
+* **Compiled hydration:** A per-model `row -> object` function is code-generated once, so field stores are plain `STORE_ATTR` bytecode against a fixed slot rather than a `setattr()` loop. ~4.9x faster than a reflective loop in isolation.
 * **Query builder:** A SQLAlchemy-Core-like builder (`User.id > 10`) built on descriptors.
 * **Two schema styles:** a custom-metaclass model, or real stdlib `@dataclass(slots=True)` models that still support `User.id > 100`.
+* **Slotted objects:** 73 B/instance vs 113 B for a `__dict__`-backed equivalent.
 * **Async-first:** Native `asyncpg` pool integration.
+* **Postgres `json_agg` support:** Implemented (`Query.to_json_sql`), but **not the current focus** — see [the note below](#-db-side-json-not-the-focus-yet).
 
 ---
 
@@ -144,15 +145,13 @@ async def get_users():
     return Response(content=json_bytes, media_type="application/json")
 ```
 
-### 3. Skip the objects entirely
+### 3. DB-side JSON (not the focus yet)
 
-For a read-only endpoint that only ever becomes JSON, materializing Python objects is pure overhead. `fetch_json` pushes row shaping *and* JSON encoding into Postgres (`json_agg` / `json_build_object`) and hands back bytes ready for the response body — by a wide margin the fastest path measured here:
+`Query.to_json_sql` / `DatabaseEngine.fetch_json` push row shaping and JSON encoding into the database and hand back response-ready bytes, skipping Python objects entirely. It works and it benchmarks well, but it's a different product than an object mapper — **treat it as experimental and out of scope for now.** The object path above is the one being optimized.
 
 ```python
-@app.get("/users")
-async def get_users():
-    query = Query(User).where(User.is_active == True).where(User.id > 100).limit(100)
-    return Response(content=await db.fetch_json(query), media_type="application/json")
+# experimental
+return Response(content=await db.fetch_json(query), media_type="application/json")
 ```
 
 ---
@@ -175,9 +174,9 @@ Two paths, depending on whether you need Python objects at all:
 1. **Descriptor expressions.** `User.id > 100` evaluates a descriptor at class scope, returning a `ColumnExpr` node rather than doing a Python-level comparison — this gives the query builder a queryable AST without needing SQLAlchemy-style instrumentation.
 2. **Compiled hydration.** A model's column layout is fixed and known once, so sqlom generates a specialized `rows -> [instance]` function per model (inspect it via `fn.__source__`). Field stores are written as plain attribute assignments so CPython 3.11's specializing interpreter can quicken them to `STORE_ATTR_SLOT`.
 3. **Slotted storage.** Instances use `__slots__`, so attribute storage is a fixed-size array rather than a `__dict__` — 72 vs 116 bytes per object here. Note the tradeoff: this is also what forces orjson off its native dataclass fast path (see [the orjson dataclass trap](#the-orjson-dataclass-trap)).
-4. **Or skip 2 and 3 entirely.** Path (B) does the shaping in SQL and never builds a Python object.
+4. **Path (B) skips 2 and 3 entirely** by shaping in SQL. Implemented but parked; path (A) is the focus.
 
-None of this makes the pipeline "zero-copy" — data still moves from the C-level tuple into Python object storage into JSON bytes. The claim to make is "fewer intermediate Python-level allocations than an ORM identity-map path," not "no copying happens." And per the profile, path (A)'s remaining cost is dominated by the driver, not by sqlom.
+None of this makes the pipeline "zero-copy" — data still moves from the C-level tuple into Python object storage into JSON bytes. The claim to make is "fewer intermediate Python-level allocations than an ORM identity-map path," not "no copying happens." And per the profile, path (A)'s remaining cost is dominated by the driver materializing Python values, not by sqlom.
 
 ---
 
@@ -189,8 +188,7 @@ None of this makes the pipeline "zero-copy" — data still moves from the C-leve
 
 | approach | mean | median | p95 | resp/sec | vs. ORM |
 |---|---|---|---|---|---|
-| **sqlom DB-side JSON** (`json_agg`, no Python objects) | 0.48 ms | 0.46 ms | 0.57 ms | 2106 | **13.5x** |
-| sqlom compiled, batch hydrator | 1.06 ms | 1.00 ms | 1.14 ms | 941 | 6.0x |
+| **sqlom compiled, batch hydrator** | 1.06 ms | 1.00 ms | 1.14 ms | 941 | **6.0x** |
 | `@model` dataclass + `OPT_PASSTHROUGH_DATACLASS` | 1.10 ms | 1.03 ms | 1.24 ms | 912 | 5.8x |
 | sqlom compiled, per-row hydrator | 1.13 ms | 1.05 ms | 1.27 ms | 886 | 5.7x |
 | `@model` dataclass, orjson native path | 1.51 ms | 1.31 ms | 2.24 ms | 664 | 4.3x |
@@ -211,11 +209,11 @@ python3 benchmarks/bench_sqlite.py --rows 200000 --limit 1000 --iterations 300 -
 python3 benchmarks/profile_stages.py    # stage-by-stage breakdown
 ```
 
-### ⚠️ Correction to an earlier number
+### 🧊 DB-side JSON (not the focus yet)
 
-An earlier revision of this README reported **3.5x vs ORM** for the reflective path. That number was inflated by an unfair comparison: sqlom emitted `"is_active":1` (sqlite's raw integer) while both SQLAlchemy variants emitted `"is_active":true`, so sqlom was skipping an int→bool coercion its competitors were paying for. With output equivalence enforced, the honest figure for that same approach is **~2.1-2.5x**. The benchmark now fails loudly rather than silently comparing different payloads.
+For completeness: the `json_agg` path measures **0.48 ms / 13.5x vs ORM**, roughly 2.2x faster than the best object path, because it skips both object construction and Python-side serialization. It's excluded from the table above on purpose — it isn't an object mapper, and it's parked until the object path is settled. The benchmark still runs it (`sqlom DB-side JSON`) so the number stays honest.
 
-### Where the time actually goes
+### The object path is close to its floor
 
 From [`benchmarks/profile_stages.py`](benchmarks/profile_stages.py), on the compiled pipeline:
 
@@ -225,9 +223,18 @@ From [`benchmarks/profile_stages.py`](benchmarks/profile_stages.py), on the comp
 | orjson serialization | 0.19 ms | 20% |
 | hydration into objects | 0.12 ms | **12%** |
 
-This reframes the library's premise. Hydration — the thing "lean hydration" optimizes — is only ~12% of the pipeline. Driving it to *zero* would still leave 85% of the current cost in place. In isolation the compiled hydrator is genuinely **4.9x** faster than the reflective one (123 vs 601 ns/object), but end-to-end that buys ~2.4x because hydration was never the bottleneck. Over a real network to Postgres the query/fetch share should grow, making hydration matter *less*, not more.
+Two follow-up measurements pin down how little headroom is left:
 
-That is exactly why DB-side JSON wins: it removes the object step *and* the Python serialization step at once.
+- **`conn.execute(...)` on its own costs 0.005 ms.** Essentially the entire 65% is the driver materializing 4,000 C values into Python `int`/`str` objects. No amount of sqlom-side work touches it, and an object path fundamentally needs those objects.
+- **Streaming the cursor instead of `fetchall()` is a wash** (0.715 vs 0.706 ms). `fetchall()` is already a C-level loop, so skipping the intermediate tuple list buys nothing.
+
+So hydration — the thing "lean hydration" optimizes — is ~12% of the pipeline, and driving it to *zero* would still leave 85% of the cost. In isolation the compiled hydrator is genuinely **4.9x** faster than the reflective one (123 vs 601 ns/object), but end-to-end that buys ~2.4x because hydration was never the bottleneck. Over a real network to Postgres the driver's share should grow, making hydration matter *less*, not more.
+
+**The honest read:** against SQLAlchemy's ORM the win is real and large (6x), and it comes from not doing identity-map and instrumented-attribute work. But sqlom is now within ~15% of the floor for anything that returns Python objects, so further hydration micro-optimization is not where the remaining time is.
+
+### ⚠️ Correction to an earlier number
+
+An earlier revision of this README reported **3.5x vs ORM** for the reflective path. That number was inflated by an unfair comparison: sqlom emitted `"is_active":1` (sqlite's raw integer) while both SQLAlchemy variants emitted `"is_active":true`, so sqlom was skipping an int→bool coercion its competitors were paying for. With output equivalence enforced, the honest figure for that same approach is **~2.1-2.5x**. The benchmark now fails loudly rather than silently comparing different payloads.
 
 ### Optimizations measured, and what we learned
 
@@ -236,14 +243,15 @@ That is exactly why DB-side JSON wins: it removes the object step *and* the Pyth
 - **Codegen the hydrator per model** (`compile_hydrator`). Straight-line attribute stores instead of a `setattr()` loop: 601 → 148 ns/object.
 - **Batch hydrator** (`compile_batch_hydrator`). Unpacking the row in the `for` statement (`for f0, f1, f2 in rows`) instead of subscripting beats per-row indexing: 148 → 123 ns/object. End-to-end it's within noise here, but it's free.
 - **Codegen the orjson hook** (`compile_json_default`). A straight-line dict literal instead of a comprehension over the column map.
-- **DB-side JSON** (`Query.to_json_sql`, `DatabaseEngine.fetch_json`). The single biggest win, ~2.2x over the best Python-object path.
+- **DB-side JSON** (`Query.to_json_sql`, `DatabaseEngine.fetch_json`). Implemented and fast, but parked — see the note above.
 
 **Rejected, with reasons:**
 
 - **attrs.** orjson does *not* serialize attrs classes natively (`TypeError: Type is not JSON serializable`), so it still needs a `default=` hook, and `attrs.asdict` is ~6x slower than a compiled dict literal (1507 vs 236 ns/object). Since sqlom bypasses `__init__` entirely via `object.__new__`, attrs' generated-init advantages don't apply — attribute read/write and construction measured identical to `dataclass(slots=True)` within noise. `@define` also adds a `__weakref__` slot by default, making instances 8 bytes larger. No remaining advantage for this use case.
 - **Calling slot descriptors' `__set__` directly.** Intuitive, and 3.4x *slower*. CPython 3.11's specializing interpreter ([PEP 659](https://peps.python.org/pep-0659/)) quickens `obj.x = v` on a slotted class into `STORE_ATTR_SLOT`; going through `descr.__set__(obj, v)` is an ordinary method call that defeats that inline cache. Same reason `setattr()` loses.
 - **All `__dict__` tricks** (`obj.__dict__ = {...}`, `__dict__.update(zip(...))`): 3.1-4.3x slower. In 3.11 instances use key-sharing dicts; materializing a real `__dict__` defeats `STORE_ATTR_INSTANCE_VALUE`.
-- **Switching wholesale to non-slotted dataclasses.** orjson's native fast path reads `__dict__` directly, so a *non*-slotted dataclass serializes fastest of any object form (~92 vs ~182 ns/object). But it costs ~60% more memory per instance (116 vs 72 bytes), and orjson's fast path dumps whatever is in `__dict__` minus underscore-prefixed keys — so a stray runtime attribute [leaks into the JSON](https://github.com/ijl/orjson/issues/83), whereas the slots path correctly filters on `__dataclass_fields__`. Faster but looser; not worth it as a default.
+- **Switching wholesale to non-slotted dataclasses.** orjson's native fast path reads `__dict__` directly, so a *non*-slotted dataclass serializes fastest of any object form (~92 vs ~182 ns/object). But measured end-to-end that is only a **5% win** (0.873 vs 0.913 ms) for **55% more memory** (113 vs 73 B/object). Worse, orjson's fast path dumps whatever is in `__dict__` minus underscore-prefixed keys — so a stray runtime attribute [leaks into the JSON](https://github.com/ijl/orjson/issues/83), whereas the slots path correctly filters on `__dataclass_fields__`. Faster, looser, hungrier; not worth it as a default. Available as `@model(slots=False)` if your workload is serialization-dominated and memory is free.
+- **Streaming the cursor instead of `fetchall()`.** Feeding `conn.execute(...)` straight into the batch hydrator to avoid materializing an intermediate list of tuples measured 0.715 vs 0.706 ms — a wash. `fetchall()` is already a C-level loop, so there is nothing to reclaim.
 
 ### The orjson dataclass trap
 
