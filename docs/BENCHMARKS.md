@@ -686,7 +686,74 @@ taskset -c 0 python3 benchmarks/compare_rust_driver.py --repeat 3
 
 ---
 
-## 10. What none of this shows
+## 10. asyncio concurrency and uvloop on the sqlite path
+
+`benchmarks/bench_sqlite_async.py`. There was no async sqlite benchmark before
+this — every sqlite measurement above is synchronous — and building one is itself
+the answer: **`sqlite3` is a synchronous in-process C library, so a sqlite request
+has nothing to await.** §5a measured 35% of a lone Postgres request as socket wait;
+sqlite's equivalent is zero. asyncio's whole value is overlapping waits that do not
+exist here.
+
+So the question is what concurrency *costs*, and the variants separate the
+mechanisms. Every worker performs an equal fixed number of requests (not a
+deadline), so variants whose tasks cannot interleave still do the same total work.
+Single core, 100 rows/request, median of 5, byte-identical output.
+
+| variant | c=1 rps | c=8 rps | c=32 rps | c=8 CPU ms |
+|---|---|---|---|---|
+| sync (no asyncio) — reference | 8167 | 8347 | 8345 | 0.1198 |
+| coroutine, no yield | 8584 | 8344 | 8332 | 0.1198 |
+| coroutine, no yield + **uvloop** | 8107 | 8356 | 8433 | 0.1196 |
+| coroutine, one `await` per request | 7672 | 8080 | 7783 | 0.1238 |
+| coroutine, one `await` + **uvloop** | 8049 | 8136 | 7624 | 0.1229 |
+| *aiosqlite (uses a THREAD)* | *4906* | *5315* | *5469* | *0.1881* |
+| *aiosqlite + uvloop (THREAD)* | *5923* | *6436* | *5960* | *0.1678* |
+
+Artifact: [`results/sqlite_async_uvloop.txt`](../benchmarks/results/sqlite_async_uvloop.txt)
+
+### Three results
+
+**1. Concurrency buys nothing — as it must.** Every single-threaded variant sits at
+0.93x–1.05x of the synchronous reference across c=1 to c=32. There is no I/O wait to
+overlap, so N tasks simply take turns on the one core. Wrapping the request in a
+coroutine is nearly free (1.00x–1.05x); adding one real suspension point costs
+~0.005 ms/req, consistent with a measured `await asyncio.sleep(0)` at **1.4–2.4 µs**.
+
+**2. uvloop makes no difference here, and that is diagnostic.** 1.02x → 1.03x at
+c=32 for the no-yield case; within noise everywhere. uvloop replaces libuv's *I/O
+polling and socket* handling, and this path performs no socket operations at all.
+Contrast §6, where uvloop was worth 1.11x against Postgres — the same swap helps
+exactly to the extent that the workload touches the network. **uvloop is not a
+general "faster asyncio" switch; it is a faster I/O layer.**
+
+**3. The one thing that changes behaviour is a thread, and it costs 25-40%.**
+`aiosqlite` — the usual answer to "async sqlite" — offloads each call to a worker
+thread, so it is *not* single-threaded. It runs at 0.60x–0.79x because every request
+now pays a thread handoff and GIL round trip to overlap a wait that was never there.
+This is the one place uvloop helps (0.60x → 0.73x at c=1): thread-pool handoff goes
+through the loop's `call_soon_threadsafe` and self-pipe, which uvloop implements more
+efficiently. It is still well below just calling sqlite3 directly.
+
+### What this means
+
+For an embedded/in-process database, **the right architecture is synchronous calls
+and process-level parallelism**, not asyncio. A coroutine wrapper is harmless if you
+need one for API symmetry, and uvloop is harmless but pointless. Reaching for
+`aiosqlite` to "make it async" makes it 25-40% slower for no benefit.
+
+This is the mirror image of the Postgres finding: there, concurrency is essential
+(4608 rps at c=8 versus 2249 at c=1, §5a) because 35% of each request is socket wait.
+The determining question is not the mapper or the loop implementation — it is whether
+the request waits on anything.
+
+```bash
+taskset -c 0 python3 benchmarks/bench_sqlite_async.py --repeat 5 --concurrency 1,8,32
+```
+
+---
+
+## 11. What none of this shows
 
 - **No HTTP layer.** The load benchmark drives the data layer directly. A real
   FastAPI/uvicorn stack adds routing, validation and ASGI overhead per request

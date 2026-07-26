@@ -175,6 +175,14 @@ mapper is ~50%. The 15% was a statement about sockets, not about sqlom. When a
 component looks small, check whether you are measuring it or measuring its
 surroundings.
 
+**A single low-repeat cell is not a result.** A first pass at the async sqlite
+benchmark showed the yielding coroutine at 0.56x with `--repeat 1`, which would have
+implied ~90 µs of overhead per `await asyncio.sleep(0)`. Measuring `sleep(0)`
+directly put it at 1.4-2.4 µs, so the cell was an outlier; at `--repeat 5` the
+variant sits at 0.94x. The tell was that the implied cost was physically implausible
+for the operation involved — sanity-check a surprising number against the cost of the
+primitive it supposedly comes from before believing it.
+
 **Record utilization, not just throughput.** `cpu_ms_per_request` and
 `cpu_utilization` are what explain a throughput difference, and they are what catch
 an impossible result. Throughput alone would not have exposed correction 3.

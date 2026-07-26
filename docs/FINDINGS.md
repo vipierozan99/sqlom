@@ -130,6 +130,38 @@ Against a remote database the mapper is ~15% of CPU and transport dominates; aga
 local one the mapper is ~50% of CPU but its *addressable* part is 16% and already at
 the floor. Further hydration micro-optimization is not where any remaining time is.
 
+### uvloop is a faster I/O layer, not a faster asyncio
+
+Measured on both paths
+([BENCHMARKS §10](BENCHMARKS.md#10-asyncio-concurrency-and-uvloop-on-the-sqlite-path)):
+
+| | uvloop gain |
+|---|---|
+| Postgres over a socket (§6) | **1.11x** |
+| sqlite in-process, single thread | 1.02-1.03x (noise) |
+
+The swap helps exactly to the extent that the workload touches the network. On the
+sqlite path there are no socket operations, so there is nothing for libuv to do
+faster. Do not treat uvloop as a general "faster asyncio" switch.
+
+The same measurement settles whether asyncio concurrency helps an embedded database:
+it does not. Every single-threaded variant lands at 0.93-1.05x of a plain
+synchronous loop from c=1 to c=32, because there is no wait to overlap — N tasks just
+take turns on one core. A coroutine wrapper is nearly free (one `await
+asyncio.sleep(0)` measures 1.4-2.4 µs), so keep it if you want API symmetry.
+
+**But do not reach for `aiosqlite` to "make it async":** it offloads to a worker
+thread, so it is not single-threaded, and it runs at **0.60-0.79x** — every request
+pays a thread handoff and GIL round trip to overlap a wait that was never there.
+(This is the one place uvloop helps, 0.60x → 0.73x, because thread handoff goes
+through `call_soon_threadsafe` and the self-pipe.)
+
+The mirror image is the Postgres path, where concurrency is essential — 4608 rps at
+c=8 against 2249 at c=1 — because 35% of each request is socket wait. **The
+determining question is never the mapper or the loop implementation; it is whether
+the request waits on anything.** For an embedded database the right architecture is
+synchronous calls plus process-level parallelism.
+
 ### A native rewrite is the worst return on effort measured
 
 Two hypotheticals, bounded in
