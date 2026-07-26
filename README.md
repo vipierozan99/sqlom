@@ -136,13 +136,39 @@ None of this makes the pipeline "zero-copy" — data still moves from the C-leve
 
 ## 📊 Performance
 
-No verified benchmarks exist yet. Before publishing numbers, they need:
+A first micro-benchmark is checked in at [`benchmarks/bench_sqlite.py`](benchmarks/bench_sqlite.py). It isolates the Python-side hydration + JSON-serialization path — the specific thing this README's architecture claims about — by running all three approaches against the *same* sqlite file through the *same* driver, so the database round trip is held roughly constant:
 
-- A reproducible benchmark script (query shape, schema, row count, concurrency, hardware, Python/library versions) checked into the repo.
-- A real SQLAlchemy 2.0 comparison run both ways — Core `select()` *and* ORM `Session` — since ORM identity-map overhead is the actual point of comparison, not SQLAlchemy generically.
-- Profiling (e.g. `py-spy`, `pyinstrument`) to support any claim about *where* time goes, rather than a stated percentage with no source.
+1. **sqlom** — positional hydration into a slotted object (`sqlom.hydrate`), then `orjson.dumps(objs, default=sqlom.as_dict)`.
+2. **SQLAlchemy 2.0 Core** — `select()`, `.mappings()`, then `orjson.dumps` over plain dicts.
+3. **SQLAlchemy 2.0 ORM** — `Session.execute(...).scalars().all()` (full identity-map insertion + instrumented attributes), then a manual dict comprehension before `orjson.dumps`.
 
-Until that exists, avoid publishing a comparison table — an unsourced number here is a credibility risk, not a selling point.
+Each request-shaped query returns 1,000 rows out of a 200,000-row table, timed over 300 iterations after 30 warmup iterations (`time.perf_counter`, wall-clock, single-process, no concurrency). Results from this repo's environment, checked in at [`benchmarks/results/sqlite_latest.json`](benchmarks/results/sqlite_latest.json):
+
+| approach | mean | median | p95 | responses/sec | vs. ORM |
+|---|---|---|---|---|---|
+| sqlom (positional hydration) | 1.92 ms | 1.82 ms | 2.30 ms | 520 | **3.5x** |
+| SQLAlchemy Core | 4.17 ms | 4.00 ms | 5.24 ms | 240 | 1.6x |
+| SQLAlchemy ORM | 6.69 ms | 5.55 ms | 16.65 ms | 150 | 1.0x (baseline) |
+
+```
+python_version: 3.11.15
+platform: Linux-6.18.5-x86_64-with-glibc2.39
+sqlalchemy_version: 2.0.51
+orjson_version: 3.11.9
+```
+
+Reproduce with (from the repo root, `sqlom` needs no install — the script adds it to `sys.path`):
+
+```bash
+pip install sqlalchemy orjson
+python3 benchmarks/bench_sqlite.py --rows 200000 --limit 1000 --iterations 300 --warmup 30
+```
+
+**What this does and doesn't show:**
+
+- It's a real, reproducible measurement — not an invented number — but it's sqlite, single-process, single-connection. It shows the *hydration/serialization* delta is real and directionally matches the architecture's claim (fewer intermediate Python-level allocations than an ORM identity-map path).
+- It does **not** yet cover: a real asyncpg/Postgres round trip (network + protocol overhead may compress or amplify this gap differently than sqlite's in-process driver), concurrent load against a connection pool, or `py-spy`/`pyinstrument` profiling to show *where* inside each path the time actually goes.
+- `sqlom.engine.DatabaseEngine` (asyncpg-backed) exists in this repo for that follow-up benchmark, but running it needs a live Postgres instance and isn't part of this checked-in result yet.
 
 ---
 

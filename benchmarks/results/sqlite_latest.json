@@ -1,0 +1,45 @@
+{
+  "env": {
+    "python_version": "3.11.15",
+    "platform": "Linux-6.18.5-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "sqlalchemy_version": "2.0.51",
+    "orjson_version": "3.11.9",
+    "seeded_rows": 200000,
+    "rows_per_response": 1000,
+    "iterations": 300,
+    "warmup": 30
+  },
+  "results": [
+    {
+      "approach": "sqlom (positional hydration)",
+      "iterations": 300,
+      "rows_per_response": 1000,
+      "mean_ms": 1.9235284366618544,
+      "median_ms": 1.8162299999175957,
+      "p95_ms": 2.295243849982853,
+      "stdev_ms": 0.7532068750843282,
+      "responses_per_sec": 519.877939384888
+    },
+    {
+      "approach": "SQLAlchemy Core",
+      "iterations": 300,
+      "rows_per_response": 1000,
+      "mean_ms": 4.173290500000727,
+      "median_ms": 3.9945020000118348,
+      "p95_ms": 5.235455900003672,
+      "stdev_ms": 0.5280565775464744,
+      "responses_per_sec": 239.61907276759808
+    },
+    {
+      "approach": "SQLAlchemy ORM",
+      "iterations": 300,
+      "rows_per_response": 1000,
+      "mean_ms": 6.686073509999915,
+      "median_ms": 5.5454890000419255,
+      "p95_ms": 16.649653399997533,
+      "stdev_ms": 3.30857134203032,
+      "responses_per_sec": 149.56461344679605
+    }
+  ]
+}
