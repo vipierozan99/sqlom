@@ -15,6 +15,7 @@ Committed as evidence so the tables there can be traced to a real run.
 | `isolated_unpinned.txt` | sqlom, async ORM and the codegen-dict floor, isolated, 3 trials, 4 cores shared. |
 | `core_sweep_1core_client.txt` | **The headline measurement.** Client pinned to one core, Postgres given 1/2/3 cores, sqlom vs async ORM, 3 trials each. |
 | `profile_pg_1core.txt` | **Profiled run**: client pinned to core 0, Postgres to cores 2,3. cProfile (CPU timer) + pyinstrument sampling for sqlom and the async ORM, plus a `sslmode=disable` contrast run. |
+| `profile_sqlite.txt` | **Profiled sqlite run** — no event loop, pool or TLS. cProfile + pyinstrument for sqlom, SQLAlchemy Core and ORM, single-threaded on core 0. Isolates the mapper's own cost. |
 | `optimize_stack.txt` | Stacked optimizations (uvloop / pool `reset=` no-op / held connection / no TLS), client core 0, Postgres cores 2,3, median of 3, one config per process. |
 | `multiprocess_scaling.txt` | 1 vs 2 sqlom worker processes, one core each, Postgres on cores 2,3. |
 

@@ -69,6 +69,34 @@ One incidental discovery worth carrying: the benchmark's loopback connection was
 negotiating **TLSv1.3**, which costs ~20% of client CPU. Ratios are unaffected since
 both sides pay it, but absolute throughput in §4 is understated by ~25%.
 
+### With transport removed, the mapper *is* the cost
+
+Profiling the same request shape against in-process sqlite — no event loop, no pool,
+no TLS ([BENCHMARKS §7](BENCHMARKS.md#7-profiled-sqlite-run-the-mapper-with-transport-removed))
+— inverts the picture:
+
+| sqlom, 100 rows/request | CPU/req | sqlom's share of it |
+|---|---|---|
+| Postgres (asyncpg, pooled, TLS) | 0.215 ms | ~15% |
+| sqlite (in-process) | 0.100 ms | ~50% |
+
+Transport is **0.115 ms/req, 53% of the Postgres figure** — slightly more than an
+entire sqlite request costs end to end. So "the mapper is only 15% of CPU" was never a
+statement about the mapper; it was a statement about sockets. Remove them and sqlom's
+generated code becomes about half of what is left, with ~30% in the sqlite3 driver and
+~15% in orjson.
+
+Both readings are true and they bound the work differently:
+
+- **Against a remote database**, optimizing the mapper is capped at ~15%. Fix
+  transport first.
+- **Against a local or embedded database**, the mapper is the dominant term and
+  hydration work pays back directly.
+
+sqlom still leads by 7.4x over the async ORM and 4.4x over Core in the sqlite
+configuration, so the advantage is not an artifact of transport masking differences —
+it survives having transport removed.
+
 ### What to optimize next, in order
 
 Acting on the profile ([BENCHMARKS §6](BENCHMARKS.md#6-acting-on-the-profile-24x-more-throughput-outside-the-mapper))

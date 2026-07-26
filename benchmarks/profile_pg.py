@@ -40,47 +40,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from benchmarks.bench_pg_load import CONTENDERS, DEFAULT_DSN
 
-# Resolved once, because substring matching on "sqlom" is a trap: this repo's
-# own directory is named sqlom, so a naive r"/sqlom/" pattern also matches
-# /home/user/sqlom/benchmarks/bench_pg_load.py and credits harness work to the
-# library. Compare against real package directories instead.
-import sqlom as _sqlom_pkg
-
-SQLOM_DIR = str(Path(_sqlom_pkg.__file__).resolve().parent) + os.sep
-BENCH_DIR = str(Path(__file__).resolve().parent) + os.sep
-
-# Functions sqlom generates via exec(). Their code object filename is
-# "<string>", which SQLAlchemy also uses for its own codegen, so match on name.
-SQLOM_GENERATED = {"_hydrate", "_hydrate_all", "_default", "_rows_to_dicts"}
-
-# Checked in order after the path-based tests above; first match wins.
-CATEGORIES = [
-    ("orjson",            [r"orjson"]),
-    ("asyncpg",           [r"/asyncpg/"]),
-    ("SQLAlchemy ORM",    [r"/sqlalchemy/orm/"]),
-    ("SQLAlchemy engine", [r"/sqlalchemy/engine/", r"/sqlalchemy/pool/", r"/sqlalchemy/ext/asyncio/"]),
-    ("SQLAlchemy SQL",    [r"/sqlalchemy/sql/", r"/sqlalchemy/util/", r"/sqlalchemy/dialects/"]),
-    ("SQLAlchemy codegen", [r"<string>"]),
-    ("asyncio / loop",    [r"/asyncio/", r"selectors\.py", r"sslproto"]),
-]
-
-
-def categorize(filename, funcname):
-    if filename.startswith(BENCH_DIR):
-        return "benchmark harness"
-    if filename.startswith(SQLOM_DIR):
-        return "sqlom (library)"
-    if filename == "<string>" and funcname in SQLOM_GENERATED:
-        return "sqlom (codegen)"
-    subject = f"{filename}:{funcname}"
-    for label, patterns in CATEGORIES:
-        if any(re.search(p, subject) for p in patterns):
-            return label
-    return "stdlib / other"
+from benchmarks import profkit
+from benchmarks.profkit import categorize, rollup, top_functions
 
 
 def pin(client_cores, db_cores):
-    """Pin this process and the Postgres tree to disjoint core sets."""
+    """Pin this process and the Postgres tree to disjoint core sets.
+
+    Affinity is inherited across fork(), so pinning the postmaster covers
+    backends started afterwards; existing ones are pinned explicitly. Must run
+    before the pool is created, or pooled connections keep the old mask.
+    """
     os.sched_setaffinity(0, {int(c) for c in client_cores.split(",")})
     postmaster = None
     out = subprocess.run(["ps", "-eo", "pid,ppid,comm"], capture_output=True, text=True).stdout
@@ -95,8 +65,8 @@ def pin(client_cores, db_cores):
     if postmaster:
         pids = [postmaster] + subprocess.run(["pgrep", "-P", postmaster],
                                              capture_output=True, text=True).stdout.split()
-        for p in pids:
-            subprocess.run(["taskset", "-a", "-cp", db_cores, p],
+        for pid in pids:
+            subprocess.run(["taskset", "-a", "-cp", db_cores, pid],
                            capture_output=True, text=True)
     return sorted(os.sched_getaffinity(0)), postmaster
 

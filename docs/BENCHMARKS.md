@@ -417,7 +417,105 @@ has not been measured for it. **Do not read 14.4x as a mapper comparison.**
 
 ---
 
-## 7. What none of this shows
+## 7. Profiled sqlite run: the mapper with transport removed
+
+`benchmarks/profile_sqlite.py`. §5 found sqlom's own code to be only ~15% of client
+CPU against Postgres, with 38% in the asyncio loop, 19% in the asyncpg fetch and 15%
+in pool acquire/release. All three are **transport** — they exist because the database
+is another process on the far side of a socket. sqlite deletes them: in-process C
+driver, no pool, no TLS, no event loop. What remains is the cost sqlom is actually
+responsible for.
+
+Single-threaded, pinned to core 0, 100 rows/request from a 200,000-row table — the
+same request shape as §5.
+
+| | sqlom | SQLAlchemy Core | SQLAlchemy ORM |
+|---|---|---|---|
+| CPU ms/req | **0.100** | 0.437 | 0.742 |
+| req/s (1 thread) | **9997** | 2286 | 1346 |
+| vs. ORM | **7.4x** | 1.70x | 1.0x |
+| utilization | 1.00 | 1.00 | 1.00 |
+
+Utilization is 1.00 with no event loop involved: a synchronous sqlite call is CPU, not
+I/O wait, so there is nothing to overlap and no concurrency dimension to sweep.
+
+Artifact: [`results/profile_sqlite.txt`](../benchmarks/results/profile_sqlite.txt)
+
+### Transport is more than half the Postgres cost
+
+| sqlom, 100 rows/request | CPU/req |
+|---|---|
+| Postgres (asyncpg, pooled, TLS, c=8, 1 core) | 0.215 ms |
+| sqlite (in-process) | 0.100 ms |
+| **difference = transport** | **0.115 ms (53%)** |
+
+Loop, socket, protocol, TLS and pool together cost slightly *more* than an entire
+sqlite request. That is the same conclusion §6 reached from the other direction: the
+2.36x found there came from attacking this 0.115 ms, not the mapper.
+
+### Where sqlom's 0.100 ms goes — and where the profilers disagree
+
+| component | cProfile | sampled |
+|---|---|---|
+| sqlom generated code (`_hydrate_all` + `_default`) | 65% | ~56% |
+| sqlite3 driver (`Cursor.fetchall`) | 16% | ~37% |
+| `orjson.dumps` | 17% | ~6% (undercounted) |
+
+**The two disagree, and the disagreement is informative rather than a defect.** Each
+has a blind spot, in opposite directions:
+
+- **cProfile inflates sqlom's share.** Its overhead is per *call*, and `_hydrate_all`
+  triggers ~200 instrumented builtin calls per request (100 × `object.__new__`,
+  100 × `list.append`) while `Cursor.fetchall` is a single call. So the driver looks
+  cheaper than it is.
+- **pyinstrument undercounts orjson.** It samples Python frames, so it cannot see
+  inside a C extension; `orjson.dumps`'s work is charged to the Python frame that
+  called it. cProfile measures that C function directly, and `orjson.dumps` is one
+  call per request so barely inflated — its 17% is the more credible figure.
+
+Reconciled, the honest reading is roughly **half the time in sqlom's generated code,
+~30% in the sqlite3 driver, ~15% in orjson.** Trust the sampler for the
+hydrate-versus-fetch balance and cProfile for anything implemented in C.
+
+Exact call counts (cProfile, 800 requests × 100 rows) show where the shape comes from:
+
+| calls | self ms | frame |
+|---|---|---|
+| 800 | 94.8 | `_hydrate_all` (generated) |
+| 800 | 57.2 | `orjson.dumps` |
+| 80,000 | 51.5 | `_default` (generated, once per row) |
+
+`_default` runs once per *row* because orjson calls back into Python for every
+object. That is the cost of not being a stdlib dataclass — and the reason
+`OPT_PASSTHROUGH_DATACLASS` matters if you use the `@model` style
+([FINDINGS](FINDINGS.md#the-orjson-dataclass-trap)).
+
+### What SQLAlchemy spends it on here
+
+With transport gone, both SQLAlchemy variants remain 4.4x and 7.4x sqlom's cost, and
+the profile says where:
+
+| | share of own CPU |
+|---|---|
+| **Core**: `sqlalchemy/engine` + pool | **74.7%** |
+| Core: sqlite3 driver | 5.2% |
+| **ORM**: `sqlalchemy/orm` internals | **59.0%** |
+| ORM: attribute reads building the payload dict | 23.9% |
+| ORM: sqlite3 driver | 2.6% |
+
+Core's cost is almost entirely its own engine/connection layer, not SQL compilation
+(1.8%) and certainly not the driver. For the ORM it is identity-map and
+instrumentation work plus the instrumented attribute reads needed to get values back
+out — the same mechanism §5c named against Postgres, now with no transport to hide
+behind.
+
+```bash
+taskset -c 0 python3 benchmarks/profile_sqlite.py --compare --sampler
+```
+
+---
+
+## 8. What none of this shows
 
 - **No HTTP layer.** The load benchmark drives the data layer directly. A real
   FastAPI/uvicorn stack adds routing, validation and ASGI overhead per request

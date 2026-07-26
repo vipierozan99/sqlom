@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#7-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#8-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -197,6 +197,19 @@ Concurrent load against live PostgreSQL 16 over asyncpg, isolated, median of 3, 
 | 2 | 4111 rps (0.242) | 672 rps (1.484) | 6.12x |
 | 3 | 3599 rps (0.278) | 701 rps (1.426) | 5.13x |
 
+### With transport removed (sqlite, single-threaded, 100 rows/req)
+
+No event loop, no pool, no TLS — the mapper's own cost:
+
+| approach | CPU ms/req | req/s (1 thread) | vs. ORM |
+|---|---|---|---|
+| **sqlom** | **0.100** | **9997** | **7.4x** |
+| SQLAlchemy Core | 0.437 | 2286 | 1.70x |
+| SQLAlchemy ORM | 0.742 | 1346 | 1.0x |
+
+The lead survives removing transport, so it is not an artifact of sockets masking
+differences.
+
 ### Latency: ~6.3x on a single request
 
 sqlite micro-benchmark, 1000 rows/response, median of 5 trials, all approaches
@@ -232,10 +245,11 @@ agree).
   common production shape.
 - **There is no HTTP layer.** A real FastAPI/uvicorn stack adds per-request overhead
   that would compress these ratios. "Requests/sec for your API" is unmeasured.
-- **Hydration is only ~12% of one request's wall-clock**, and sqlom's generated code
-  is only **~15% of its CPU** under load — 38% is the asyncio event loop, 19% the
-  asyncpg fetch, 15% pool acquire/release. Stage share governs latency; total CPU
-  governs throughput; and by either measure the mapper is no longer the bottleneck.
+- **Against Postgres, sqlom's generated code is only ~15% of client CPU** — 38% is the
+  asyncio event loop, 19% the asyncpg fetch, 15% pool acquire/release. But that is a
+  fact about *sockets*, not the mapper: profiled against in-process sqlite, transport
+  turns out to be **53% of the Postgres cost** and sqlom's share rises to ~50%. Fix
+  transport first for a remote DB; the mapper pays back directly for a local one.
 - **The benchmark's loopback connection negotiates TLSv1.3**, which costs ~20% of
   client CPU. Ratios are unaffected (both sides pay it) but absolute throughput is
   understated: 5440 rps with `sslmode=disable` vs 4724 with it on.

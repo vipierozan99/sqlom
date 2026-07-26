@@ -153,12 +153,27 @@ SQLAlchemy's by function name, since both use the filename `<string>`.
 > imported is broken. Put an impossible-by-construction row in your own output and
 > check it reads zero.
 
-**Cross-check an instrumented profile with a sampling one.** cProfile inflated this
-workload ~4.6x and put sqlom's generated code at 29% of CPU; pyinstrument sampling
-put it at 15%. The instrumented view is biased against exactly the shape of code
-under test — `_default` runs 80,000 times per 800 requests, so per-call overhead
-lands hardest on the hot small function. Use cProfile for call counts and the sampler
-for shares, and say which one a published number came from.
+**Cross-check an instrumented profile with a sampling one — they have opposite blind
+spots.** On the sqlite profile the two disagreed on the sqlite3 driver's share (16% vs
+37%) and on orjson's (17% vs 6%). Neither is simply wrong:
+
+- cProfile's overhead is per *call*, so it inflates code that makes many small calls.
+  `_hydrate_all` triggers ~200 instrumented builtin calls per request while
+  `Cursor.fetchall` is one — the driver therefore looks cheaper than it is.
+- pyinstrument samples *Python* frames, so it cannot see inside a C extension.
+  `orjson.dumps`'s work is charged to whatever Python frame called it.
+
+So: sampler for the balance between Python components, cProfile for anything
+implemented in C (and for exact call counts). Publish which profiler a number came
+from, and when they disagree materially, publish both rather than picking the
+flattering one.
+
+**Remove a layer to find out what a share means.** "sqlom is 15% of client CPU" read
+as a fact about the mapper. Re-profiling against in-process sqlite showed 53% of the
+Postgres cost was transport — loop, socket, TLS, pool — and that with it gone the
+mapper is ~50%. The 15% was a statement about sockets, not about sqlom. When a
+component looks small, check whether you are measuring it or measuring its
+surroundings.
 
 **Record utilization, not just throughput.** `cpu_ms_per_request` and
 `cpu_utilization` are what explain a throughput difference, and they are what catch
