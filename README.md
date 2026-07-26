@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** this is a design proposal, not a released or benchmarked library. Numbers and code below are illustrative until validated against a real implementation.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [What this still does not show](#what-this-still-does-not-show) before believing any of it applies to your workload.
 
 ---
 
@@ -14,7 +14,7 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 * **Query builder:** A SQLAlchemy-Core-like builder (`User.id > 10`) built on descriptors.
 * **Two schema styles:** a custom-metaclass model, or real stdlib `@dataclass(slots=True)` models that still support `User.id > 100`.
 * **Slotted objects:** 73 B/instance vs 113 B for a `__dict__`-backed equivalent.
-* **Async-first:** Native `asyncpg` pool integration.
+* **Async-first:** Native `asyncpg` pool integration — measured at ~6x SQLAlchemy's async ORM under concurrent load, and within a few percent of doing no object mapping at all.
 * **Postgres `json_agg` support:** Implemented (`Query.to_json_sql`), but **not the current focus** — see [the note below](#-db-side-json-not-the-focus-yet).
 
 ---
@@ -228,9 +228,64 @@ Two follow-up measurements pin down how little headroom is left:
 - **`conn.execute(...)` on its own costs 0.005 ms.** Essentially the entire 65% is the driver materializing 4,000 C values into Python `int`/`str` objects. No amount of sqlom-side work touches it, and an object path fundamentally needs those objects.
 - **Streaming the cursor instead of `fetchall()` is a wash** (0.715 vs 0.706 ms). `fetchall()` is already a C-level loop, so skipping the intermediate tuple list buys nothing.
 
-So hydration — the thing "lean hydration" optimizes — is ~12% of the pipeline, and driving it to *zero* would still leave 85% of the cost. In isolation the compiled hydrator is genuinely **4.9x** faster than the reflective one (123 vs 601 ns/object), but end-to-end that buys ~2.4x because hydration was never the bottleneck. Over a real network to Postgres the driver's share should grow, making hydration matter *less*, not more.
+So hydration — the thing "lean hydration" optimizes — is ~12% of a single request's wall-clock, and driving it to *zero* would still leave 85% of that cost. In isolation the compiled hydrator is genuinely **4.9x** faster than the reflective one (123 vs 601 ns/object), but within one sequential request that buys ~2.4x because hydration was never that request's bottleneck.
 
-**The honest read:** against SQLAlchemy's ORM the win is real and large (6x), and it comes from not doing identity-map and instrumented-attribute work. But sqlom is now within ~15% of the floor for anything that returns Python objects, so further hydration micro-optimization is not where the remaining time is.
+**This is a statement about latency, not throughput.** Under concurrent load the picture changes — see [below](#why-the-gap-widens-under-load), where total CPU per request, not per-request stage share, sets the ceiling.
+
+### Under concurrent load, against real Postgres
+
+[`benchmarks/bench_pg_load.py`](benchmarks/bench_pg_load.py) closes the two biggest gaps at once: a real asyncpg/Postgres round trip, and concurrency against a shared pool. Closed-loop — `c` worker tasks issue request-shaped queries back-to-back for 4 s; a "request" is query + materialize + produce JSON bytes. All contenders get an identically sized pool (10) and are checked for byte-identical output before timing.
+
+**Throughput (req/s), 100 rows per request:**
+
+| approach | c=1 | c=8 | c=32 | c=64 |
+|---|---|---|---|---|
+| raw asyncpg + codegen dict *(floor)* | 2391 | 4741 | 4232 | 4126 |
+| **sqlom (compiled)** | **2249** | **4305** | **4135** | **4098** |
+| raw asyncpg + `dict(Record)` | 2240 | 4168 | 3673 | 3835 |
+| SQLAlchemy async Core | 790 | 1171 | 1033 | 1089 |
+| SQLAlchemy async ORM | 610 | 720 | 726 | 698 |
+| *sqlom vs ORM* | *3.7x* | *6.0x* | *5.7x* | *5.9x* |
+
+**Throughput (req/s), 1000 rows per request:**
+
+| approach | c=1 | c=8 | c=32 |
+|---|---|---|---|
+| raw asyncpg + codegen dict *(floor)* | 783 | 979 | 945 |
+| **sqlom (compiled)** | **672** | **837** | **783** |
+| SQLAlchemy async Core | 211 | 213 | 213 |
+| SQLAlchemy async ORM | 126 | 122 | 118 |
+| *sqlom vs ORM* | *5.3x* | *6.9x* | *6.6x* |
+
+```
+asyncpg 0.31.0   sqlalchemy 2.0.51   orjson 3.11.9   PostgreSQL 16.13
+4 vCPU, pool_size=10, 200k-row table, Postgres on localhost
+```
+
+```bash
+python3 benchmarks/bench_pg_load.py --seed-only          # create + seed the table
+python3 benchmarks/bench_pg_load.py --limit 100 --concurrency 1,8,32,64 --duration 4
+```
+
+### Why the gap *widens* under load
+
+An earlier revision of this README predicted the opposite — that a real network round trip would grow the driver's share and make Python-side overhead matter *less*. **That prediction was wrong**, and the reason is visible in client-side CPU per request:
+
+| client CPU ms/request (100 rows) | c=1 | c=8 | c=32 | c=64 |
+|---|---|---|---|---|
+| sqlom (compiled) | 0.293 | 0.224 | 0.221 | 0.226 |
+| raw asyncpg + codegen dict | 0.275 | 0.206 | 0.216 | 0.219 |
+| SQLAlchemy async Core | 1.002 | 0.833 | 0.940 | 0.894 |
+| SQLAlchemy async ORM | 1.406 | 1.366 | 1.346 | 1.406 |
+
+The workload is **client-CPU-bound**, not latency-bound. Throughput tracks the inverse of CPU-per-request almost exactly: the ORM burns ~6x sqlom's CPU per request and delivers ~1/6 the throughput. Concurrency doesn't hide Python overhead — it *converts* it into a throughput ceiling, because every core spent on identity-map bookkeeping is a core not spent serving another request. At 1000 rows/request the effect is starker still (8.36 vs 1.22 ms CPU/req).
+
+This also reframes the earlier "hydration is only 12%" finding. That remains true *per request*, but per-request stage share and throughput ceiling are different questions: under saturation what matters is total CPU per request, and there sqlom's compiled path is within **2-8% of doing no object mapping at all** (0.224 vs 0.206 ms/req). Materializing slotted objects is close to free relative to driver + JSON work — which is the strongest version of the library's actual claim.
+
+Two honest observations against sqlom's own framing:
+
+- **`dict(Record)` is not a slow baseline to beat.** Hand-written asyncpg + `dict(record)` gets within a few percent of sqlom (4168 vs 4305 rps). The 6x is over *SQLAlchemy's ORM*, not over "writing it yourself" — against a competent hand-rolled loop the gain is a rounding error.
+- **Nobody scales past c=8 here.** Every contender peaks around c=8 and then flattens or dips; p99 degrades badly (sqlom 2.8 ms at c=8 → 86 ms at c=64) as requests queue on the 10-connection pool. That is pool-and-core saturation, not a property of any mapper.
 
 ### ⚠️ Correction to an earlier number
 
@@ -272,10 +327,12 @@ Sources: [orjson README](https://github.com/ijl/orjson#dataclass) · [`dataclass
 
 ### What this still does not show
 
-- **It's sqlite, not Postgres.** No network round trip, no protocol parsing, no connection pool. `DatabaseEngine` (asyncpg) is implemented but not yet benchmarked against a live server, so none of the numbers above are Postgres numbers.
-- **No concurrency.** Single process, single connection, no event-loop contention — so nothing here speaks to throughput under load, which is the actual claim a "high-throughput HTTP services" library needs to make.
-- **Narrow shape.** One flat 4-column table, 1,000-row responses. No joins, no nested `json_agg` shaping, no wide rows, no large text/JSONB columns. Per-object costs amortize differently as column count grows.
+- **No HTTP layer.** The load benchmark drives the data layer directly. A real FastAPI/uvicorn stack adds routing, validation, and ASGI overhead per request that would compress every ratio here — quite possibly a lot. Until that's measured, none of these numbers are "requests/sec for your API."
+- **Postgres shares the box.** Client and server run on the same 4 vCPUs, so they compete for CPU, and a client that burns less CPU leaves more for Postgres. That flatters the efficient contenders. A remote database would add real network latency and remove the contention — the direction of the effect is knowable, the size isn't, and it isn't measured.
+- **Loopback, not a network.** No real RTT, so the latency-bound regime — where slow client code hides behind network wait — is entirely untested. That regime is exactly where these ratios should shrink.
+- **Narrow shape.** One flat 4-column table of small ints and short strings. No joins, no nested shaping, no wide rows, no large text/JSONB, no writes or transactions. Per-object costs amortize differently as column count grows.
 - **No sampling profiler.** The stage breakdown is wall-clock timing of isolated stages, not `py-spy`/`pyinstrument` output; it attributes cost per stage, not per function.
+- **Postgres `json_agg` output is not byte-identical** to orjson's (it emits `{"id" : 1}` with spaces), so DB-side JSON is excluded from the load comparison rather than being silently compared against different bytes.
 
 ---
 
