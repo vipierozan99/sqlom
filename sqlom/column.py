@@ -89,6 +89,17 @@ class ModelMeta(type):
         namespace["__columns__"] = columns
         return super().__new__(mcs, name, bases, namespace)
 
+    def __getattr__(cls, name):
+        # Compile the per-model orjson hook on first use, then cache it as a
+        # real class attribute so later lookups never reach __getattr__.
+        if name == "__json_default__":
+            from .compile import compile_json_default
+
+            fn = compile_json_default(cls)
+            setattr(cls, name, fn)
+            return fn
+        raise AttributeError(name)
+
 
 def hydrate(model_cls, row):
     """Build an instance from a positional row (tuple/Record) without going

@@ -1,5 +1,25 @@
 from .column import Condition
 
+# How each backend spells "aggregate these rows into one JSON array", plus
+# how it renders a boolean. sqlite has no bool type (columns come back as
+# 0/1), so booleans need an explicit cast to get real JSON true/false.
+DIALECTS = {
+    "sqlite": {
+        "placeholder": "?",
+        "agg": "json_group_array",
+        "object": "json_object",
+        "bool": lambda col: f"json(CASE WHEN {col} THEN 'true' ELSE 'false' END)",
+        "coalesce": False,
+    },
+    "postgres": {
+        "placeholder": "$",
+        "agg": "json_agg",
+        "object": "json_build_object",
+        "bool": lambda col: col,
+        "coalesce": True,
+    },
+}
+
 
 class Query:
     def __init__(self, model):
@@ -15,11 +35,9 @@ class Query:
         self._limit = n
         return self
 
-    def to_sql(self, placeholder="?"):
-        columns = list(self.model.__columns__.keys())
-        sql = f"SELECT {', '.join(columns)} FROM {self.model.__tablename__}"
+    def _where_clause(self, placeholder):
+        sql = ""
         params = []
-
         if self._conditions:
             clauses = []
             for condition in self._conditions:
@@ -27,9 +45,39 @@ class Query:
                 clauses.append(clause)
                 params.append(value)
             sql += " WHERE " + " AND ".join(clauses)
-
         if self._limit is not None:
             sql += f" LIMIT {placeholder}"
             params.append(self._limit)
-
         return sql, params
+
+    def to_sql(self, placeholder="?"):
+        columns = list(self.model.__columns__.keys())
+        sql = f"SELECT {', '.join(columns)} FROM {self.model.__tablename__}"
+        tail, params = self._where_clause(placeholder)
+        return sql + tail, params
+
+    def to_json_sql(self, dialect="postgres"):
+        """Build SQL that returns the whole result set as a single JSON array.
+
+        This pushes row shaping and JSON encoding into the database, so Python
+        never materializes per-row objects or dicts — the driver hands back one
+        string that can go straight into the HTTP response body.
+        """
+        spec = DIALECTS[dialect]
+        placeholder = spec["placeholder"]
+        columns = self.model.__columns__
+
+        object_args = ", ".join(
+            f"'{name}', {spec['bool'](name) if column.py_type is bool else name}"
+            for name, column in columns.items()
+        )
+
+        inner = f"SELECT {', '.join(columns)} FROM {self.model.__tablename__}"
+        tail, params = self._where_clause(placeholder)
+        inner += tail
+
+        agg = f"{spec['agg']}({spec['object']}({object_args}))"
+        if spec["coalesce"]:
+            agg = f"coalesce({agg}, '[]'::json)"
+
+        return f"SELECT {agg} FROM ({inner}) AS t", params

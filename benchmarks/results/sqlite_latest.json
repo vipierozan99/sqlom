@@ -12,34 +12,84 @@
   },
   "results": [
     {
-      "approach": "sqlom (positional hydration)",
+      "approach": "sqlom reflective (hydrate)",
       "iterations": 300,
       "rows_per_response": 1000,
-      "mean_ms": 1.9235284366618544,
-      "median_ms": 1.8162299999175957,
-      "p95_ms": 2.295243849982853,
-      "stdev_ms": 0.7532068750843282,
-      "responses_per_sec": 519.877939384888
+      "mean_ms": 3.07724659666898,
+      "median_ms": 2.5754705000053946,
+      "p95_ms": 4.65963359995385,
+      "stdev_ms": 1.2796098810889784,
+      "responses_per_sec": 324.9658318194153
+    },
+    {
+      "approach": "sqlom compiled (per-row)",
+      "iterations": 300,
+      "rows_per_response": 1000,
+      "mean_ms": 1.1286161866640516,
+      "median_ms": 1.053289499964194,
+      "p95_ms": 1.2703772001145808,
+      "stdev_ms": 0.8812986688304167,
+      "responses_per_sec": 886.0408098131096
+    },
+    {
+      "approach": "sqlom compiled (batch)",
+      "iterations": 300,
+      "rows_per_response": 1000,
+      "mean_ms": 1.0625605900024009,
+      "median_ms": 1.0022134999871923,
+      "p95_ms": 1.1378626999203334,
+      "stdev_ms": 0.777429477102606,
+      "responses_per_sec": 941.1228022279092
+    },
+    {
+      "approach": "dataclass slots (orjson native)",
+      "iterations": 300,
+      "rows_per_response": 1000,
+      "mean_ms": 1.5060356733359488,
+      "median_ms": 1.3141720000930945,
+      "p95_ms": 2.235419499947966,
+      "stdev_ms": 0.8204811242205688,
+      "responses_per_sec": 663.99489580811
+    },
+    {
+      "approach": "dataclass slots (passthrough)",
+      "iterations": 300,
+      "rows_per_response": 1000,
+      "mean_ms": 1.0962683566594933,
+      "median_ms": 1.0322440000436472,
+      "p95_ms": 1.2391950998335233,
+      "stdev_ms": 0.7742742221544997,
+      "responses_per_sec": 912.1854096447347
+    },
+    {
+      "approach": "sqlom DB-side JSON",
+      "iterations": 300,
+      "rows_per_response": 1000,
+      "mean_ms": 0.47481104333883195,
+      "median_ms": 0.4611984999201013,
+      "p95_ms": 0.5673662501180843,
+      "stdev_ms": 0.04887095018103467,
+      "responses_per_sec": 2106.1009722269364
     },
     {
       "approach": "SQLAlchemy Core",
       "iterations": 300,
       "rows_per_response": 1000,
-      "mean_ms": 4.173290500000727,
-      "median_ms": 3.9945020000118348,
-      "p95_ms": 5.235455900003672,
-      "stdev_ms": 0.5280565775464744,
-      "responses_per_sec": 239.61907276759808
+      "mean_ms": 4.141649826660038,
+      "median_ms": 4.04523349993724,
+      "p95_ms": 4.8855113499826075,
+      "stdev_ms": 0.3688778909897698,
+      "responses_per_sec": 241.44967388670634
     },
     {
       "approach": "SQLAlchemy ORM",
       "iterations": 300,
       "rows_per_response": 1000,
-      "mean_ms": 6.686073509999915,
-      "median_ms": 5.5454890000419255,
-      "p95_ms": 16.649653399997533,
-      "stdev_ms": 3.30857134203032,
-      "responses_per_sec": 149.56461344679605
+      "mean_ms": 6.394495180014322,
+      "median_ms": 5.395453500000258,
+      "p95_ms": 15.534670800127515,
+      "stdev_ms": 2.9365544887581922,
+      "responses_per_sec": 156.3845107156309
     }
   ]
 }

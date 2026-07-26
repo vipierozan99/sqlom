@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import Boolean, Column as SAColumn, Integer, String, Table, MetaData
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from sqlom import Column, ModelMeta
+from sqlom import Column, ModelMeta, model
 
 TABLE_NAME = "users"
 
@@ -59,3 +59,16 @@ class UserORM(Base):
     name: Mapped[str]
     email: Mapped[str]
     is_active: Mapped[bool]
+
+
+@model
+class UserDC:
+    """Same schema as `User`, but a real stdlib @dataclass(slots=True) whose
+    class-level attribute access still yields query expressions."""
+
+    __tablename__ = TABLE_NAME
+
+    id: int
+    name: str
+    email: str
+    is_active: bool
