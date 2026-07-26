@@ -34,6 +34,43 @@ make Postgres the bottleneck would compress it toward 1.0.
 
 ---
 
+## Where the CPU actually goes (profiled)
+
+Profiling the saturated path — client on one core, Postgres on two, sampled so
+instrumentation doesn't distort it — puts a ceiling on how much the mapper can still
+matter ([BENCHMARKS §5b](BENCHMARKS.md#5b-where-sqloms-0225-msreq-goes-sampled)):
+
+| component | share of client CPU |
+|---|---|
+| asyncio loop dispatch + protocol/TLS | 38% |
+| asyncpg `Connection.fetch` | 19% |
+| asyncpg pool acquire/release | 15% |
+| **sqlom generated code** (hydrate + dict build) | **15%** |
+| `orjson.dumps` | 7% |
+
+**sqlom's own code is ~15% of the CPU it is competing on.** Driving it to zero would
+buy ~15% throughput; the larger remaining targets are the event loop and pool
+handling, neither of which is mapper work. Notably pool acquire/release alone costs
+as much as all hydration.
+
+This is the throughput analogue of the latency finding in §2: there the driver was
+65% of a single request's wall clock, here the loop and driver are ~72% of its CPU.
+Both say the same thing from different directions — **the mapper stopped being the
+bottleneck some time ago**, and the 6x over the ORM comes from the ORM spending
+1.29 ms/req where sqlom spends 0.22, not from sqlom's remaining 0.03 ms of headroom.
+
+For the ORM the profile names the mechanism exactly: 40,000 `InstanceState.__init__`
+and `new_instance` calls per 800 requests (one per row), 160,000
+`InstrumentedAttribute.__get__` calls (one per field read), and `orm/loading.py:
+_instance` as the single largest frame. That is the identity-map and instrumentation
+cost this design set out to skip, measured rather than asserted.
+
+One incidental discovery worth carrying: the benchmark's loopback connection was
+negotiating **TLSv1.3**, which costs ~20% of client CPU. Ratios are unaffected since
+both sides pay it, but absolute throughput in §4 is understated by ~25%.
+
+---
+
 ## Adopted optimizations
 
 ### Code-generate the hydrator per model

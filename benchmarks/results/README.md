@@ -14,6 +14,7 @@ Committed as evidence so the tables there can be traced to a real run.
 | `isolated_pinned_sqlalchemy.txt` | SQLAlchemy async Core and ORM, isolated, 3 trials, client 2 cores. |
 | `isolated_unpinned.txt` | sqlom, async ORM and the codegen-dict floor, isolated, 3 trials, 4 cores shared. |
 | `core_sweep_1core_client.txt` | **The headline measurement.** Client pinned to one core, Postgres given 1/2/3 cores, sqlom vs async ORM, 3 trials each. |
+| `profile_pg_1core.txt` | **Profiled run**: client pinned to core 0, Postgres to cores 2,3. cProfile (CPU timer) + pyinstrument sampling for sqlom and the async ORM, plus a `sslmode=disable` contrast run. |
 | `multiprocess_scaling.txt` | 1 vs 2 sqlom worker processes, one core each, Postgres on cores 2,3. |
 
 Anything labelled *combined suite* ran all contenders in a single process and is

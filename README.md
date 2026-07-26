@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#5-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#6-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -232,9 +232,13 @@ agree).
   common production shape.
 - **There is no HTTP layer.** A real FastAPI/uvicorn stack adds per-request overhead
   that would compress these ratios. "Requests/sec for your API" is unmeasured.
-- **Hydration is only ~12% of one request's wall-clock.** 65% is the driver
-  materializing Python values, which sqlom cannot touch. Stage share governs latency;
-  total CPU governs throughput.
+- **Hydration is only ~12% of one request's wall-clock**, and sqlom's generated code
+  is only **~15% of its CPU** under load — 38% is the asyncio event loop, 19% the
+  asyncpg fetch, 15% pool acquire/release. Stage share governs latency; total CPU
+  governs throughput; and by either measure the mapper is no longer the bottleneck.
+- **The benchmark's loopback connection negotiates TLSv1.3**, which costs ~20% of
+  client CPU. Ratios are unaffected (both sides pay it) but absolute throughput is
+  understated by ~25%: 5536 rps with `sslmode=disable` vs 4428 with it on.
 
 ### If you only ever emit JSON, use the database
 

@@ -220,7 +220,121 @@ Artifacts: [`results/pg_load_100rows.json`](../benchmarks/results/pg_load_100row
 
 ---
 
-## 5. What none of this shows
+## 5. Profiled run: client 1 core, Postgres 2 cores
+
+`benchmarks/profile_pg.py --pin 0:2,3 --compare --sampler`. 100 rows/request, pool
+10, saturated at c=8. Two profilers because they disagree usefully: cProfile with a
+`process_time` timer (deterministic, attributes **CPU** not wall time, but inflates
+call-heavy code ~4.6x) and pyinstrument sampling (low distortion). Wall ≈ CPU at
+this concurrency, so the sampler's wall-clock tree reads as CPU.
+
+Artifact: [`results/profile_pg_1core.txt`](../benchmarks/results/profile_pg_1core.txt)
+
+### 5a. Latency-bound vs throughput-bound, in one measurement
+
+| | sqlom | async ORM |
+|---|---|---|
+| sequential (c=1), wall/req | 0.447 ms | 1.719 ms |
+| sequential, CPU/req | 0.289 ms | 1.400 ms |
+| sequential utilization | 0.65 | 0.81 |
+| **waiting on Postgres** | **35% of wall** | **19% of wall** |
+| saturated (c=8), CPU/req | 0.225 ms | 1.293 ms |
+| saturated utilization | 1.00 | 1.00 |
+| throughput | 4428 rps | 773 rps |
+
+A lone sqlom request spends 35% of its wall time waiting on Postgres; the ORM only
+19%, not because its queries are faster but because its Python work is so much
+larger that the same wait is a smaller share. At c=8 that wait is fully hidden
+behind other requests, utilization hits 1.00 for both, and CPU/req alone sets
+throughput.
+
+### 5b. Where sqlom's 0.225 ms/req goes (sampled)
+
+| component | share |
+|---|---|
+| asyncio event loop dispatch + protocol/TLS, outside the request coroutine | **38%** |
+| asyncpg `Connection.fetch` | 19% |
+| asyncpg pool acquire/release | **15%** |
+| sqlom `_hydrate_all` (generated hydrator) | 11% |
+| `orjson.dumps` | 7% |
+| sqlom `_default` (generated dict builder) | 4% |
+
+**sqlom's own generated code is ~15% of client CPU.** Roughly 72% is asyncio plus
+asyncpg plus pool bookkeeping, and pool acquire/release alone (15%) costs as much as
+hydration. That puts a hard ceiling on further mapper micro-optimization: making
+hydration free would buy ~15%, whereas the event loop and pool handling are the
+larger targets.
+
+(cProfile's instrumented view puts sqlom codegen at 29% rather than 15%. The
+discrepancy is exactly what instrumentation bias predicts: `_default` is called
+80,000 times per 800 requests, so per-call overhead lands hardest on it. Trust the
+sampler for absolute shares, cProfile for call counts.)
+
+### 5c. Where the ORM's extra 1.07 ms/req goes
+
+Shares rescaled onto each side's measured CPU/req, so columns are comparable:
+
+| library | sqlom | async ORM | delta |
+|---|---|---|---|
+| SQLAlchemy ORM internals | 0.000 | 0.634 | **+0.634** |
+| attribute reads while building the payload dict | 0.005 | 0.256 | **+0.251** |
+| SQLAlchemy engine / pool / asyncio ext | 0.000 | 0.098 | +0.098 |
+| SQLAlchemy SQL / util / dialect | 0.000 | 0.071 | +0.071 |
+| asyncio / loop | 0.094 | 0.168 | +0.074 |
+| asyncpg | 0.027 | 0.033 | +0.006 |
+| orjson | 0.016 | 0.003 | −0.013 |
+| sqlom (codegen) | 0.061 | 0.000 | −0.061 |
+| **TOTAL CPU ms/req** | **0.225** | **1.293** | **+1.068** |
+
+The top ORM frames name the mechanism precisely — this is the identity-map and
+instrumentation cost the design set out to avoid, now demonstrated rather than
+asserted (per 800 requests × 100 rows):
+
+| calls | self ms | frame |
+|---|---|---|
+| 40,000 | 194.6 | `orm/loading.py:_instance` |
+| 162,400 | 185.6 | `builtins.getattr` |
+| 40,000 | 136.2 | `orm/state.py:InstanceState.__init__` |
+| 160,000 | 113.8 | `orm/attributes.py:InstrumentedAttribute.__get__` |
+| 40,000 | 113.6 | `orm/instrumentation.py:new_instance` |
+| 40,000 | 63.7 | `orm/loading.py:_populate_full` |
+
+Every row gets an `InstanceState`, goes through `new_instance`, is registered in the
+identity map, and then every field read goes through `InstrumentedAttribute.__get__`
+— four `getattr`s per row become 160,000 instrumented descriptor calls.
+
+⚠️ Note that **0.251 ms/req of the ORM's cost is the harness's own dict
+comprehension** (`{n: getattr(u, n) for n in names}`), not SQLAlchemy library code.
+It is charged to the ORM here because reading attributes off ORM instances is
+unavoidable if you want JSON out, and those reads are what hit the instrumented
+descriptors. A different serialization strategy would shift this term.
+
+### 5d. The loopback connection was using TLS
+
+Discovered while reading the profile: `sslproto.py` and `_ssl._SSLSocket.read`
+appear in sqlom's top frames. This Postgres has `ssl = on`, and asyncpg's default
+`sslmode=prefer` negotiates **TLSv1.3 / AES-256-GCM even over 127.0.0.1**.
+
+| sqlom, c=8 | CPU/req | throughput |
+|---|---|---|
+| default (TLS on) | 0.225 ms | 4428 rps |
+| `?sslmode=disable` | **0.180 ms** | **5536 rps** |
+
+TLS is **~20% of client CPU and ~25% of throughput** here. Every Postgres figure in
+§4 includes it. Both contenders pay it, so the *ratios* are essentially unaffected,
+but the absolute rps figures understate what a unix-socket or non-TLS local
+connection would deliver. Nothing in §4 has been restated, because the comparison it
+makes is still apples-to-apples — but the absolute numbers are not the ceiling.
+
+```bash
+python3 benchmarks/profile_pg.py --pin 0:2,3 --compare --sampler
+python3 benchmarks/profile_pg.py --pin 0:2,3 --only sqlom \
+    --dsn "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
+```
+
+---
+
+## 6. What none of this shows
 
 - **No HTTP layer.** The load benchmark drives the data layer directly. A real
   FastAPI/uvicorn stack adds routing, validation and ASGI overhead per request

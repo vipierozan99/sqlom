@@ -139,6 +139,27 @@ runs. Publishing them as a ranked list would invent a result; they are reported 
 single ~1.03–1.06 ms tier. Report spread alongside every central value so a reader
 can see when a gap is not a gap.
 
+**Never categorize profiler frames by substring on a project name.** The first
+version of `profile_pg.py` bucketed frames with `r"/sqlom/"` — which also matches
+`/home/user/sqlom/benchmarks/bench_pg_load.py`, because the repository directory
+shares the package's name. The result credited the *harness's* dict comprehension to
+the sqlom library, and made the SQLAlchemy ORM run appear to spend 20% of its time in
+sqlom, which is impossible. Caught only because that impossible row was visible.
+`profile_pg.py` now compares against resolved package directories
+(`Path(sqlom.__file__).parent`) and distinguishes sqlom's `exec`-generated frames from
+SQLAlchemy's by function name, since both use the filename `<string>`.
+
+> **Generalizes to:** a rollup that can attribute work to a library the code never
+> imported is broken. Put an impossible-by-construction row in your own output and
+> check it reads zero.
+
+**Cross-check an instrumented profile with a sampling one.** cProfile inflated this
+workload ~4.6x and put sqlom's generated code at 29% of CPU; pyinstrument sampling
+put it at 15%. The instrumented view is biased against exactly the shape of code
+under test — `_default` runs 80,000 times per 800 requests, so per-call overhead
+lands hardest on the hot small function. Use cProfile for call counts and the sampler
+for shares, and say which one a published number came from.
+
 **Record utilization, not just throughput.** `cpu_ms_per_request` and
 `cpu_utilization` are what explain a throughput difference, and they are what catch
 an impossible result. Throughput alone would not have exposed correction 3.
