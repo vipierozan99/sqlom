@@ -97,6 +97,39 @@ sqlom still leads by 7.4x over the async ORM and 4.4x over Core in the sqlite
 configuration, so the advantage is not an artifact of transport masking differences —
 it survives having transport removed.
 
+### And with transport gone, the mapper is also done
+
+Attacking every cost the sqlite profile named
+([BENCHMARKS §8](BENCHMARKS.md#8-what-is-left-in-the-sqlite-path-essentially-nothing))
+produced no reliable gain. Cursor reuse, replacing `bool()` with a tuple index, and
+collapsing orjson's 80,000 per-row callbacks into a single comprehension each measured
+1.02–1.04x, they do not compose (all three stacked = 1.04x, the same as the best one
+alone), and across smaller runs they ranged 0.99–1.03x — i.e. noise.
+
+Pushing the per-row loop into sqlite3's C fetch loop via `row_factory` made it
+**slower** (0.99x): it trades an interpreted loop for one Python *call* per row, and
+the call costs more than the iteration it replaces.
+
+The decomposition says why nothing was available:
+
+| component | ms/req | share |
+|---|---|---|
+| sqlite3 fetch — driver creating Python values | 0.0654 | **64%** |
+| JSON serialization | 0.0200 | 20% |
+| object materialization | 0.0167 | **16%** |
+
+Objects are 16% of the request. A mapper with free hydration and free serialization
+could reach 1.20x (the no-objects line); the absolute floor is 1.56x. So the remaining
+levers are all outside what a mapper controls: return narrower rows, skip objects for
+JSON-only endpoints (1.20x), give up slots for orjson's native path (1.08x at +55%
+memory), or push shaping into SQL (~2.2x — the largest, and why the `json_agg` path
+stays implemented).
+
+**Taken with the previous section, both ends are now measured and both say stop.**
+Against a remote database the mapper is ~15% of CPU and transport dominates; against a
+local one the mapper is ~50% of CPU but its *addressable* part is 16% and already at
+the floor. Further hydration micro-optimization is not where any remaining time is.
+
 ### What to optimize next, in order
 
 Acting on the profile ([BENCHMARKS §6](BENCHMARKS.md#6-acting-on-the-profile-24x-more-throughput-outside-the-mapper))

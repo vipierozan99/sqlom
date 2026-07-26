@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#8-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#9-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -208,7 +208,10 @@ No event loop, no pool, no TLS — the mapper's own cost:
 | SQLAlchemy ORM | 0.742 | 1346 | 1.0x |
 
 The lead survives removing transport, so it is not an artifact of sockets masking
-differences.
+differences. And this path is at its floor: object materialization is only **16%** of
+the request (64% is sqlite3 creating Python values), so every micro-optimization tried
+— cursor reuse, tuple-index bool, zero-callback dicts, `row_factory` — came in at
+1.04x or worse. See [§8](docs/BENCHMARKS.md#8-what-is-left-in-the-sqlite-path-essentially-nothing).
 
 ### Latency: ~6.3x on a single request
 

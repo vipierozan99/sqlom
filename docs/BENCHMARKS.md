@@ -515,7 +515,72 @@ taskset -c 0 python3 benchmarks/profile_sqlite.py --compare --sampler
 
 ---
 
-## 8. What none of this shows
+## 8. What is left in the sqlite path: essentially nothing
+
+`benchmarks/optimize_sqlite.py`. §7 attributed ~50% of the sqlite request to sqlom's
+generated code, so this attacks each named cost in turn. 100 rows/request, single
+core, median of 5 × 3000 requests, byte-identical output enforced.
+
+| variant | ms/req | req/s | vs. baseline |
+|---|---|---|---|
+| baseline (objects, N orjson callbacks) | 0.1021 | 9795 | 1.00x |
+| `row_factory` (per-row loop inside sqlite3's C code) | 0.1032 | 9688 | **0.99x** |
+| + reuse one cursor | 0.1002 | 9983 | 1.02x |
+| + tuple-index bool instead of `bool()` | 0.0991 | 10088 | 1.03x |
+| + build dicts in one pass (0 orjson callbacks) | 0.0984 | 10165 | 1.04x |
+| STACKED (cursor + tuple-bool + one-pass) | 0.0984 | 10165 | **1.04x** |
+| no-slots dataclass, orjson native path | 0.0944 | 10588 | 1.08x |
+| no objects at all (rows → dicts) | 0.0854 | 11713 | 1.20x |
+| *FLOOR: fetch only, no JSON* | *0.0654* | *15286* | *1.56x* |
+
+Artifact: [`results/optimize_sqlite.txt`](../benchmarks/results/optimize_sqlite.txt)
+
+**Every micro-optimization is at or below the noise floor**, and they do not compose:
+stacking all three yields 1.04x, the same as the best one alone, because they overlap.
+Across smaller runs the same variants measured 0.99x–1.03x, i.e. no reliable effect.
+Two are worth naming:
+
+- **`row_factory` made it slower.** Moving the per-row loop into sqlite3's C fetch
+  loop sounds like it should win, but it trades one interpreted loop for one Python
+  *call* per row, and the call is more expensive than the loop iteration it replaces.
+- **Eliminating orjson's per-row callback bought ~1.04x, not the ~15% its share
+  suggested.** `_default` fires 80,000 times per 800 requests, which looks alarming;
+  replacing it with a single-pass comprehension shows most of that cost is the dict
+  construction itself, not the Rust→Python transition.
+
+### The decomposition explains why
+
+| component | ms/req | share |
+|---|---|---|
+| sqlite3 fetch — driver creating Python values | 0.0654 | **64%** |
+| JSON serialization | 0.0200 | 20% |
+| **object materialization** | **0.0167** | **16%** |
+
+Objects cost 0.0167 ms of a 0.1021 ms request. Even a *perfect* mapper — free
+hydration, free serialization hook — could only reach the no-objects line at 1.20x,
+and the floor is 1.56x. **There is no meaningful optimization left inside the object
+mapper for this shape.**
+
+### The levers that remain are all outside the mapper's contract
+
+1. **Return fewer or narrower rows** (64% of the request is the driver materializing
+   Python values — the only way to reduce it is to ask for less).
+2. **Skip objects for JSON-only endpoints** — 1.20x, but then it is not a mapper.
+3. **Give up `__slots__`** for orjson's native path — 1.08x, at +55% memory per
+   instance (113 vs 72 bytes) and the
+   [attribute-leak caveat](FINDINGS.md#rejected-with-reasons).
+4. **Push shaping into SQL** — the parked `json_agg`/`json_group_array` path, ~2.2x
+   over the best object path ([§1](#1-sqlite-micro-benchmark-single-request-latency)),
+   because it skips objects *and* Python-side JSON at once. Comfortably the largest
+   remaining lever, and the reason it stays implemented rather than deleted.
+
+```bash
+taskset -c 0 python3 benchmarks/optimize_sqlite.py --repeat 5
+```
+
+---
+
+## 9. What none of this shows
 
 - **No HTTP layer.** The load benchmark drives the data layer directly. A real
   FastAPI/uvicorn stack adds routing, validation and ASGI overhead per request
