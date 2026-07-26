@@ -197,18 +197,23 @@ Concurrent load against live PostgreSQL 16 over asyncpg, isolated, median of 3, 
 | 2 | 4111 rps (0.242) | 672 rps (1.484) | 6.12x |
 | 3 | 3599 rps (0.278) | 701 rps (1.426) | 5.13x |
 
-### Latency: ~6x on a single request
+### Latency: ~6.3x on a single request
 
-sqlite micro-benchmark, 1000 rows/response, all approaches asserted to emit
-byte-identical JSON:
+sqlite micro-benchmark, 1000 rows/response, median of 5 trials, all approaches
+asserted to emit byte-identical JSON:
 
-| approach | mean | vs. ORM |
+| approach | median | vs. ORM |
 |---|---|---|
-| sqlom compiled (batch hydrator) | 1.06 ms | **6.0x** |
-| `@model` dataclass + `OPT_PASSTHROUGH_DATACLASS` | 1.10 ms | 5.8x |
-| sqlom reflective (unoptimized) | 3.08 ms | 2.1x |
-| SQLAlchemy 2.0 Core | 4.14 ms | 1.5x |
-| SQLAlchemy 2.0 ORM | 6.39 ms | 1.0x |
+| sqlom compiled (per-row / batch) and `@model` + passthrough | 1.03–1.06 ms | **~6.3x** |
+| `@model` dataclass, orjson native path | 1.29 ms | 5.2x |
+| sqlom reflective (unoptimized) | 2.53 ms | 2.6x |
+| SQLAlchemy 2.0 Core | 4.25 ms | 1.6x |
+| SQLAlchemy 2.0 ORM | 6.65 ms | 1.0x |
+
+The first row is three variants that are a **statistical tie** — their ordering
+changes between runs, so they're grouped rather than ranked. Verified free of the
+ordering bias that affects the Postgres suite (reverse-order and per-process runs
+agree).
 
 ### Read this before believing the 6x
 

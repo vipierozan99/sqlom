@@ -22,7 +22,7 @@ configuration tested. Three consequences:
    2 workers on 2 cores → 8739 rps (1.99x), per-worker throughput unchanged.
 
 This also resolves an apparent contradiction. Within one request, hydration is only
-~12% of wall-clock, so making it 4.9x faster buys only ~2.4x end-to-end — the
+~12% of wall-clock, so making it 4.9x faster buys only ~2.6x end-to-end — the
 driver dominates. But under saturation the binding constraint is *total CPU per
 request*, and there the mapper's share is decisive. **Stage share governs latency;
 total CPU governs throughput.** Both statements are true and they are not in
@@ -65,7 +65,14 @@ dicts that get materialized into real ones.
 
 `compile_batch_hydrator` unpacks the row in the `for` statement itself
 (`for f0, f1, f2 in rows`) and binds `list.append` once outside the loop: 148 → 123
-ns/object. End-to-end this is within noise, but it is free.
+ns/object in isolation.
+
+**End-to-end this is not measurable**, and the honest reading is that it does not
+matter for a JSON endpoint: 25 ns/object over 1,000 rows is 0.025 ms against a
+~1.05 ms pipeline, so batch and per-row are a statistical tie in
+[§1](BENCHMARKS.md#1-sqlite-micro-benchmark-single-request-latency) with their order
+flipping between runs. It is kept because it is free and it matters more as rows
+grow or when objects are built without being serialized.
 
 ### Code-generate the orjson hook
 
@@ -87,7 +94,7 @@ User.id      # -> ColumnExpr  (metaclass data descriptor wins)
 user.id      # -> 1           (plain slot read)
 ```
 
-Both styles measure the same (72 B/object; 1.06 vs 1.10 ms). Pick on ergonomics —
+Both styles measure the same (72 B/object; 1.06 vs 1.05 ms — a tie). Pick on ergonomics —
 the dataclass style gets `asdict`, `replace`, `==`, `repr`, pattern matching.
 
 ---

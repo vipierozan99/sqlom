@@ -5,7 +5,8 @@ Committed as evidence so the tables there can be traced to a real run.
 
 | file | what it is |
 |---|---|
-| `sqlite_latest.json` | sqlite micro-benchmark, 200k rows, 1000 rows/response, 300 iterations. Includes the env block and per-approach mean/median/p95. |
+| `sqlite_latest.json` | sqlite micro-benchmark, 200k rows, 1000 rows/response, 300 iterations x **5 trials** per approach. Includes the env block and per-trial mean/median/p95; quote medians. |
+| `sqlite_order_check.txt` | Ordering-bias check for the sqlite suite: three forward runs, one `--reverse` run, and per-approach isolated runs. Shows the sqlite suite is *not* order-biased. |
 | `pg_load_100rows.json` | Postgres load sweep, 100 rows/request, c=1,8,32,64. **Combined suite — ordering-biased**, kept for shape not ratios. |
 | `pg_load_1000rows.json` | Same at 1000 rows/request, c=1,8,32. Also combined-suite. |
 | `pg_load_100rows_pinned.json` | Combined suite with client on cores 0,1 and Postgres on 2,3. Superseded — the 2-core client was a mistake (see METHODOLOGY correction 3). |

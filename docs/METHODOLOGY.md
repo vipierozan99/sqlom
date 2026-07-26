@@ -98,8 +98,22 @@ dict wins by 2.7x, as it must.
 mismatch. `--skip-equivalence` exists for debugging only.
 
 **One contender per process for any published number.** `--only` plus `--repeat`,
-report medians. Expect c=1 cells to swing 15–20% between trials; a single low-
-concurrency run means very little.
+report medians. Expect c=1 cells in the load benchmark to swing 15–20% between
+trials; a single low-concurrency run means very little.
+
+**Test for the bias rather than assuming it.** The ordering flaw in correction 2 was
+found in the Postgres suite, so the sqlite suite was checked for it too — with
+`--reverse` and with `--only` per process. It is *not* affected: forward, reversed
+and isolated runs agree within a few percent. The two suites differ because the load
+benchmark spans seconds per cell against a separate server whose state evolves,
+while the sqlite one is in-process with a fixed iteration count. A flaw found in one
+harness is a hypothesis about the others, not a verdict — go and measure.
+
+**Group ties instead of ranking them.** The three fastest sqlite variants span
+1.028–1.060 ms while each varies 5–7% across trials, and their order changes between
+runs. Publishing them as a ranked list would invent a result; they are reported as a
+single ~1.03–1.06 ms tier. Report spread alongside every central value so a reader
+can see when a gap is not a gap.
 
 **Record utilization, not just throughput.** `cpu_ms_per_request` and
 `cpu_utilization` are what explain a throughput difference, and they are what catch

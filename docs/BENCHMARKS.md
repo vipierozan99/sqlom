@@ -25,22 +25,54 @@ delta is the object-shaping path. 1,000 rows from a 200,000-row table, 300
 iterations after 30 warmup. All approaches are asserted to emit **byte-identical
 JSON** before timing.
 
-| approach | mean | median | p95 | resp/sec | vs. ORM |
+**Median of 5 trials**, with the observed spread across trials:
+
+| approach | median | min | max | spread | vs. ORM |
 |---|---|---|---|---|---|
-| sqlom compiled, batch hydrator | 1.06 ms | 1.00 ms | 1.14 ms | 941 | **6.0x** |
-| `@model` dataclass + `OPT_PASSTHROUGH_DATACLASS` | 1.10 ms | 1.03 ms | 1.24 ms | 912 | 5.8x |
-| sqlom compiled, per-row hydrator | 1.13 ms | 1.05 ms | 1.27 ms | 886 | 5.7x |
-| `@model` dataclass, orjson native path | 1.51 ms | 1.31 ms | 2.24 ms | 664 | 4.3x |
-| sqlom reflective (`hydrate()` + `as_dict()`) | 3.08 ms | 2.58 ms | 4.66 ms | 325 | 2.1x |
-| SQLAlchemy 2.0 Core | 4.14 ms | 4.05 ms | 4.89 ms | 241 | 1.5x |
-| SQLAlchemy 2.0 ORM | 6.39 ms | 5.40 ms | 15.54 ms | 156 | 1.0x (baseline) |
-| *(DB-side JSON, `json_group_array` — parked)* | *0.48 ms* | *0.46 ms* | *0.57 ms* | *2106* | *13.5x* |
+| sqlom compiled, per-row hydrator | 1.028 ms | 1.024 | 1.091 | 7% | 6.46x |
+| `@model` dataclass + `OPT_PASSTHROUGH_DATACLASS` | 1.054 ms | 1.013 | 1.067 | 5% | 6.30x |
+| sqlom compiled, batch hydrator | 1.060 ms | 1.014 | 1.072 | 5% | 6.27x |
+| `@model` dataclass, orjson native path | 1.292 ms | 1.248 | 1.325 | 6% | 5.15x |
+| sqlom reflective (`hydrate()` + `as_dict()`) | 2.528 ms | 2.481 | 2.610 | 5% | 2.63x |
+| SQLAlchemy 2.0 Core | 4.252 ms | 3.967 | 4.695 | 17% | 1.56x |
+| SQLAlchemy 2.0 ORM | 6.647 ms | 6.543 | 6.835 | 4% | 1.00x (baseline) |
+| *(DB-side JSON, `json_group_array` — parked)* | *0.467 ms* | *0.452* | *0.487* | *7%* | *14.24x* |
+
+⚠️ **The top three rows are a statistical tie.** Their medians span 1.028–1.060 ms
+while each individually varies by 5–7% across trials, and their ordering changes
+from run to run — per-row led this run, batch led two of three earlier runs. Read
+them as "~1.03–1.06 ms, ~6.3x" and do not infer that one compiled variant beats
+another end-to-end. The batch hydrator *is* measurably faster in isolation (123 vs
+148 ns/object, §3), but 25 ns/object over 1,000 rows is 0.025 ms — well inside the
+noise floor of a ~1.05 ms pipeline.
+
+What *is* consistent across every run: the tier structure. DB-side JSON (~0.47) ≪
+compiled object paths (~1.03–1.06) < dataclass-native (~1.29) ≪ reflective (~2.53)
+< SQLAlchemy Core (~4.25) < SQLAlchemy ORM (~6.65). And SQLAlchemy Core is the
+noisiest contender at 17% spread, so its 1.56x is the softest number in the table.
+
+**This benchmark was checked for the ordering bias that affects the Postgres suite
+([METHODOLOGY correction 2](METHODOLOGY.md#2-contender-ordering-inside-one-process))
+and is not subject to it.** Running the suite in reverse order, and running each
+approach in its own process, both reproduce the same figures:
+
+| approach | forward suite | reversed suite | isolated (median of 3) |
+|---|---|---|---|
+| sqlom compiled (batch) | 1.019–1.131 | 1.032 | 1.050 |
+| sqlom compiled (per-row) | 1.066–1.095 | 1.056 | 1.050 |
+| dataclass + passthrough | 1.049–1.073 | 1.091 | 1.111 |
+| sqlom reflective | 2.517–2.550 | 2.431 | 2.536 |
+| SQLAlchemy Core | 3.919–4.129 | 4.060 | 3.819 |
+| SQLAlchemy ORM | 6.629–6.802 | 6.505 | 6.552 |
 
 ```bash
-python3 benchmarks/bench_sqlite.py --rows 200000 --limit 1000 --iterations 300 --warmup 30
+python3 benchmarks/bench_sqlite.py --rows 200000 --limit 1000 --iterations 300 --warmup 30 --repeat 5
+python3 benchmarks/bench_sqlite.py ... --reverse                    # order check
+python3 benchmarks/bench_sqlite.py ... --only reflective --repeat 3  # isolation check
 ```
 
 Artifact: [`results/sqlite_latest.json`](../benchmarks/results/sqlite_latest.json)
+(all 5 trials per approach), [`results/sqlite_order_check.txt`](../benchmarks/results/sqlite_order_check.txt)
 
 ---
 

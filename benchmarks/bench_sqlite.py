@@ -215,18 +215,25 @@ def summarize(name, samples, rows_returned):
 
 
 def print_table(results, baseline_name):
-    baseline = next(r for r in results if r["approach"] == baseline_name)["mean_ms"]
+    def med(name, key):
+        vals = [r[key] for r in results if r["approach"] == name]
+        return statistics.median(vals) if vals else float("nan")
+
+    have_baseline = any(r["approach"] == baseline_name for r in results)
+    baseline = med(baseline_name, "mean_ms") if have_baseline else float("nan")
     header = (
         f"{'approach':<34}{'mean ms':>9}{'median':>9}{'p95':>9}"
         f"{'resp/sec':>10}{'vs ORM':>9}"
     )
     print(header)
     print("-" * len(header))
-    for r in sorted(results, key=lambda r: r["mean_ms"]):
+    names = sorted({r["approach"] for r in results}, key=lambda n: med(n, "mean_ms"))
+    for name in names:
+        mean = med(name, "mean_ms")
+        ratio = f"{baseline / mean:>8.2f}x" if have_baseline else f"{'-':>9}"
         print(
-            f"{r['approach']:<34}{r['mean_ms']:>9.3f}{r['median_ms']:>9.3f}"
-            f"{r['p95_ms']:>9.3f}{r['responses_per_sec']:>10.1f}"
-            f"{baseline / r['mean_ms']:>8.2f}x"
+            f"{name:<34}{mean:>9.3f}{med(name, 'median_ms'):>9.3f}"
+            f"{med(name, 'p95_ms'):>9.3f}{med(name, 'responses_per_sec'):>10.1f}{ratio}"
         )
 
 
@@ -238,6 +245,14 @@ def main():
     parser.add_argument("--warmup", type=int, default=30, help="untimed repetitions per approach")
     parser.add_argument("--out", type=str, default=None, help="optional path to write JSON results")
     parser.add_argument("--skip-equivalence", action="store_true", help="don't enforce identical output")
+    parser.add_argument(
+        "--only",
+        default=None,
+        help="run only approaches whose name contains this substring. Use to "
+             "isolate an approach from ordering effects within the process.",
+    )
+    parser.add_argument("--repeat", type=int, default=1, help="repeat each approach N times")
+    parser.add_argument("--reverse", action="store_true", help="reverse approach order")
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -259,6 +274,14 @@ def main():
             ("SQLAlchemy ORM", run_sqlalchemy_orm(orm_engine, args.limit)),
         ]
 
+        if args.only:
+            cases = [c for c in cases if args.only.lower() in c[0].lower()]
+            if not cases:
+                print(f"no approach matches {args.only!r}", file=sys.stderr)
+                return 1
+        if args.reverse:
+            cases = list(reversed(cases))
+
         # Fairness gate: identical bytes, or the comparison is meaningless.
         if not args.skip_equivalence:
             reference_name, reference = cases[0][0], cases[0][1]()
@@ -274,8 +297,11 @@ def main():
 
         results = []
         for name, fn in cases:
-            samples = time_it(fn, args.iterations, args.warmup)
-            results.append(summarize(name, samples, args.limit))
+            for trial in range(args.repeat):
+                samples = time_it(fn, args.iterations, args.warmup)
+                row = summarize(name, samples, args.limit)
+                row["trial"] = trial
+                results.append(row)
 
         raw_conn.close()
 
