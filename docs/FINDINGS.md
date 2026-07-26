@@ -22,8 +22,8 @@ configuration tested. Three consequences:
    2 workers on 2 cores → 8739 rps (1.99x), per-worker throughput unchanged.
 
 This also resolves an apparent contradiction. Within one request, hydration is only
-~12% of wall-clock, so making it 4.9x faster buys only ~2.6x end-to-end — the
-driver dominates. But under saturation the binding constraint is *total CPU per
+~12% of wall-clock, so making it 4.9x faster buys only ~2.4x end-to-end (2.53 ms
+reflective → 1.03-1.06 ms compiled) — the driver dominates. But under saturation the binding constraint is *total CPU per
 request*, and there the mapper's share is decisive. **Stage share governs latency;
 total CPU governs throughput.** Both statements are true and they are not in
 conflict.

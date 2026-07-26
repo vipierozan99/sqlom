@@ -1,6 +1,6 @@
 # How to benchmark this honestly
 
-Four claims published in this repo turned out to be wrong. Each was caught by
+Five claims published in this repo turned out to be wrong. Each was caught by
 attacking the benchmark rather than trusting it, and each came from a distinct
 methodological flaw. They are recorded here because the flaws generalize well
 beyond sqlom.
@@ -10,9 +10,9 @@ you built should be treated as a bug report until you have tried to break it.**
 
 ---
 
-## The four corrections
+## The five corrections
 
-### 1. Comparing different payloads (inflated 3.5x → 2.1x)
+### 1. Comparing different payloads (inflated 3.5x → 2.6x)
 
 The first sqlite benchmark had sqlom emitting `"is_active":1` while both SQLAlchemy
 variants emitted `"is_active":true`. sqlite has no boolean type, and SQLAlchemy's
@@ -22,7 +22,8 @@ and the published 3.5x-vs-ORM was partly measuring that.
 
 Fix: `bench_sqlite.py` now asserts every approach emits **byte-identical JSON**
 before timing starts, and fails loudly otherwise. The honest figure for that same
-approach is ~2.1–2.5x.
+approach is **2.63x** (median of 5; earlier revisions of this file said 2.1–2.5x,
+which came from the same single noisy run described in correction 5).
 
 > **Generalizes to:** any cross-library comparison. If two implementations produce
 > different bytes, you are not benchmarking the same work. Diff the output first.
@@ -88,6 +89,29 @@ dict wins by 2.7x, as it must.
 
 > **Generalizes to:** never merge numbers from different harnesses into one table.
 > Re-measure everything you intend to place in the same column.
+
+### 5. Publishing a single run, and ranking a tie
+
+The sqlite table was generated from one run of the suite. Several cells in that run
+were unrepresentative: the reflective path measured 3.08 ms against a true median of
+2.53 ms (published 2.1x vs. an actual 2.63x), and `@model` dataclass native came out
+at 4.3x against an actual 5.15x.
+
+Worse, the table *ranked* the three fastest variants — compiled batch 1.06 ms,
+passthrough 1.10, compiled per-row 1.13 — as if that ordering meant something. It
+doesn't. Across nine runs their medians span 1.028–1.060 ms while each varies 5–7%
+between trials, and the order changes run to run: per-row led the median-of-5 run,
+batch led two of three earlier ones. The published ranking was noise presented as a
+result.
+
+Fix: `--repeat` plus medians, spread reported alongside every central value, and the
+three tied variants grouped into one row rather than ranked.
+
+> **Generalizes to:** one run is an anecdote. Repeat, publish the median *and* the
+> spread, and when the spread between two rows exceeds the gap between them, say
+> they tie instead of ordering them. Note that the tier structure here was stable
+> across every run — it is the fine-grained ordering that was not, so distinguish
+> "which tier" from "which of these three" when deciding what you can claim.
 
 ---
 
