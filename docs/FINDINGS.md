@@ -5,6 +5,29 @@ Engineering conclusions from building and measuring sqlom. Numbers are from
 
 ---
 
+## The bottom line, both sides tuned
+
+| | data layer | through FastAPI |
+|---|---|---|
+| sqlom vs SQLAlchemy ORM (tuned) | 7.18x | **4.80x** |
+| sqlom vs SQLAlchemy Core (tuned) | 4.00x | 2.73x |
+
+Measured with every optimization in this repo applied to sqlom *and* the equivalent
+applied to SQLAlchemy — including `isolation_level="AUTOCOMMIT"`, without which
+SQLAlchemy sends 3 statements per request (`BEGIN`/`SELECT`/`ROLLBACK`) against
+sqlom's 1. SQLAlchemy's own tuning is worth 1.10-1.15x, so the gap is not an artifact
+of leaving it misconfigured
+([BENCHMARKS §13](BENCHMARKS.md#13-bottom-line-sqlom-vs-sqlalchemy-both-tuned-with-and-without-fastapi)).
+
+**FastAPI + uvicorn costs 121 µs/request and every route pays it**, which compresses
+the ratio by about a third. Above that floor the data layers cost 292 µs (sqlom),
+1003 µs (Core) and 1856 µs (ORM) per request. The tail matters more than the mean:
+sqlom's p99 is 4.9 ms against the ORM's 65 ms.
+
+Practical reading: on a fixed core budget a JSON read endpoint serves ~4.8x more
+requests, and no data layer can exceed the 8297 rps framework floor — so the cheaper
+the query, the less the mapper matters.
+
 ## The scaling model, which reframes everything else
 
 A sqlom client is one asyncio event loop under the GIL. It saturates **exactly one

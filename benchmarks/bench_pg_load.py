@@ -195,9 +195,16 @@ CONTENDERS = {
 
 
 def _number(sql):
+    """Number bare "$" placeholders, but leave already-numbered SQL alone.
+
+    `Query.to_sql(placeholder="$")` numbers them itself now; re-running this
+    regex over "$1" produces "$11".
+    """
     import itertools
     import re
 
+    if "$1" in sql or "$" not in sql:
+        return sql
     counter = itertools.count(1)
     return re.sub(r"\$", lambda _: f"${next(counter)}", sql)
 

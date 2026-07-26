@@ -63,12 +63,10 @@ async def build(args):
     query = (
         Query(User).where(User.is_active == True).where(User.id > 100).limit(args.limit)
     )
+    # to_sql(placeholder="$") emits $1, $2, ... already. Re-running a
+    # renumbering regex over that turns $1 into $11 and the query fails with
+    # "could not determine data type of parameter $1".
     sql, params = query.to_sql(placeholder="$")
-    import itertools
-    import re
-
-    counter = itertools.count(1)
-    sql = re.sub(r"\$", lambda _: f"${next(counter)}", sql)
 
     hydrate_all = compile_batch_hydrator(User, ASYNCPG_CONVERTERS)
     to_dict = compile_json_default(User)

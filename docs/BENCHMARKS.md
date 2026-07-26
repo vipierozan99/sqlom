@@ -957,7 +957,92 @@ Artifacts: [`results/conditional_reset.txt`](../benchmarks/results/conditional_r
 
 ---
 
-## 13. What none of this shows
+## 13. Bottom line: sqlom vs SQLAlchemy, both tuned, with and without FastAPI
+
+Everything above, applied to both sides. `benchmarks/bench_final.py` for the data
+layer, `benchmarks/fastapi_app.py` + `benchmarks/httpload.py` for end to end.
+
+**SQLAlchemy is tuned too, and one of its knobs matters a lot.** By default
+SQLAlchemy wraps each request in `BEGIN … ROLLBACK`, so it sends **3 statements per
+request** against sqlom's 1 (verified with `log_statement=all`). A read-only endpoint
+does not need a transaction, and charging those two extra round trips to "ORM
+overhead" would be dishonest. With `isolation_level="AUTOCOMMIT"` it sends exactly 1.
+It also gets `pool_reset_on_return=None` (the analogue of sqlom's conditional reset),
+uvloop, a reused statement object so its compiled-SQL cache hits, and orjson.
+
+### Data layer, one core, async single-thread c=8
+
+| contender | rps | CPU ms/req | vs. tuned ORM |
+|---|---|---|---|
+| **sqlom (all optimizations)** | **4175** | **0.2395** | **7.18x** |
+| sqlom (unoptimized engine) | 3633 | 0.2736 | 6.25x |
+| SQLAlchemy Core (tuned) | 1043 | 0.9547 | 1.79x |
+| SQLAlchemy Core (default) | 952 | 1.0446 | 1.64x |
+| SQLAlchemy ORM (tuned) | 581 | 1.7080 | 1.00x |
+| SQLAlchemy ORM (default) | 504 | 1.9201 | 0.87x |
+
+**7.2x the tuned async ORM, 4.0x tuned Core.** Note SQLAlchemy's own tuning is worth
+1.10-1.15x — the AUTOCOMMIT fix is real but modest, so the gap is not an artifact of
+leaving it misconfigured.
+
+Artifact: [`results/final_comparison.txt`](../benchmarks/results/final_comparison.txt)
+
+### End to end through FastAPI — where most of the gap goes away
+
+uvicorn (uvloop + httptools) pinned to core 0, load generator to core 1, Postgres to
+cores 2,3, 8 keep-alive connections. All four endpoints return **byte-identical**
+7701-byte payloads via `Response`, bypassing FastAPI's `jsonable_encoder`, so the only
+difference between routes is the data layer.
+
+| endpoint | rps | mean | p50 | p95 | p99 |
+|---|---|---|---|---|---|
+| `/noop` — no database at all | 8297 | 0.96 ms | 0.93 | 1.28 | 1.61 |
+| **`/sqlom`** | **2427** | **3.29 ms** | 3.22 | 3.86 | 4.89 |
+| `/core` (tuned) | 890 | 8.98 ms | 8.09 | 11.28 | 16.37 |
+| `/orm` (tuned) | 506 | 15.79 ms | 11.61 | 61.46 | 65.19 |
+| `/orm-default` | 448 | 17.84 ms | 13.00 | 63.34 | 69.33 |
+
+| | data layer | through FastAPI |
+|---|---|---|
+| sqlom vs ORM (tuned) | 7.18x | **4.80x** |
+| sqlom vs ORM (default) | 8.28x | 5.42x |
+| sqlom vs Core (tuned) | 4.00x | 2.73x |
+
+**The framework floor is 121 µs/request** (`/noop` at 8297 rps) — routing, ASGI and
+HTTP framing, paid identically by every route. Subtracting it gives each data layer's
+own cost per request:
+
+| | µs/request above the floor |
+|---|---|
+| sqlom | 292 |
+| SQLAlchemy Core (tuned) | 1003 |
+| SQLAlchemy ORM (tuned) | 1856 |
+
+So the ratios survive the web layer but shrink by roughly a third — 7.2x becomes
+4.8x — because ~121 µs of fixed overhead is added to both numerator and denominator.
+**4.8x is the honest figure to quote for a JSON read endpoint on this shape of query.**
+
+Two things worth reading off the latency columns rather than the throughput ones:
+
+- **sqlom's tail is dramatically tighter.** p99 4.9 ms against the ORM's 65 ms, a 13x
+  difference on a metric users actually feel. The ORM's p50 (11.6 ms) to p99 (65 ms)
+  spread suggests queueing once the single core saturates.
+- **The floor caps everything.** No data layer can exceed 8297 rps here, so as query
+  cost falls the mapper matters less; at 100 rows/request sqlom is already using 71%
+  of its request budget on the database, the ORM 94%.
+
+```bash
+taskset -c 0 python3 benchmarks/bench_final.py --repeat 3
+taskset -c 0 python3 -m uvicorn benchmarks.fastapi_app:app --port 8000 \
+    --loop uvloop --http httptools --no-access-log &
+taskset -c 1 python3 benchmarks/httpload.py --path /sqlom --connections 8 --duration 4
+```
+
+Artifact: [`results/fastapi_end_to_end.txt`](../benchmarks/results/fastapi_end_to_end.txt)
+
+---
+
+## 14. What none of this shows
 
 - **No HTTP layer.** The load benchmark drives the data layer directly. A real
   FastAPI/uvicorn stack adds routing, validation and ASGI overhead per request

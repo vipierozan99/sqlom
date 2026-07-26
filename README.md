@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#13-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#14-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -186,16 +186,34 @@ Full results in **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**, engineering conclu
 **[docs/FINDINGS.md](docs/FINDINGS.md)**, and — please — **[docs/METHODOLOGY.md](docs/METHODOLOGY.md)**,
 which logs four published claims that turned out to be wrong and why.
 
-### Throughput: ~6x SQLAlchemy's async ORM
+### Bottom line: 4.8x through FastAPI, 7.2x at the data layer
 
-Concurrent load against live PostgreSQL 16 over asyncpg, isolated, median of 3, c=8,
-100 rows/request, client pinned to one core:
+Both sides fully tuned — SQLAlchemy gets `isolation_level="AUTOCOMMIT"` (without it
+it sends 3 statements per request against sqlom's 1), `pool_reset_on_return=None`,
+uvloop, a reused statement and orjson. One core, async single-thread c=8, Postgres on
+its own cores, byte-identical 7701-byte payloads.
 
-| Postgres cores | sqlom | async ORM | ratio |
+| | data layer | through FastAPI |
+|---|---|---|
+| **sqlom vs SQLAlchemy ORM (tuned)** | **7.18x** | **4.80x** |
+| sqlom vs SQLAlchemy ORM (default) | 8.28x | 5.42x |
+| sqlom vs SQLAlchemy Core (tuned) | 4.00x | 2.73x |
+
+| endpoint (FastAPI + uvicorn, one core) | rps | p50 | p99 |
 |---|---|---|---|
-| 1 | 4560 rps (0.217 ms CPU/req) | 741 rps (1.346) | 6.15x |
-| 2 | 4111 rps (0.242) | 672 rps (1.484) | 6.12x |
-| 3 | 3599 rps (0.278) | 701 rps (1.426) | 5.13x |
+| `/noop` — framework floor, no database | 8297 | 0.93 ms | 1.61 ms |
+| **`/sqlom`** | **2427** | **3.22 ms** | **4.89 ms** |
+| `/core` (tuned) | 890 | 8.09 ms | 16.37 ms |
+| `/orm` (tuned) | 506 | 11.61 ms | 65.19 ms |
+
+**The web layer costs 121 µs/request and it applies to everyone**, so it compresses
+the ratio by about a third: 7.2x at the data layer becomes 4.8x end to end. Quote
+4.8x for a JSON read endpoint. Per-request cost above the framework floor is 292 µs
+for sqlom, 1003 µs for Core, 1856 µs for the ORM — and sqlom's p99 tail is 13x
+tighter than the ORM's (4.9 ms vs 65 ms), which is the part users feel.
+
+Full detail, including why SQLAlchemy's own tuning is worth only 1.10-1.15x, in
+[§13](docs/BENCHMARKS.md#13-bottom-line-sqlom-vs-sqlalchemy-both-tuned-with-and-without-fastapi).
 
 ### With transport removed (sqlite, single-threaded, 100 rows/req)
 
