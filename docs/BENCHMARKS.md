@@ -1123,19 +1123,121 @@ taskset -c 0 python3 benchmarks/bench_psycopg.py --repeat 3
 
 ---
 
-## 15. What none of this shows
+## 15. Auditing the load generator itself
 
-- **No HTTP layer.** The load benchmark drives the data layer directly. A real
-  FastAPI/uvicorn stack adds routing, validation and ASGI overhead per request
-  that would compress every ratio here. "Requests/sec for your API" is unmeasured.
+Every end-to-end figure in §13 and §14 came from `benchmarks/httpload.py`, a
+raw-socket generator written for this repo. That is a single point of failure: if
+it silently serialised requests, throughput would collapse to `1/latency` for
+every contender, the ratios could shift or invert, and nothing in the output would
+look wrong. So it is checked three independent ways, and then the whole comparison
+is re-run with a tool that shares none of its code.
+
+### Is it concurrent? Three checks that fail differently
+
+`benchmarks/verify_concurrency.sh`, server on core 0, generator on core 1,
+Postgres on cores 2-3, `/psy-sqlom`:
+
+| connections | ESTABLISHED sockets on :8000 | rps | mean | in flight |
+|---|---|---|---|---|
+| 1 | 1 | 792 | 1.261 ms | **1.00** |
+| 2 | 2 | 1135 | 1.760 ms | **2.00** |
+| 4 | 4 | 1287 | 3.106 ms | **4.00** |
+| 8 | 8 | 1231 | 6.495 ms | **8.00** |
+| 16 | 16 | 1192 | 13.407 ms | **15.98** |
+
+1. **Direct observation.** Sockets counted from `/proc/net/tcp` mid-run — not
+   inferred from the generator's own bookkeeping. Exactly N every time.
+   (`ss` needs netlink and is unavailable in this container; `/proc` is not.)
+2. **Little's Law.** In a closed loop with no think time, `rps x mean latency`
+   equals the number of in-flight requests. It lands on N to two decimal places
+   at every level. A serialising generator would sit at 1.00 throughout.
+3. **Throughput scaling.** 792 → 1287 rps from 1 to 4 connections. A generator
+   with one request outstanding cannot get faster by being asked for more.
+
+The knee is shallow and moves between runs — a repeat run peaked at 8 (1403 rps)
+rather than 4 — so c=8 sits at or just past saturation, not before it. That
+matters only for absolute rps; the ratios are taken at a fixed c for all
+contenders.
+
+Applying check 2 retroactively to the §14 table confirms it was concurrent as
+published: `/noop` 8419x0.949, `/psy-sqlom` 1319x6.061, `/psy-core` 638x12.533,
+`/psy-orm` 396x20.196 — all 7.99-8.00 in flight.
+
+Artifact: [`results/concurrency_verification.txt`](../benchmarks/results/concurrency_verification.txt)
+
+### A second generator: locust
+
+`benchmarks/bench_locust.sh` re-runs §14's endpoints with locust 2.46.2, using
+`FastHttpUser` (geventhttpclient — the default `HttpUser` wraps `requests` and
+costs about 1 ms of client CPU per request, which on one pinned core makes the
+client the bottleneck) and `wait_time = constant(0)`, so N users means N in
+flight, the same closed-loop model as `httpload.py --connections N`. Both
+generators drive the *same* uvicorn process in the same session, so any
+difference between them cannot be blamed on warmup or Postgres state.
+
+u=8, t=10s, median of 3, one discarded warmup per endpoint:
+
+| endpoint | locust rps | httpload rps | delta | in flight (locust) |
+|---|---|---|---|---|
+| `/noop` | 5417 | 8604 | **-37.0%** | 6.70 |
+| `/psy-sqlom` | 1328 | 1326 | **+0.1%** | 7.81 |
+| `/psy-core` | 624 | 668 | -6.6% | 7.90 |
+| `/psy-orm` | 404 | 416 | -2.9% | 7.94 |
+
+| ratio | locust | httpload | published in §14 |
+|---|---|---|---|
+| sqlom vs Core | 2.13x | 1.99x | 2.07x |
+| sqlom vs ORM | 3.29x | 3.19x | 3.33x |
+
+**The ratios survive an independent generator.** Two tools sharing no code
+bracket the published 2.07x/3.33x within about 7%, and agree on sqlom's absolute
+throughput to 0.1%.
+
+**But locust cannot measure the framework floor.** `/noop` comes out 37% low, and
+check 2 says why: 6.70 in flight instead of 8. Locust on one core saturates around
+5400 rps, below `/noop`'s real throughput, so there it measures itself rather than
+the server. That is also why the two disagree by a few percent on `/psy-core` and
+`/psy-orm` while agreeing on `/psy-sqlom` — nothing about locust is broken, it is
+simply a heavier client, and its residual cost is small but not zero at these
+rates. Which is the argument for `httpload.py` existing: the `/noop` floor of
+119 µs used in §13-14 is only measurable with the cheaper generator.
+
+The general rule this makes concrete: a load generator's headroom must be
+*demonstrated*, not assumed. `/noop` is the calibration probe — if it is not well
+clear of every endpoint under test, the run is measuring the client.
+
+One resolution caveat: locust rounds sub-100 ms response times to whole
+milliseconds, so its percentile columns are ±1 ms and its p95/p99 are not
+directly comparable to `httpload.py`'s. Its rps and mean are exact.
+
+```bash
+benchmarks/verify_concurrency.sh
+benchmarks/bench_locust.sh -u 8 -t 10s -r 3
+```
+
+Artifact: [`results/locust_end_to_end.txt`](../benchmarks/results/locust_end_to_end.txt)
+
+---
+
+## 16. What none of this shows
+
+- **The HTTP layer is measured, but only one shape of it.** §13-15 run a real
+  FastAPI/uvicorn stack, but with a single worker, no TLS, no middleware, no
+  request validation and a hand-built `Response` that bypasses
+  `jsonable_encoder`. A route doing Pydantic response validation would add cost
+  to every contender equally and compress these ratios further.
 - **Postgres is barely loaded.** Small indexed reads from shared buffers. A query
   heavy enough to make the *database* the bottleneck would compress every ratio
   toward 1.0 — arguably the more common production shape, and untested.
 - **Localhost, not a network.** No real RTT, so the latency-bound regime where slow
   client code hides behind network wait is untested. That regime should shrink
   these ratios.
-- **4 vCPU; process scaling verified only to 2 workers.** 1 → 2 is linear (1.99x);
-  16 or 64 workers against one Postgres is unmeasured.
+- **4 vCPU; process scaling verified only to 2 workers, and only at the data
+  layer.** 1 → 2 is linear (1.99x); 16 or 64 workers against one Postgres is
+  unmeasured, and multi-worker scaling *through FastAPI* was never run at all.
+- **The whole box is 4 cores.** §15's partition — server 1, generator 1, Postgres
+  2 — uses all of them, so there is no spare core and no room to scale the
+  generator up. That is the ceiling behind locust's `/noop` result.
 - **Narrow shape.** One flat 4-column table of small ints and short strings. No
   joins, nested shaping, wide rows, large text/JSONB, writes or transactions.
 - **No sampling profiler.** §2 is wall-clock timing of isolated stages, not

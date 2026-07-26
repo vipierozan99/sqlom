@@ -39,6 +39,17 @@ Practical reading: on a fixed core budget a JSON read endpoint serves ~4.8x more
 requests, and no data layer can exceed the 8297 rps framework floor — so the cheaper
 the query, the less the mapper matters.
 
+**The ratios survive an independent load generator.** Re-running the both-default
+comparison under locust — different HTTP client, different concurrency model, no
+shared code — gives 2.13x Core and 3.29x ORM against the published 2.07x/3.33x, and
+matches sqlom's absolute throughput to 0.1%. Concurrency is confirmed by socket counts
+read from `/proc/net/tcp` and by Little's Law, which lands on the requested in-flight
+count to two decimal places
+([§15](BENCHMARKS.md#15-auditing-the-load-generator-itself)). The one thing locust
+*cannot* measure is the framework floor: on a single core it saturates at ~5400 rps,
+below `/noop`'s real throughput, so it reports the floor 37% low. A standard tool is
+not automatically the more trustworthy one — it has to have the headroom.
+
 ## The scaling model, which reframes everything else
 
 A sqlom client is one asyncio event loop under the GIL. It saturates **exactly one

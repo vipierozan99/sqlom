@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#15-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -184,7 +184,7 @@ None of this makes the pipeline "zero-copy" — data still moves from the C-leve
 
 Full results in **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**, engineering conclusions in
 **[docs/FINDINGS.md](docs/FINDINGS.md)**, and — please — **[docs/METHODOLOGY.md](docs/METHODOLOGY.md)**,
-which logs four published claims that turned out to be wrong and why.
+which logs five published claims that turned out to be wrong and why.
 
 ### Bottom line: 3.3x, measured the strictest way
 
@@ -220,6 +220,13 @@ tighter than the ORM's (9.2 ms vs 77.6 ms here). Details, including the statemen
 counts and why SQLAlchemy's own tuning is worth only 1.10-1.15x, in
 [§13](docs/BENCHMARKS.md#13-bottom-line-sqlom-vs-sqlalchemy-both-tuned-with-and-without-fastapi)
 and [§14](docs/BENCHMARKS.md#14-the-strictest-comparison-same-driver-both-libraries-at-their-defaults).
+
+Those figures come from a load generator written for this repo, so
+[§15](docs/BENCHMARKS.md#15-auditing-the-load-generator-itself) audits it: socket
+counts read from `/proc/net/tcp`, Little's Law, and a re-run under **locust**, which
+reproduces sqlom's throughput to 0.1% and brackets both ratios within 7% (2.13x Core,
+3.29x ORM). Locust cannot measure the `/noop` floor — on one core it saturates first,
+and Little's Law catches it — which is why the cheaper generator exists.
 
 ### With transport removed (sqlite, single-threaded, 100 rows/req)
 
@@ -270,8 +277,11 @@ agree).
   the mapper's CPU cost is visible. A query heavy enough to make the database the
   bottleneck would compress every ratio toward 1.0 — untested, and arguably the more
   common production shape.
-- **There is no HTTP layer.** A real FastAPI/uvicorn stack adds per-request overhead
-  that would compress these ratios. "Requests/sec for your API" is unmeasured.
+- **The HTTP layer is real but narrow.** One uvicorn worker, no TLS, no middleware,
+  no response validation, and a hand-built `Response` that bypasses
+  `jsonable_encoder`. A route doing Pydantic validation would add cost to every
+  contender equally and compress these ratios further. Multi-worker scaling through
+  FastAPI is unmeasured.
 - **Against Postgres, sqlom's generated code is only ~15% of client CPU** — 38% is the
   asyncio event loop, 19% the asyncpg fetch, 15% pool acquire/release. But that is a
   fact about *sockets*, not the mapper: profiled against in-process sqlite, transport

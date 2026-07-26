@@ -223,12 +223,46 @@ benchmark without a floor has no such tripwire.
 and Postgres barely loaded. That is why the mapper's CPU cost is visible at all. Say
 which side is the constraint, or the number is uninterpretable.
 
+**Audit the load generator, and never assume its concurrency.** All end-to-end
+figures came from `httpload.py`, written for this repo. A generator that silently
+serialised would produce `1/latency` for every contender with nothing in the output
+looking wrong. Three checks that fail in different ways (§15):
+
+- **Observe, don't infer.** ESTABLISHED sockets counted from `/proc/net/tcp` while
+  the run is in flight — external evidence, not the generator's own counter.
+- **Little's Law.** `rps x mean latency` must equal the number of in-flight
+  requests. It comes out at N to two decimals for N = 1, 2, 4, 8, 16; a serialising
+  generator would sit at 1.00. This is retroactive — it can be applied to any
+  already-published closed-loop table, and it validates §13-14 after the fact.
+- **Scaling.** Throughput must rise with connection count up to a knee. One request
+  outstanding cannot go faster by being asked for more.
+
+This audit found no error: the ratios were correct as published. Recording a
+*passed* audit matters as much as recording a failed one, otherwise the record
+implies verification only happens where something broke.
+
+**Calibrate the generator's headroom with a do-nothing endpoint.** Re-running §14
+under locust reproduced sqlom's throughput to 0.1% and bracketed both ratios within
+7% — but reported `/noop` 37% low, because locust on one core saturates around
+5400 rps, beneath `/noop`'s real throughput. Little's Law caught it (6.70 in flight
+instead of 8) before the number could be published. A `/noop` route that does no
+work is the cheapest possible probe: if it is not well clear of every endpoint under
+test, the client is the bottleneck and the run measures the client. Note that this
+cuts both ways — the *heavier* generator understated the endpoints, so "my numbers
+came from a standard tool" is not by itself a correctness argument.
+
+> **Generalizes to:** a second implementation of the measuring instrument is worth
+> more than another run of the first. Where two independent generators agree, the
+> number is a property of the server; where they disagree, at least one is measuring
+> itself, and the do-nothing endpoint tells you which.
+
 ---
 
 ## Reproducing
 
 ```bash
-pip install sqlalchemy orjson asyncpg attrs
+pip install sqlalchemy orjson asyncpg psycopg[binary] psycopg-pool attrs
+pip install fastapi uvicorn httptools uvloop locust   # end-to-end + generator audit
 
 # latency / component micro-benchmarks (no server needed)
 python3 benchmarks/bench_sqlite.py --rows 200000 --limit 1000 --iterations 300 --warmup 30
@@ -244,6 +278,14 @@ python3 benchmarks/bench_pg_load.py --limit 100 --concurrency 1,8,32,64 --durati
 # quote-worthy: isolated, repeated, deliberately pinned
 bash benchmarks/pin_and_run.sh --db-cores 1,2,3 --client-cores 0 -- \
      --only sqlom --concurrency 8 --duration 4 --repeat 3
+
+# same driver, both libraries at their defaults (the figure to quote)
+taskset -c 0 python3 benchmarks/bench_psycopg.py --repeat 3
+
+# end to end through FastAPI, and the audit of the generator that measures it.
+# Both start uvicorn on core 0 and Postgres on 2,3 themselves.
+benchmarks/verify_concurrency.sh        # sockets + Little's Law + scaling
+benchmarks/bench_locust.sh -u 8 -t 10s -r 3   # locust vs httpload, head to head
 ```
 
 Raw artifacts from the runs quoted in [BENCHMARKS.md](BENCHMARKS.md) are in
