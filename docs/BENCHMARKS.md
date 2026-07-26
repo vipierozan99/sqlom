@@ -1042,7 +1042,88 @@ Artifact: [`results/fastapi_end_to_end.txt`](../benchmarks/results/fastapi_end_t
 
 ---
 
-## 14. What none of this shows
+## 14. The strictest comparison: same driver, both libraries at their defaults
+
+§13 tuned both sides but ran sqlom on asyncpg, which SQLAlchemy cannot use — so
+mapper and driver were confounded — and its tuning included skipping the pool's
+session reset, a behavioural change. This removes both objections by holding
+everything constant except the mapping layer:
+
+* **psycopg3 async on both sides.** `psycopg_pool.AsyncConnectionPool` for sqlom
+  (new: `sqlom.PsycopgEngine`), `postgresql+psycopg` for SQLAlchemy.
+* **Default pool behaviour on both.** No `reset=` override, no
+  `conditional_reset`, no `AUTOCOMMIT`, no `pool_reset_on_return`. Verified with
+  `log_statement=all` that both now send the same three statements per request —
+  sqlom `BEGIN`/`SELECT`/`COMMIT`, SQLAlchemy `BEGIN`/`SELECT`/`ROLLBACK`.
+* Same query, same serializer (orjson), byte-identical output.
+
+### Data layer, one core, async single-thread c=8
+
+| contender | asyncio rps | uvloop rps | uvloop CPU ms/req |
+|---|---|---|---|
+| **sqlom (psycopg, default pool)** | **1912** | **2135** | **0.4683** |
+| SQLAlchemy Core (psycopg, default) | 766 | 801 | 1.2483 |
+| SQLAlchemy ORM (psycopg, default) | 487 | 499 | 2.0038 |
+| *sqlom vs Core* | *2.50x* | *2.67x* | |
+| *sqlom vs ORM* | *3.93x* | *4.28x* | |
+
+Artifact: [`results/psycopg_both_default.txt`](../benchmarks/results/psycopg_both_default.txt)
+
+### End to end through FastAPI, same driver, both defaults
+
+| endpoint | rps | mean | p50 | p95 | p99 |
+|---|---|---|---|---|---|
+| `/noop` — framework floor | 8419 | 0.95 ms | 0.91 | 1.26 | 1.56 |
+| **`/psy-sqlom`** | **1319** | **6.06 ms** | 5.93 | 7.55 | **9.21** |
+| `/psy-core` | 638 | 12.53 ms | 12.08 | 14.92 | 28.10 |
+| `/psy-orm` | 396 | 20.20 ms | 16.09 | 71.30 | 77.57 |
+
+| | data layer | through FastAPI |
+|---|---|---|
+| sqlom vs Core | 2.67x | **2.07x** |
+| sqlom vs ORM | 4.28x | **3.33x** |
+
+Per-request cost above the 119 µs framework floor: **639 µs** (sqlom), 1449 µs
+(Core), 2406 µs (ORM).
+
+Artifact: [`results/psycopg_end_to_end.txt`](../benchmarks/results/psycopg_end_to_end.txt)
+
+### How the four configurations compare
+
+| configuration | vs Core | vs ORM |
+|---|---|---|
+| asyncpg, both tuned, data layer (§13) | 4.00x | 7.18x |
+| asyncpg, both tuned, via FastAPI (§13) | 2.73x | 4.80x |
+| **psycopg, both default, data layer** | **2.67x** | **4.28x** |
+| **psycopg, both default, via FastAPI** | **2.07x** | **3.33x** |
+
+Two independent effects, each worth roughly a third, and they compound:
+
+- **Driver and pool policy.** Moving sqlom from tuned asyncpg to default psycopg
+  costs it more than it costs SQLAlchemy, because sqlom's advantage partly *was*
+  asyncpg plus a skipped reset. On the same driver at the same defaults, 7.18x
+  becomes 4.28x.
+- **The web layer.** A further ~119 µs/request that every route pays equally,
+  taking 4.28x down to 3.33x.
+
+**So the range to quote depends entirely on what is being claimed.** For "sqlom's
+mapping layer against SQLAlchemy's, same driver, nothing tuned, measured through a
+real web framework" the answer is **3.3x over the ORM and 2.1x over Core** — the
+most conservative and most defensible figure in this document. The 7.18x headline
+required asyncpg *and* a behavioural change, and both belong in the caveat rather
+than the claim.
+
+What does not change across any configuration: sqlom's tail. p99 9.2 ms against the
+ORM's 77.6 ms here, 4.9 vs 65.2 ms in §13 — consistently around 8x tighter.
+
+```bash
+taskset -c 0 python3 benchmarks/bench_psycopg.py --repeat 3
+# end to end: start the app, then hit /psy-sqlom, /psy-core, /psy-orm
+```
+
+---
+
+## 15. What none of this shows
 
 - **No HTTP layer.** The load benchmark drives the data layer directly. A real
   FastAPI/uvicorn stack adds routing, validation and ASGI overhead per request

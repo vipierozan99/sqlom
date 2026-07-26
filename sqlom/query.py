@@ -11,6 +11,14 @@ DIALECTS = {
         "bool": lambda col: f"json(CASE WHEN {col} THEN 'true' ELSE 'false' END)",
         "coalesce": False,
     },
+    # psycopg3 uses positional %s rather than asyncpg's numbered $1.
+    "psycopg": {
+        "placeholder": "%s",
+        "agg": "json_agg",
+        "object": "json_build_object",
+        "bool": lambda col: col,
+        "coalesce": True,
+    },
     "postgres": {
         "placeholder": "$",
         "agg": "json_agg",
@@ -50,6 +58,8 @@ class Query:
         Numbering here rather than post-processing with a regex avoids a
         substitution pass over the SQL on every call.
         """
+        # "$" means asyncpg-style numbering ($1, $2, ...). "?" (sqlite) and
+        # "%s" (psycopg) are positional and repeat unchanged.
         numbered = placeholder == "$"
         sql = ""
         params = []

@@ -1,0 +1,23 @@
+cores: [0]   100 rows/request   pool 10   async single-thread c=8   median of 3
+driver: psycopg3 async for BOTH sides; default pool behaviour on both
+
+Output equivalence: all 3 contenders emit identical JSON (7701 bytes)
+
+--- loop: asyncio ---
+contender                                  rps  cpu ms/req   util
+-----------------------------------------------------------------
+sqlom (psycopg, default pool)             1912      0.5216   1.00
+SQLAlchemy Core (psycopg, default)         766      1.3056   1.00
+SQLAlchemy ORM (psycopg, default)          487      2.0431   0.99
+
+  sqlom vs Core    2.50x      sqlom vs ORM    3.93x
+
+--- loop: uvloop ---
+contender                                  rps  cpu ms/req   util
+-----------------------------------------------------------------
+sqlom (psycopg, default pool)             2135      0.4683   1.00
+SQLAlchemy Core (psycopg, default)         801      1.2483   1.00
+SQLAlchemy ORM (psycopg, default)          499      2.0038   1.00
+
+  sqlom vs Core    2.67x      sqlom vs ORM    4.28x
+

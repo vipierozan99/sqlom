@@ -17,6 +17,8 @@ Both factories attach the generated source to the returned function as
 # across backends instead of silently leaking driver-native types into JSON.
 SQLITE_CONVERTERS = {bool: bool}
 ASYNCPG_CONVERTERS = {}
+# psycopg3 decodes Postgres booleans to real Python bools, like asyncpg.
+PSYCOPG_CONVERTERS = {}
 
 
 def compile_hydrator(model_cls, converters=None):

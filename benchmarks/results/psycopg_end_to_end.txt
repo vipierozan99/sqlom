@@ -1,0 +1,19 @@
+### FastAPI end-to-end, psycopg3 async for BOTH sides, DEFAULT pool behaviour
+### uvicorn+uvloop+httptools on core 0, load generator core 1, Postgres cores 2,3
+### 100 rows/request, pool 10, 8 keep-alive connections, median of 3 x 4s
+### All endpoints verified byte-identical (7701 bytes)
+
+endpoint           rps   mean ms     p50     p95     p99
+--------------------------------------------------------
+/noop             8419     0.949   0.914   1.263   1.556
+/psy-sqlom        1319     6.061   5.928   7.550   9.212
+/psy-core          638    12.533  12.079  14.922  28.095
+/psy-orm           396    20.196  16.087  71.298  77.567
+
+  sqlom vs Core (both default)   2.07x
+  sqlom vs ORM  (both default)   3.33x
+
+  framework floor (/noop)  8419 rps = 119 us/request
+  data-layer cost /psy-sqlom       639 us/request
+  data-layer cost /psy-core       1449 us/request
+  data-layer cost /psy-orm        2406 us/request

@@ -16,6 +16,9 @@ Endpoints:
     /core        SQLAlchemy 2.0 Core, tuned (AUTOCOMMIT, no pool reset)
     /orm         SQLAlchemy 2.0 ORM, tuned
     /orm-default SQLAlchemy 2.0 ORM as normally written
+    /psy-sqlom   sqlom on psycopg3, DEFAULT pool behaviour
+    /psy-core    SQLAlchemy Core on psycopg3, DEFAULT
+    /psy-orm     SQLAlchemy ORM on psycopg3, DEFAULT
     /noop        returns a constant — the floor: routing + ASGI only, no database
 
 Run (single core, Postgres pinned elsewhere):
@@ -36,10 +39,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from benchmarks.models import User, UserORM, users_table
-from sqlom import DatabaseEngine, Query, compile_json_default
+from sqlom import DatabaseEngine, PsycopgEngine, Query, compile_json_default
 
 DSN = "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
 SA_DSN = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/sqlom_bench"
+# Same-driver, both-defaults variants: psycopg3 async on both sides, no pool
+# tuning anywhere. See benchmarks/bench_psycopg.py.
+PSY_CONNINFO = DSN
+PSY_SA_DSN = "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
 LIMIT = int(os.environ.get("BENCH_LIMIT", "100"))
 POOL = int(os.environ.get("BENCH_POOL", "10"))
 
@@ -79,11 +86,22 @@ async def startup():
                          .where(UserORM.id > 100).limit(LIMIT))
     state["orm_cols"] = [str(c.name) for c in UserORM.__table__.columns]
 
+    # --- psycopg3 on both sides, default pool behaviour on both ---
+    psy = PsycopgEngine(PSY_CONNINFO, min_size=POOL, max_size=POOL)
+    await psy.connect()
+    state["psy"] = psy
+    state["psy_core_engine"] = create_async_engine(PSY_SA_DSN, pool_size=POOL,
+                                                   max_overflow=0)
+    state["psy_orm_engine"] = create_async_engine(PSY_SA_DSN, pool_size=POOL,
+                                                  max_overflow=0)
+
 
 @app.on_event("shutdown")
 async def shutdown():
     await state["db"].close()
-    for key in ("core_engine", "orm_engine", "orm_engine_default"):
+    await state["psy"].close()
+    for key in ("core_engine", "orm_engine", "orm_engine_default",
+                "psy_core_engine", "psy_orm_engine"):
         await state[key].dispose()
 
 
@@ -124,3 +142,30 @@ async def read_orm():
 @app.get("/orm-default")
 async def read_orm_default():
     return await _orm(state["orm_engine_default"])
+
+
+# --------------------------------------------------------------------------
+# Same driver (psycopg3 async), default pool behaviour on both sides. These are
+# the fairest mapper-only comparison: nothing is tuned on either side, and both
+# send BEGIN / SELECT / COMMIT-or-ROLLBACK per request.
+# --------------------------------------------------------------------------
+
+
+@app.get("/psy-sqlom")
+async def read_psy_sqlom():
+    rows = await state["psy"].fetch_all(state["query"])
+    return Response(content=orjson.dumps(rows, default=state["to_dict"]),
+                    media_type=JSON)
+
+
+@app.get("/psy-core")
+async def read_psy_core():
+    async with state["psy_core_engine"].connect() as conn:
+        result = await conn.execute(state["core_stmt"])
+        payload = [{str(k): v for k, v in m.items()} for m in result.mappings()]
+    return Response(content=orjson.dumps(payload), media_type=JSON)
+
+
+@app.get("/psy-orm")
+async def read_psy_orm():
+    return await _orm(state["psy_orm_engine"])

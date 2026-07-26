@@ -5,12 +5,23 @@ Engineering conclusions from building and measuring sqlom. Numbers are from
 
 ---
 
-## The bottom line, both sides tuned
+## The bottom line, and how much it depends on the setup
 
-| | data layer | through FastAPI |
+| configuration | vs Core | vs ORM |
 |---|---|---|
-| sqlom vs SQLAlchemy ORM (tuned) | 7.18x | **4.80x** |
-| sqlom vs SQLAlchemy Core (tuned) | 4.00x | 2.73x |
+| **psycopg both sides, both default, via FastAPI** | **2.07x** | **3.33x** |
+| psycopg both sides, both default, data layer | 2.67x | 4.28x |
+| asyncpg, both tuned, via FastAPI | 2.73x | 4.80x |
+| asyncpg, both tuned, data layer | 4.00x | 7.18x |
+
+**Quote 3.3x.** That is the same driver on both sides, both libraries at their default
+pool behaviour, measured through a real web stack — the claim with the fewest
+assumptions behind it. The 7.18x headline required asyncpg (which SQLAlchemy cannot
+use) *and* skipping the pool's session reset, so it belongs in a caveat, not a claim.
+
+Two independent effects each cost about a third and compound: sqlom's advantage partly
+*was* the driver plus the skipped reset, and the web layer adds ~119 µs/request that
+every route pays equally.
 
 Measured with every optimization in this repo applied to sqlom *and* the equivalent
 applied to SQLAlchemy — including `isolation_level="AUTOCOMMIT"`, without which
