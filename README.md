@@ -14,7 +14,7 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 * **Query builder:** A SQLAlchemy-Core-like builder (`User.id > 10`) built on descriptors.
 * **Two schema styles:** a custom-metaclass model, or real stdlib `@dataclass(slots=True)` models that still support `User.id > 100`.
 * **Slotted objects:** 73 B/instance vs 113 B for a `__dict__`-backed equivalent.
-* **Async-first:** Native `asyncpg` pool integration — measured at ~4.2x SQLAlchemy's async ORM under concurrent load with Postgres on dedicated cores, at a cost of ~25% more CPU than doing no object mapping at all.
+* **Async-first:** Native `asyncpg` pool integration — ~6x SQLAlchemy's async ORM under concurrent load, i.e. ~1 core to serve what the ORM needs ~6 cores for. Costs ~10-25% more CPU than doing no object mapping at all.
 * **Postgres `json_agg` support:** Implemented (`Query.to_json_sql`), but **not the current focus** — see [the note below](#-db-side-json-not-the-focus-yet).
 
 ---
@@ -236,7 +236,7 @@ So hydration — the thing "lean hydration" optimizes — is ~12% of a single re
 
 [`benchmarks/bench_pg_load.py`](benchmarks/bench_pg_load.py) closes the two biggest gaps at once: a real asyncpg/Postgres round trip, and concurrency against a shared pool. Closed-loop — `c` worker tasks issue request-shaped queries back-to-back for 4 s; a "request" is query + materialize + produce JSON bytes. All contenders get an identically sized pool (10) and are checked for byte-identical output before timing.
 
-⚠️ **The two tables immediately below are from the combined suite and are biased by contender ordering** — see [the artifacts section](#-two-measurement-artifacts-that-inflated-earlier-numbers) for corrected, isolated figures. They are kept because the *shape* (where each approach plateaus, how p99 degrades) is still informative; the absolute ratios are not. The corrected headline is **~4.2x vs the async ORM**, not the ~6x these tables imply.
+⚠️ **The two tables immediately below are from the combined suite and are biased by contender ordering** — see [the artifacts section](#-two-measurement-artifacts-that-inflated-earlier-numbers) for corrected, isolated figures. They are kept because the *shape* (where each approach plateaus, how p99 degrades) is still informative; the absolute ratios are not. For the order-corrected figure and how it varies with core allocation, see [How it scales with cores](#how-it-scales-with-cores-it-doesnt-per-process) — it lands back at **~6x**, but for reasons worth reading.
 
 **Throughput (req/s), 100 rows per request:**
 
@@ -298,24 +298,44 @@ Both were found by trying to break the benchmark rather than trusting it, and bo
 
 Isolated, the hand-written baselines are faster than sqlom — as they must be. Use `--only` (one contender per process) plus `--repeat` for any number you intend to quote; the combined suite is for a quick side-by-side, not for publication. c=1 in particular is noisy (spreads of 15-20% across trials), so single runs there mean little.
 
-**2. Client and server competing for cores.** Unpinned on one box, a frugal client leaves more CPU for Postgres and gets faster queries back — a compounding advantage that flatters efficient contenders. [`benchmarks/pin_and_run.sh`](benchmarks/pin_and_run.sh) pins Postgres and the client to disjoint core sets to remove the feedback loop (affinity is inherited across `fork()`, so pinning the postmaster covers new backends).
+**2. Giving the client more than one core — which made it *slower*.** A single asyncio event loop under the GIL saturates exactly one core and cannot use more. Measured `cpu_utilization` (CPU-seconds per wall-second) is **0.91-1.00 for every contender in every configuration** — nobody ever exceeds one core.
 
-Isolated, median of 3, c=8, 100 rows/request:
+So an earlier revision of this section was wrong twice over. It pinned the client to *two* cores, which wastes one, and then attributed the resulting throughput drop to "removing CPU contention" and revised the headline down to 4.2x. Both parts were wrong: the drop came from the client losing cache locality as the loop migrated between two cores, plus Postgres having fewer cores than it did unpinned.
 
-| approach | client+PG share 4 cores | PG 2 cores / client 2 cores |
+| client cores (sqlom, c=8) | CPU ms/req | throughput |
 |---|---|---|
-| raw asyncpg + codegen dict *(floor)* | 4649 rps | 4039 rps |
-| **sqlom (compiled)** | **4213 rps** | **3168 rps** |
-| SQLAlchemy async ORM | 686 rps | 759 rps |
-| **sqlom vs ORM** | **6.14x** | **4.17x** |
+| 1 (pinned to core 0) | **0.217** | 4560 rps |
+| 2 (pinned to cores 0,1) | 0.308 | 3168 rps |
 
-Note the ORM gets *faster* when pinned (686 → 759): with a guaranteed 2 cores, Postgres is no longer starved by the ORM's own CPU appetite. **The honest headline is therefore ~4.2x, not ~6x** — the higher figure partly measures sqlom being a good neighbour to a co-located database, which is not a property of the mapper and disappears the moment the database has its own hardware.
+Pinning to exactly **one** core costs ~30% less CPU per request than floating across two. The 4.2x figure was an artifact of that, not a real correction, and is retracted.
 
-Correspondingly, "sqlom is within a few percent of doing no object mapping at all" was too generous. Materializing slotted objects costs **+10% CPU** when cores are shared and **+25%** when they aren't (0.237 vs 0.215; 0.308 vs 0.247 ms/req) — cheap for what it buys, but not free.
+### How it scales with cores: it doesn't, per process
+
+With the client correctly pinned to one core and Postgres given 1, 2, or 3 cores (isolated, median of 3, c=8, 100 rows):
+
+| Postgres cores | sqlom | async ORM | ratio |
+|---|---|---|---|
+| 1 | 4560 rps (0.217 ms CPU) | 741 rps (1.346) | 6.15x |
+| 2 | 4111 rps (0.242) | 672 rps (1.484) | 6.12x |
+| 3 | 3599 rps (0.278) | 701 rps (1.426) | 5.13x |
+
+Two things fall out:
+
+- **The ratio is essentially independent of Postgres's core count** (5.1-6.2x, median ~6.1x). These queries are small indexed reads served from shared buffers; Postgres needs well under one core to sustain ~4500 of them per second, so the client is the binding constraint in every configuration. **~6x is the defensible headline**, with the spread as honest uncertainty.
+- **Giving Postgres *more* cores slightly slowed the client** (0.217 → 0.278 ms CPU/req). That is not CPU-time contention — the client has its own dedicated core. It is shared L3 and memory bandwidth: a busier neighbour evicts the client's working set. sqlom feels this more than the ORM does, presumably because its working set is small enough for locality to matter.
+
+**Extra cores are used by adding processes, not by any single mapper.** Scaling is linear, as it should be for independent event loops:
+
+| sqlom workers (1 core each, Postgres on cores 2,3) | per-worker | total |
+|---|---|---|
+| 1 | 4398 rps | 4398 rps |
+| 2 | 4415, 4324 rps | **8739 rps (1.99x)** |
+
+Per-worker throughput is unchanged when a second worker is added, so the useful way to read the mapper's efficiency is **cores required for a target throughput**: ~4,400 req/s needs 1 core with sqlom and roughly 6 with SQLAlchemy's async ORM. On a fixed core budget that is the whole difference; it is not a latency claim.
 
 ```bash
-# quote-worthy: one contender per process, repeated
-bash benchmarks/pin_and_run.sh -- --only sqlom --concurrency 8 --duration 4 --repeat 3
+bash benchmarks/pin_and_run.sh --db-cores 1,2,3 --client-cores 0 -- \
+     --only sqlom --concurrency 8 --duration 4 --repeat 3
 ```
 
 ### ⚠️ Correction to an earlier number
@@ -359,8 +379,9 @@ Sources: [orjson README](https://github.com/ijl/orjson#dataclass) · [`dataclass
 ### What this still does not show
 
 - **No HTTP layer.** The load benchmark drives the data layer directly. A real FastAPI/uvicorn stack adds routing, validation, and ASGI overhead per request that would compress every ratio here — quite possibly a lot. Until that's measured, none of these numbers are "requests/sec for your API."
-- **Postgres shares the box by default.** Client and server run on the same 4 vCPUs unless pinned, so they compete for CPU and a frugal client indirectly buys itself faster queries. This is now measured, not just flagged: it accounts for the difference between 6.14x and 4.17x. Pinning removes the feedback loop but does not simulate a remote database, which would also add real network latency.
-- **Only 4 cores, and 2 per side when pinned.** A 2-core client is a small deployment; ratios on a 16- or 64-core host are unmeasured and there is no reason to assume they scale linearly.
+- **Postgres shares the box.** Even pinned to disjoint cores it shares L3 and memory bandwidth with the client, which measurably slows the client (0.217 → 0.278 ms CPU/req as Postgres goes from 1 to 3 cores). A remote database removes that but adds real network latency; neither is measured.
+- **Postgres is barely loaded here.** These are small indexed reads from shared buffers, and Postgres sustains ~4500/s on well under one core. The client is the bottleneck in every configuration measured, which is precisely why the mapper's CPU cost shows up so clearly. A query heavy enough to make Postgres the bottleneck would compress every ratio here toward 1.0, and that regime is untested.
+- **Only 4 cores total, and process scaling verified only to 2 workers.** 1 → 2 workers is linear (1.99x); whether that holds at 16 or 64 workers against one Postgres is unmeasured.
 - **Loopback, not a network.** No real RTT, so the latency-bound regime — where slow client code hides behind network wait — is entirely untested. That regime is exactly where these ratios should shrink.
 - **Narrow shape.** One flat 4-column table of small ints and short strings. No joins, no nested shaping, no wide rows, no large text/JSONB, no writes or transactions. Per-object costs amortize differently as column count grows.
 - **No sampling profiler.** The stage breakdown is wall-clock timing of isolated stages, not `py-spy`/`pyinstrument` output; it attributes cost per stage, not per function.

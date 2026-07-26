@@ -1,0 +1,4 @@
+=== sqlom, Postgres pinned to cores 2,3 ===
+  workers=1 on cores 0 -> per-worker [4398] | TOTAL 4398 rps
+  workers=2 on cores 0,1 -> per-worker [4415, 4324] | TOTAL 8739 rps
+ALLDONE
