@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#6-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It is not packaged, not on PyPI, has no test suite, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#7-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -238,7 +238,13 @@ agree).
   governs throughput; and by either measure the mapper is no longer the bottleneck.
 - **The benchmark's loopback connection negotiates TLSv1.3**, which costs ~20% of
   client CPU. Ratios are unaffected (both sides pay it) but absolute throughput is
-  understated by ~25%: 5536 rps with `sslmode=disable` vs 4428 with it on.
+  understated: 5440 rps with `sslmode=disable` vs 4724 with it on.
+- **Most of the remaining throughput is outside the mapper.** asyncpg's pool runs
+  `RESET ALL` as a *second round trip* on every release (2.01 queries sent per
+  request, verified). Fixing that plus `uvloop` is **1.61x** with no change to sqlom;
+  holding connections instead of pooling reaches 2.36x. See
+  [§6](docs/BENCHMARKS.md#6-acting-on-the-profile-24x-more-throughput-outside-the-mapper)
+  — including why the pool fix is a behavioural tradeoff, not a free win.
 
 ### If you only ever emit JSON, use the database
 

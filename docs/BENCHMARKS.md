@@ -334,7 +334,90 @@ python3 benchmarks/profile_pg.py --pin 0:2,3 --only sqlom \
 
 ---
 
-## 6. What none of this shows
+## 6. Acting on the profile: 2.4x more throughput outside the mapper
+
+`benchmarks/optimize_pg.py`. §5 said sqlom's own code is ~15% of client CPU, so the
+remaining throughput has to come from the other 85%. Each flag targets one component
+the profile named. Client on core 0, Postgres on cores 2,3, c=8, 100 rows/request,
+median of 3, one configuration per process.
+
+| config | rps | vs. baseline | CPU ms/req | CPU saved |
+|---|---|---|---|---|
+| baseline | 4724 | 1.00x | 0.2107 | — |
+| `--uvloop` | 5228 | 1.11x | 0.1908 | 9% |
+| `--no-tls` | 5440 | 1.15x | 0.1831 | 13% |
+| `--no-reset` | 6148 | **1.30x** | 0.1626 | 23% |
+| `--hold-conn` | 7995 | **1.69x** | 0.1250 | 41% |
+| `--uvloop --no-reset` | 6826 | 1.44x | 0.1464 | 31% |
+| `--uvloop --no-reset --no-tls` | 7593 | 1.61x | 0.1315 | 38% |
+| `--uvloop --hold-conn --no-tls` | **11132** | **2.36x** | 0.0896 | 57% |
+
+Artifact: [`results/optimize_stack.txt`](../benchmarks/results/optimize_stack.txt)
+
+### Why the pool is slow: it sends a second query
+
+Not bookkeeping — an extra server round trip. `asyncpg`'s
+`PoolConnectionHolder.release()` calls `Connection.reset()`, which executes:
+
+```sql
+SELECT pg_advisory_unlock_all();
+CLOSE ALL;
+UNLISTEN *;
+RESET ALL;
+```
+
+Verified by reading `_protocol.queries_count`, which is how asyncpg itself counts:
+
+| | queries sent per request |
+|---|---|
+| `pool.acquire()`, default reset | **2.01** |
+| `pool.acquire()`, `reset=` no-op | 1.00 |
+| held connection, no pool | 1.00 |
+
+So a pooled request costs **two** round trips: yours, and a cleanup statement on
+release. `create_pool(..., reset=<no-op coroutine>)` keeps the in-process protocol
+reset (transaction rollback, listener clearing) and drops the SQL — worth 1.30x here.
+
+⚠️ **This is a behavioural tradeoff, not a free win.** Skipping `RESET ALL` lets
+session state leak between requests: `SET` outside a transaction, temp tables, open
+cursors, `LISTEN` registrations, advisory locks. It is safe only if handlers never
+touch session state, and it is the kind of thing that works until one handler runs a
+`SET`. Prefer it to `--hold-conn`, which buys more (1.69x) but makes client
+concurrency and DB connection count the same number — usually not deployable.
+
+The gap between `--no-reset` (1.30x) and `--hold-conn` (1.69x) is the pool's
+remaining Python-side cost: `PoolAcquireContext` construction, holder juggling, and
+the futures involved in acquire/release. Removing the round trip does not remove
+that.
+
+### The rest of the ranking
+
+- **uvloop (1.11x)** is the cheapest to adopt — two lines, no semantic change — but
+  the smallest win of the three, which the profile predicted: the 38% "event loop"
+  bucket includes TLS and protocol work that uvloop does not eliminate.
+- **TLS (1.15x)** is an artifact of this setup (`ssl = on` plus asyncpg's
+  `sslmode=prefer`), not something a library can fix. On a remote database you want
+  TLS and would pay it; for a local socket you would not.
+- **They compose sub-additively.** Individually 1.30 × 1.15 × 1.11 = 1.66x predicted;
+  measured 1.61x for the deployable trio, 2.36x with connection holding. Each removes
+  work the others also touch.
+
+### What this means for the mapper
+
+The best deployable configuration reaches 7593 rps at 0.13 ms CPU/req. sqlom's
+generated code was ~15% of the *baseline's* 0.21 ms — roughly 0.032 ms — so it is now
+close to a quarter of the remaining budget. **The order of work is: fix the pool,
+adopt uvloop, then optimize the mapper** — and by then the mapper is the largest
+single remaining item, which it was not before.
+
+Against the async ORM's 773 rps in the same configuration, the best deployable stack
+is ~9.8x and the connection-holding upper bound ~14.4x. Those numbers belong to the
+*stack*, not to sqlom: the ORM would gain from uvloop and the pool fix too, and this
+has not been measured for it. **Do not read 14.4x as a mapper comparison.**
+
+---
+
+## 7. What none of this shows
 
 - **No HTTP layer.** The load benchmark drives the data layer directly. A real
   FastAPI/uvicorn stack adds routing, validation and ASGI overhead per request

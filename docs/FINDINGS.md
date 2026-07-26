@@ -69,6 +69,38 @@ One incidental discovery worth carrying: the benchmark's loopback connection was
 negotiating **TLSv1.3**, which costs ~20% of client CPU. Ratios are unaffected since
 both sides pay it, but absolute throughput in §4 is understated by ~25%.
 
+### What to optimize next, in order
+
+Acting on the profile ([BENCHMARKS §6](BENCHMARKS.md#6-acting-on-the-profile-24x-more-throughput-outside-the-mapper))
+found 2.36x more throughput without touching the mapper at all:
+
+| lever | gain | deployable? |
+|---|---|---|
+| `create_pool(reset=<no-op>)` | 1.30x | with care — see caveat |
+| holding a connection per worker | 1.69x | rarely |
+| `sslmode=disable` (local DB only) | 1.15x | environment-specific |
+| `uvloop` | 1.11x | yes, trivially |
+| uvloop + no-reset + no-TLS | **1.61x** | yes, with the caveat |
+
+**Why the pool is slow: it sends a second query.** asyncpg's
+`PoolConnectionHolder.release()` calls `Connection.reset()`, which executes
+`SELECT pg_advisory_unlock_all(); CLOSE ALL; UNLISTEN *; RESET ALL;` as its own round
+trip. Measured via `_protocol.queries_count`: a pooled request sends **2.01 queries**,
+versus 1.00 with `reset=` a no-op or a held connection. So half the server round trips
+in the default configuration are cleanup.
+
+The caveat matters: skipping `RESET ALL` lets session state leak between requests
+(`SET`, temp tables, cursors, `LISTEN`, advisory locks). It is safe only while no
+handler touches session state, and it fails silently the day one does.
+
+The remaining gap between no-reset (1.30x) and holding a connection (1.69x) is the
+pool's Python-side cost — `PoolAcquireContext`, holder juggling, acquire/release
+futures — which removing the round trip does not address.
+
+**So the order of work is: fix the pool, adopt uvloop, then optimize the mapper.**
+After the first two, sqlom's generated code goes from ~15% of client CPU to roughly a
+quarter of what remains — it becomes the largest single item, which it was not before.
+
 ---
 
 ## Adopted optimizations
