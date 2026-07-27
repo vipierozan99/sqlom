@@ -108,6 +108,15 @@ checked out and re-run on the same box:
 | SQLAlchemy Core | 4.252 ms | 5.196 ms | 5.240 ms |
 | SQLAlchemy ORM | 6.647 ms | 9.127 ms | 9.132 ms |
 
+> ⚠️ The `SQLAlchemy Core` row here — and every Core row in this section — uses the
+> `.mappings()` idiom that
+> [correction 8](METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x)
+> later showed to be unfair. Written the cheap way, Core measures **1.88 ms** against
+> sqlom's **1.26 ms** in one isolated run at 1000 rows: a 1.49x gap, not the ~3.9x
+> these rows imply. The rows are left as recorded rather than retro-fitted, because
+> splicing a figure from a different box into a table would be
+> [correction 4](METHODOLOGY.md#4-mixing-measurement-conditions-in-one-table).
+
 The pre-change tree reproduces *today's* numbers, not the published ones. The box
 became ~1.35x slower between sessions — ordinary for shared cloud CPU, and the
 reason **absolute microseconds in this document must not be compared across
@@ -1183,10 +1192,20 @@ Artifact: [`results/psycopg_end_to_end.txt`](../benchmarks/results/psycopg_end_t
 
 | configuration | vs Core | vs ORM |
 |---|---|---|
-| asyncpg, both tuned, data layer (§13) | 4.00x | 7.18x |
-| asyncpg, both tuned, via FastAPI (§13) | 2.73x | 4.80x |
-| **psycopg, both default, data layer** | **2.67x** | **4.28x** |
-| **psycopg, both default, via FastAPI** | **2.07x** | **3.33x** |
+| asyncpg, both tuned, data layer (§13) | 2.51x | 7.18x |
+| asyncpg, both tuned, via FastAPI (§13) | 1.79x | 4.80x |
+| **psycopg, both default, data layer** | **2.01x** | **4.28x** |
+| **psycopg, both default, via FastAPI** | **1.57x** | **3.33x** |
+
+> ⚠️ **Every `vs Core` figure in this table was corrected downward** by
+> [METHODOLOGY correction 8](METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x).
+> The values originally published — 4.00x, 2.73x, 2.67x and 2.07x — charged Core for a
+> per-key `str()` cast that `.mappings()` forces and sqlom never pays; on sqlite that
+> cast was 62% of Core's entire time. `vs ORM` is unaffected. Every figure elsewhere in
+> this document labelled "vs Core", including in §13 and §14 below, carries the same
+> inflation unless it says otherwise; the corrected values are collected in
+> [`results/core_idiom.txt`](../benchmarks/results/core_idiom.txt) and are the ones to
+> quote.
 
 Two independent effects, each worth roughly a third, and they compound:
 

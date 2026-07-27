@@ -685,7 +685,7 @@ Full results in **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**, engineering conclu
 **[docs/FINDINGS.md](docs/FINDINGS.md)**, and — please — **[docs/METHODOLOGY.md](docs/METHODOLOGY.md)**,
 which logs five published claims that turned out to be wrong and why.
 
-### Bottom line: 3.3x, measured the strictest way
+### Bottom line: 3.3x the ORM, 1.6x Core, measured the strictest way
 
 Same driver on both sides (psycopg3 async), **both libraries at their default pool
 behaviour** — nothing tuned anywhere — through a real FastAPI + uvicorn stack on one
@@ -696,23 +696,43 @@ request, and all endpoints return byte-identical 7701-byte payloads.
 |---|---|---|---|
 | `/noop` — framework floor, no database | 8419 | 0.91 ms | 1.56 ms |
 | **sqlom** | **1319** | **5.93 ms** | **9.21 ms** |
-| SQLAlchemy Core | 638 | 12.08 ms | 28.10 ms |
+| SQLAlchemy Core | 825 | 9.19 ms | 15.61 ms |
 | SQLAlchemy ORM | 396 | 16.09 ms | 77.57 ms |
 
-**3.33x the ORM, 2.07x Core.** The ratio depends heavily on what you allow yourself
+**3.33x the ORM, 1.57x Core.** The ratio depends heavily on what you allow yourself
 to change:
 
 | configuration | vs Core | vs ORM |
 |---|---|---|
-| psycopg, both default, via FastAPI | **2.07x** | **3.33x** |
-| psycopg, both default, data layer | 2.67x | 4.28x |
-| asyncpg, both tuned, via FastAPI | 2.73x | 4.80x |
-| asyncpg, both tuned, data layer | 4.00x | 7.18x |
+| psycopg, both default, via FastAPI | **1.57x** | **3.33x** |
+| psycopg, both default, data layer | 2.01x | 4.28x |
+| asyncpg, both tuned, via FastAPI | 1.79x | 4.80x |
+| asyncpg, both tuned, data layer | 2.51x | 7.18x |
+| sqlite, single table, no transport | 1.49x | 5.22x |
+| sqlite, **two models across a join** | 1.17x | 4.05x |
 
 Two independent effects, each worth about a third, compounding: sqlom's advantage
 partly *was* asyncpg plus a skipped session reset (7.18x → 4.28x on the same driver at
 defaults), and the web layer adds ~119 µs/request that every route pays equally
 (4.28x → 3.33x). **Quote 3.3x**; the 7.18x needed asyncpg *and* a behavioural change.
+
+> ⚠️ **Every Core figure above was corrected downward** after this table was first
+> published. The old ones (2.07x / 2.67x / 2.73x / 4.00x / 3.87x) were inflated
+> 1.6–2.6x because the harness shaped Core's rows with `.mappings()`, whose keys are
+> `quoted_name` and need a per-key `str()` cast that orjson forces — and that cast was
+> 62% of Core's whole time on sqlite. Zipping the flat row against names captured once
+> is equally idiomatic and produces identical bytes. Found only by adding the join
+> benchmark, where `.mappings()` is unusable because both tables have an `id`; Core
+> then came out *closer* to sqlom on more work, which is impossible and was the tip-off.
+> The ORM figures are unaffected (that path uses `getattr`). Full write-up:
+> [METHODOLOGY correction 8](docs/METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x).
+
+**On a two-model join the Core advantage nearly disappears** — 1.17x at 1000 rows,
+1.32x at 100 — because both libraries then do almost the same cheap thing, and sqlom
+additionally builds two Python objects per row. The ORM advantage largely survives
+(4.05x). Without the orjson `default=` hook, shaping the same objects with `getattr`
+is *slower* than Core on a join. See
+[`sqlite_join.txt`](benchmarks/results/sqlite_join.txt).
 
 What holds across every configuration is the tail: sqlom's p99 is consistently ~8x
 tighter than the ORM's (9.2 ms vs 77.6 ms here). Details, including the statement
@@ -725,7 +745,10 @@ Those figures come from a load generator written for this repo, so
 counts read from `/proc/net/tcp`, Little's Law, and a re-run under **locust**, which
 reproduces sqlom's throughput to 0.1% and brackets both ratios within 7% (2.13x Core,
 3.29x ORM). Locust cannot measure the `/noop` floor — on one core it saturates first,
-and Little's Law catches it — which is why the cheaper generator exists.
+and Little's Law catches it — which is why the cheaper generator exists. That locust
+run predates [correction 8](docs/METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x),
+so its **Core** figure carries the same inflation as the rest and is not re-run here;
+it corroborates the generator and the ORM ratio, not the Core one.
 
 ### With transport removed (sqlite, single-threaded, 100 rows/req)
 
@@ -736,6 +759,12 @@ No event loop, no pool, no TLS — the mapper's own cost:
 | **sqlom** | **0.100** | **9997** | **7.4x** |
 | SQLAlchemy Core | 0.437 | 2286 | 1.70x |
 | SQLAlchemy ORM | 0.742 | 1346 | 1.0x |
+
+⚠️ The Core row uses the `.mappings()` idiom that
+[correction 8](docs/METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x)
+found to be unfair, so **sqlom's margin over Core here is overstated** — at 1000 rows
+the same correction took 3.87x down to 1.49x. This specific 100-row cell has not been
+re-measured, and no number is invented for it; the ORM row is unaffected.
 
 The lead survives removing transport, so it is not an artifact of sockets masking
 differences. And this path is at its floor: object materialization is only **16%** of
@@ -761,6 +790,17 @@ asserted to emit byte-identical JSON *and* to be stable across repeated calls:
 comparison timed SQLAlchemy's connection setup but not sqlom's, which overstated the
 Core ratio by ~8%; and the measurement box became ~1.35x slower between runs, which
 moved every absolute figure without changing the ranking.
+
+⚠️ **The Core row is also inflated by
+[correction 8](docs/METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x).**
+No corrected absolute is spliced in here, because the re-measurement ran on a
+different box and mixing conditions in one table is
+[correction 4](docs/METHODOLOGY.md#4-mixing-measurement-conditions-in-one-table).
+Measured together in one isolated run today: sqlom's best **1.26 ms**, Core
+positional **1.88 ms**, Core `.mappings()` **4.92 ms**, ORM **7.01 ms** — so the
+honest reading of this row is **sqlom ≈1.5x Core**, and Core is nearly a tie with
+`@model` + orjson native rather than 3x behind it. Raw:
+[`core_idiom.txt`](benchmarks/results/core_idiom.txt).
 
 The first row is three variants that are a **statistical tie** — their ordering
 changes between runs, so they're grouped rather than ranked. Verified free of the

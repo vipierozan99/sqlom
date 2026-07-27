@@ -1,16 +1,20 @@
 # How to benchmark this honestly
 
-Seven claims published in this repo turned out to be wrong. Each was caught by
+Eight claims published in this repo turned out to be wrong. Each was caught by
 attacking the benchmark rather than trusting it, and each came from a distinct
 methodological flaw. They are recorded here because the flaws generalize well
 beyond sqlom.
 
-Two of the seven were found by an automated reviewer (CodeRabbit) on the pull
+Two of the eight were found by an automated reviewer (CodeRabbit) on the pull
 request rather than by me, which is worth recording as its own lesson: corrections
 1 through 5 were all found by self-attack, and I had by then written a document
 about how to attack benchmarks — and still shipped a harness that timed one side's
 connection setup and not the other's. **Self-review has a blind spot exactly where
 you are most confident.**
+
+Correction 8 is the largest of the eight and was found by accident, seven
+corrections in, by adding a benchmark for a *different shape*. It had survived every
+deliberate attack in this document.
 
 Every figure quoted inside a correction is as-of that correction. Absolute
 milliseconds are not comparable between corrections; see "absolute times drift with
@@ -21,7 +25,7 @@ you built should be treated as a bug report until you have tried to break it.**
 
 ---
 
-## The seven corrections
+## The eight corrections
 
 ### 1. Comparing different payloads (inflated 3.5x → 2.6x)
 
@@ -180,11 +184,103 @@ denominator share a basis, and print the residual instead of absorbing it.
 
 ---
 
+### 8. Charging one contender for a workaround the others never needed (Core ratios inflated 1.6-2.6x)
+
+The largest correction here, and the one that survived longest. Every SQLAlchemy
+Core contender in the repo — sqlite, asyncpg, psycopg, the FastAPI app, the
+profilers — shaped rows like this:
+
+```python
+payload = [{str(k): v for k, v in m.items()} for m in result.mappings()]
+```
+
+`.mappings()` yields `RowMapping`s whose keys are `quoted_name`, a `str` subclass
+that orjson refuses, so each key of each row gets an explicit `str()` cast. On
+sqlite at 1000 rows that cast was **62% of Core's entire measured time**: 4.88 ms
+against 1.86 ms for `dict(zip(names, row))` over the flat row, byte-identical
+output. Every published "vs Core" ratio was inflated by between 1.6x and 2.6x.
+
+| configuration | published | corrected |
+|---|---|---|
+| sqlite single table | 3.87x | **1.49x** |
+| asyncpg tuned, data layer | 4.00x | **2.51x** |
+| asyncpg tuned, via FastAPI | 2.73x | **1.79x** |
+| psycopg default, data layer | 2.67x | **2.01x** |
+| psycopg default, via FastAPI | 2.07x | **1.57x** |
+
+The ORM ratios are untouched — that contender uses `getattr` and never calls
+`.mappings()` — so the headline claim did not move. But five Core figures did, all
+in the same direction, and that direction was the flattering one.
+
+**How it was found matters more than what it was.** Not by re-reading the Core
+runner; that line had been read many times and carried a comment correctly
+explaining why the cast was needed. It was found by adding a benchmark for a
+*two-model join*, where `.mappings()` is simply unavailable — both tables have an
+`id`, so the keys collide — which forced the Core contender to slice positionally.
+Core then came out much closer to sqlom on the join (1.17x) than on the single table
+(3.87x). That is the wrong direction: a join is strictly more work, so it cannot
+*close* a gap. The impossible-looking result was the whole signal.
+
+Fix: both idioms are kept as separate contenders in every harness, and the
+positional one is what gets quoted. Deleting the slow one would have hidden the size
+of the mistake.
+
+> **Generalizes to, three ways:**
+>
+> 1. **Price every workaround.** When one contender needs a fix-up the others do not
+>    — a key cast, an encoding step, a copy — that fix-up is a *measurement artifact
+>    until proven otherwise*. A comment explaining why it is necessary is not
+>    evidence that it is cheap. Time it against the alternative.
+> 2. **A comparison is only as fair as the API you chose for the other side.** Two
+>    correct ways to use a library can differ by 2.6x. "I used the documented API"
+>    is not a defence; each contender has to be measured at its best, and finding its
+>    best is the benchmarker's job, not the library author's.
+> 3. **Add a second shape.** Seven rounds of self-attack on one workload found seven
+>    real problems and missed this one entirely, because every contender was
+>    consistently mis-measured and the ranking looked stable. A new shape changes
+>    which APIs are even *available*, and that is what broke the pattern. If a suite
+>    only ever measures one shape, the flaw it cannot see is the one that shape
+>    forces on everyone equally.
+
+Full evidence: [`benchmarks/results/core_idiom.txt`](../benchmarks/results/core_idiom.txt).
+
+---
+
+### Not a correction, but the same lesson: garbage collection in the join benchmark
+
+The two-model join allocates ~2000 objects per iteration, and every contender showed
+a standard deviation several times its median. Disabling GC collapsed stdev 5-10x for
+all five contenders, so the tail was collections, not variable work. Two consequences,
+both recorded in [`sqlite_join.txt`](../benchmarks/results/sqlite_join.txt):
+
+* **Means are unusable there.** For some contenders the mean sits above the p95,
+  because a handful of collections dominate it. Medians are quoted; the ratios move
+  up to 8% depending on the choice.
+* **One contender per process became mandatory**, not merely advisable. Core's median
+  measured 3.73 ms, 4.92 ms and 3.83 ms in three runs differing only in what else had
+  run in the process first — a 32% swing from allocation history alone. The
+  single-table suite was tested for ordering bias and is clean, but it allocates half
+  as much; that clean result does not transfer to a harness that allocates more.
+
+---
+
 ## Practices this benchmark suite adopts
 
-**Enforce output equivalence before timing.** Both `bench_sqlite.py` and
-`bench_pg_load.py` compare every contender's bytes against a reference and abort on
-mismatch. `--skip-equivalence` exists for debugging only.
+**Enforce output equivalence before timing.** Every harness compares each
+contender's bytes against a reference and aborts on mismatch. `--skip-equivalence`
+exists for debugging only. Note what this does *not* catch: correction 8's Core
+contender passed the equivalence gate perfectly, because identical output says
+nothing about whether one side took an unnecessarily expensive route to it.
+
+**Price any workaround one contender needs and the others do not.** See correction 8.
+A per-key cast, an encoding fix-up, a defensive copy: each is a candidate measurement
+artifact, and the fact that it is *required* by the API chosen says nothing about
+whether a cheaper API exists. Time both.
+
+**Measure more than one shape.** Correction 8 was invisible across seven rounds of
+attack on a single flat-table workload and fell out immediately from adding a join,
+because the join made the expensive API unavailable and forced a fair one. A suite
+that only measures one shape cannot see a flaw that shape imposes uniformly.
 
 **One contender per process for any published number.** `--only` plus `--repeat`,
 report medians. Expect c=1 cells in the load benchmark to swing 15–20% between

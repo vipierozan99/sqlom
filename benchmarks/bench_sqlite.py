@@ -178,6 +178,36 @@ def run_sqlalchemy_core(sa_conn, limit):
     return _iteration
 
 
+def run_sqlalchemy_core_positional(sa_conn, limit):
+    """Core again, shaping rows positionally instead of through `.mappings()`.
+
+    This exists because the variant above was measuring the wrong thing, and by a
+    lot. `.mappings()` yields `RowMapping`s keyed by `quoted_name`, which orjson
+    refuses, so every row pays a `str()` cast per key — and that cast, not row
+    shaping, was **62% of Core's time here** (4.88 ms against 1.86 ms at 1000 rows,
+    byte-identical output). Zipping the flat row against names captured once is
+    equally idiomatic Core and is the version to quote; the join benchmark had to
+    use it anyway, because two tables with an `id` collide under `.mappings()`.
+
+    Both are kept so the size of the mistake stays visible instead of being
+    quietly corrected away. See METHODOLOGY correction 8.
+    """
+    stmt = (
+        select(users_table)
+        .where(users_table.c.is_active == 1)
+        .where(users_table.c.id > 100)
+        .limit(limit)
+    )
+    names = [str(c.name) for c in users_table.columns]
+
+    def _iteration():
+        result = sa_conn.execute(stmt)
+        payload = [dict(zip(names, row)) for row in result]
+        return orjson.dumps(payload)
+
+    return _iteration
+
+
 def run_sqlalchemy_orm(sa_conn, limit):
     """SQLAlchemy ORM: fresh `Session` per iteration, hoisted connection.
 
@@ -297,7 +327,9 @@ def main():
             ("dataclass slots (orjson native)", run_dataclass_native(raw_conn, args.limit)),
             ("dataclass slots (passthrough)", run_dataclass_passthrough(raw_conn, args.limit)),
             ("sqlom DB-side JSON", run_sqlom_db_json(raw_conn, args.limit)),
-            ("SQLAlchemy Core", run_sqlalchemy_core(core_conn, args.limit)),
+            ("SQLAlchemy Core (mappings)", run_sqlalchemy_core(core_conn, args.limit)),
+            ("SQLAlchemy Core (positional)",
+             run_sqlalchemy_core_positional(core_conn, args.limit)),
             ("SQLAlchemy ORM", run_sqlalchemy_orm(orm_conn, args.limit)),
         ]
 

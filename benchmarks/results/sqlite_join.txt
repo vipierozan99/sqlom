@@ -1,0 +1,118 @@
+### Selecting TWO MODELS across a join: sqlom vs SQLAlchemy Core / ORM.
+### sqlite, single-threaded, core 0. 40000 authors x 5 posts = 200k rows.
+### Query: Query(Author, Post).join(...).where(active).where(score > 100).limit(N)
+### Every contender emits byte-identical JSON, checked before timing and re-checked
+### three times per contender (LIMIT without ORDER BY is not a stable row set).
+
+Run: python3 benchmarks/bench_sqlite_join.py --limit 1000 --repeat 3
+
+WHY THIS EXISTS
+---------------
+Every other benchmark here measures one flat table — the shape sqlom was built for,
+and therefore the shape least likely to generalise. A join doubles the objects built
+per row and widens the select list. It also, as it turned out, exposed a bug in how
+Core had been measured everywhere else: see core_idiom.txt.
+
+ISOLATED, ONE CONTENDER PER PROCESS (quote these)
+-------------------------------------------------
+1000 joined rows/response, 300 iterations, median of 3 trials:
+
+  approach                        mean ms   median      p95   resp/sec
+  ---------------------------------------------------------------------
+  sqlom (hook)                      4.026    3.280    4.343      248.4
+  dict floor (no objects)           3.639    3.257    4.677      274.8
+  SQLAlchemy Core                   4.333    3.833    4.979      230.8
+  sqlom (attribute dicts)           5.793    4.650   23.326      172.6
+  SQLAlchemy ORM                   16.931   13.292   38.508       59.1
+
+    by median:   sqlom vs ORM 4.05x    vs Core 1.17x
+    by mean:     sqlom vs ORM 4.21x    vs Core 1.08x
+
+100 joined rows/response, same method:
+
+  approach                        mean ms   median      p95   resp/sec
+  ---------------------------------------------------------------------
+  sqlom (hook)                      0.326    0.308    0.460     3064.9
+  dict floor (no objects)           0.332    0.325    0.399     3013.7
+  SQLAlchemy Core                   0.412    0.406    0.467     2428.6
+  sqlom (attribute dicts)           0.467    0.452    0.589     2140.7
+  SQLAlchemy ORM                    1.539    1.450    1.658      649.6
+
+    by median:   sqlom vs ORM 4.71x    vs Core 1.32x
+
+THE RESULT THAT MATTERS
+-----------------------
+Against the single-table figures on the same box and the same method:
+
+  comparison                  single table   two-model join
+  ------------------------------------------------------------
+  sqlom vs SQLAlchemy ORM            5.57x     4.05x - 4.71x
+  sqlom vs SQLAlchemy Core (fair)    1.49x     1.17x - 1.32x
+
+The ORM advantage mostly survives the join. The Core advantage was never as large as
+published (core_idiom.txt) and on a join it shrinks further, to roughly 20-30%.
+
+Why: on a join, both libraries do the cheapest thing available to them, and those are
+nearly the same thing. Core gets a flat tuple and zips it against two name lists.
+sqlom builds two slotted objects and lets orjson walk them. Object construction is
+real work Core does not do, and on a join it is done twice per row, so most of what
+sqlom saves elsewhere is spent here.
+
+**sqlom (hook) beats the "dict floor".** That is not a contradiction. The floor
+builds no model instances but does materialise two dicts per row; the hook path
+materialises neither, because orjson serializes the objects directly through a
+compiled `default=`. So the floor bounds *object construction* cost, not
+response-building cost — and two slotted objects turn out to be cheaper than two
+dicts.
+
+The `attribute dicts` variant is the same objects shaped by ordinary `getattr`
+instead of the orjson hook, and it is 1.4x slower than the hook at both sizes. That
+is the honest price of not using orjson: the hook is an orjson-specific trick, and
+without it sqlom's join advantage over Core disappears entirely (0.452 ms vs Core's
+0.406 ms at 100 rows — Core is *faster*).
+
+THE TAIL IS GARBAGE COLLECTION, IN EVERY CONTENDER
+--------------------------------------------------
+Every approach showed a stdev far above its median and a p95 far above its mean,
+which is the signature of periodic collections rather than variable work. Turning GC
+off is the direct test. 1000 rows, one process, both settings per contender:
+
+  approach                    gc     mean   median      p95    stdev
+  ------------------------------------------------------------------
+  sqlom (hook)                on    4.273    3.265    6.032    4.587
+  sqlom (hook)               off    3.271    2.976    5.641    0.776
+  sqlom (attribute dicts)     on    6.667    4.880   27.138    6.400
+  sqlom (attribute dicts)    off    4.588    4.418    5.728    0.660
+  dict floor (no objects)     on    3.605    3.184    3.662    3.167
+  dict floor (no objects)    off    3.316    3.209    3.769    0.798
+  SQLAlchemy Core             on    5.847    4.919    8.680    4.018
+  SQLAlchemy Core            off    3.944    3.771    5.158    0.557
+  SQLAlchemy ORM              on   19.267   14.246   47.287   11.563
+  SQLAlchemy ORM             off   12.357   12.169   13.835    0.856
+
+Standard deviation falls 5-10x for every contender with GC disabled. So the tail is
+GC, it is not specific to any one library, and it is proportional to how much each
+allocates — which is why the ORM's p95 (47 ms against a 14 ms median) is the worst.
+
+GC-on is reported as the primary result because a real service runs with GC on. But
+two consequences are worth stating:
+
+1. **Quote medians, not means.** At 1000 rows the mean sits above the p95 for some
+   contenders, because a handful of collections dominate it. The tables above give
+   both; the ratios differ by up to 8% depending on which is used.
+2. **This is why one contender per process is mandatory here.** In a combined run,
+   one contender's garbage gets collected inside another's timed window. Core's
+   median measured 3.732 ms in a combined run, 4.919 ms in a different combined run,
+   and 3.833 ms isolated — a 32% swing from nothing but allocation history. The
+   single-table sqlite suite was checked for ordering bias and found clean, but it
+   allocates half as much per iteration; that finding does not transfer, and this
+   file's numbers are all from isolated processes.
+
+WHAT IS NOT MEASURED
+--------------------
+Postgres, asyncpg, concurrency, the connection pool, and any join shape other than
+one-to-many inner. No outer join (which adds NULL checks per row), no three-table
+join, no wide rows. And no de-duplication anywhere: the inner join returns the
+author row once per matching post, and every contender here shapes it that way,
+which is what SQL does but is not what SQLAlchemy's ORM identity map would give you
+if you asked for related collections instead of a tuple.

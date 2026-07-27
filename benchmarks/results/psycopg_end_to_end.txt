@@ -1,19 +1,53 @@
-### FastAPI end-to-end, psycopg3 async for BOTH sides, DEFAULT pool behaviour
-### uvicorn+uvloop+httptools on core 0, load generator core 1, Postgres cores 2,3
-### 100 rows/request, pool 10, 8 keep-alive connections, median of 3 x 4s
-### All endpoints verified byte-identical (7701 bytes)
+### FastAPI end-to-end, psycopg3 async for BOTH sides, DEFAULT pool behaviour.
+### uvicorn+uvloop+httptools on core 0, load generator core 1, Postgres cores 2,3.
+### 100 rows/request, pool 10, 8 keep-alive connections.
+### All endpoints verified byte-identical (7701 bytes) before every run.
 
-endpoint           rps   mean ms     p50     p95     p99
---------------------------------------------------------
-/noop             8419     0.949   0.914   1.263   1.556
-/psy-sqlom        1319     6.061   5.928   7.550   9.212
-/psy-core          638    12.533  12.079  14.922  28.095
-/psy-orm           396    20.196  16.087  71.298  77.567
+This is a RE-RUN of the headline comparison, after the query builder grew joins,
+aliases, grouping, set operations, expressions, writes, transactions, CTEs,
+upserts and multi-table DML. The question it answers is whether the published
+ratios still hold, so it reports three independent re-runs rather than replacing
+one run with another — a single re-run cannot distinguish a real change from this
+box's run-to-run noise, which is 5-20% per endpoint and has been as high as 48%.
 
-  sqlom vs Core (both default)   2.07x
-  sqlom vs ORM  (both default)   3.33x
+rps, median of the run's trials, ± (max-min)/median across them:
 
-  framework floor (/noop)  8419 rps = 119 us/request
-  data-layer cost /psy-sqlom       639 us/request
-  data-layer cost /psy-core       1449 us/request
-  data-layer cost /psy-orm        2406 us/request
+endpoint       published       3 trials       7 trials  7, fresh proc
+---------------------------------------------------------------------
+/noop               8419       8225 ±6%      7913 ±25%      8200 ±20%
+/psy-sqlom          1319       1377 ±5%      1151 ±11%      1321 ±48%
+/psy-core            638        677 ±4%       596 ±14%       617 ±14%
+/psy-orm             396       402 ±15%       356 ±17%       328 ±18%
+
+ratio          published       3 trials       7 trials  7, fresh proc    re-run range
+-------------------------------------------------------------------------------------
+vs /psy-core       2.07x          2.03x          1.93x          2.14x      1.93-2.14x
+vs /psy-orm        3.33x          3.43x          3.23x          4.03x      3.23-4.03x
+
+VERDICT: reproduced. The published 2.07x and 3.33x sit inside the re-run range
+for both contenders. Nothing here justifies changing a published figure, in
+either direction — and note that two of the six re-run ratios came out *higher*
+than published, which is exactly why the range matters more than the best cell.
+
+Caveats specific to this re-run, all of which argue for reading the range:
+  * '7, fresh proc' had one /psy-sqlom trial at 727 rps against a median of
+    1321 — a 48% spread. Kept rather than dropped: an outlier removed because
+    it is inconvenient is a thumb on the scale, and its effect is visible in
+    the ±48% rather than hidden.
+  * '7 trials' ran against a uvicorn process that had already served two full
+    sweeps across all 8 endpoints, so all seven data layers' pools were live.
+    Every absolute in that column is ~16% below the others; the ratios are not.
+  * /noop swings 6-20% by itself, and it does no database work at all. That
+    bounds how precisely anything else here can be known.
+  * The agent driving this session is an unpinned process on the same 4-core
+    box, so it competes for cores 0 and 1. That was true of the original runs
+    too, and it is the most likely source of the outlier trials.
+
+SEE ALSO: core_idiom.txt
+------------------------
+Every "vs Core" figure in this file uses the `.mappings()` idiom that was later found
+to charge Core for a per-key `str()` cast sqlom never pays. Re-measured on the same
+box with the positional idiom and byte-identical output, Core's throughput rises 42%
+(psycopg: 582 -> 825 rps) to 49% (asyncpg: 914 -> 1359 rps), and the corrected ratios
+are 1.57x (psycopg via FastAPI) and 1.79x (asyncpg via FastAPI). The tables above are
+left as measured so the two idioms stay comparable. The ORM figures are unaffected.

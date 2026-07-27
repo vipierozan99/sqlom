@@ -78,6 +78,32 @@ async def make_core(limit, pool_size):
     return request, engine.dispose
 
 
+async def make_core_fast(limit, pool_size):
+    """Core with positional row shaping instead of `.mappings()`.
+
+    `.mappings()` keys are `quoted_name`, which orjson refuses, so the variant above
+    casts every key of every row. That cast is not row shaping and it is expensive:
+    62% of Core's whole time on sqlite, and 42-49% of its throughput end-to-end.
+    Zipping the flat row against names captured once is equally idiomatic Core and
+    emits identical bytes, so this is the version to quote. See METHODOLOGY
+    correction 8.
+    """
+    engine = create_async_engine(SA_DSN, pool_size=pool_size, max_overflow=0)
+    stmt = (select(users_table)
+            .where(users_table.c.is_active == True)
+            .where(users_table.c.id > 100)
+            .limit(limit))
+    names = [str(c.name) for c in users_table.columns]
+
+    async def request():
+        async with engine.connect() as conn:
+            result = await conn.execute(stmt)
+            payload = [dict(zip(names, row)) for row in result]
+        return orjson.dumps(payload)
+
+    return request, engine.dispose
+
+
 async def make_orm(limit, pool_size):
     engine = create_async_engine(SA_DSN, pool_size=pool_size, max_overflow=0)
     stmt = (select(UserORM)
@@ -98,6 +124,7 @@ async def make_orm(limit, pool_size):
 CONTENDERS = [
     ("sqlom (psycopg, default pool)", make_sqlom),
     ("SQLAlchemy Core (psycopg, default)", make_core),
+    ("SQLAlchemy Core positional (psycopg, default)", make_core_fast),
     ("SQLAlchemy ORM (psycopg, default)", make_orm),
 ]
 

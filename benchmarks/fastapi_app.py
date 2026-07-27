@@ -14,10 +14,12 @@ Endpoints:
     /sqlom       sqlom, all optimizations (compiled hydrator + hook,
                  conditional reset)
     /core        SQLAlchemy 2.0 Core, tuned (AUTOCOMMIT, no pool reset)
+    /core-fast   the same, shaping rows positionally rather than via .mappings()
     /orm         SQLAlchemy 2.0 ORM, tuned
     /orm-default SQLAlchemy 2.0 ORM as normally written
     /psy-sqlom   sqlom on psycopg3, DEFAULT pool behaviour
     /psy-core    SQLAlchemy Core on psycopg3, DEFAULT
+    /psy-core-fast  the same, positional row shaping
     /psy-orm     SQLAlchemy ORM on psycopg3, DEFAULT
     /noop        returns a constant — the floor: routing + ASGI only, no database
 
@@ -126,6 +128,24 @@ async def read_core():
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
+@app.get("/core-fast")
+async def read_core_fast():
+    """Core again, shaping rows positionally instead of through `.mappings()`.
+
+    `.mappings()` yields `RowMapping`s whose keys are `quoted_name` (a `str`
+    subclass) that orjson refuses, so every route above casts each key per row.
+    That cast is not row shaping — it is the price of one Core API — and it measured
+    at 2.6x Core's whole sqlite time. Zipping the flat row against names captured
+    once is equally idiomatic Core and produces identical bytes, so this endpoint
+    exists to keep every published Core ratio honest about which idiom it assumed.
+    """
+    names = state["orm_cols"]
+    async with state["core_engine"].connect() as conn:
+        result = await conn.execute(state["core_stmt"])
+        payload = [dict(zip(names, row)) for row in result]
+    return Response(content=orjson.dumps(payload), media_type=JSON)
+
+
 async def _orm(engine):
     names = state["orm_cols"]
     async with AsyncSession(engine) as session:
@@ -163,6 +183,16 @@ async def read_psy_core():
     async with state["psy_core_engine"].connect() as conn:
         result = await conn.execute(state["core_stmt"])
         payload = [{str(k): v for k, v in m.items()} for m in result.mappings()]
+    return Response(content=orjson.dumps(payload), media_type=JSON)
+
+
+@app.get("/psy-core-fast")
+async def read_psy_core_fast():
+    """The positional idiom on psycopg. See `/core-fast`."""
+    names = state["orm_cols"]
+    async with state["psy_core_engine"].connect() as conn:
+        result = await conn.execute(state["core_stmt"])
+        payload = [dict(zip(names, row)) for row in result]
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 

@@ -92,6 +92,32 @@ async def make_core(limit, pool_size, tuned):
     return request, engine.dispose
 
 
+async def make_core_fast(limit, pool_size, tuned):
+    """Core with positional row shaping instead of `.mappings()`.
+
+    `.mappings()` keys are `quoted_name`, which orjson refuses, so the variant above
+    casts every key of every row. That cast is not row shaping and it is expensive:
+    62% of Core's whole time on sqlite, and 42-49% of its throughput end-to-end.
+    Zipping the flat row against names captured once is equally idiomatic Core and
+    emits identical bytes, so this is the version to quote. See METHODOLOGY
+    correction 8.
+    """
+    engine = sa_engine(pool_size, tuned)
+    stmt = (select(users_table)
+            .where(users_table.c.is_active == True)
+            .where(users_table.c.id > 100)
+            .limit(limit))
+    names = [str(c.name) for c in users_table.columns]
+
+    async def request():
+        async with engine.connect() as conn:
+            result = await conn.execute(stmt)
+            payload = [dict(zip(names, row)) for row in result]
+        return orjson.dumps(payload)
+
+    return request, engine.dispose
+
+
 async def make_orm(limit, pool_size, tuned):
     engine = sa_engine(pool_size, tuned)
     stmt = (select(UserORM)
@@ -114,6 +140,8 @@ CONTENDERS = [
     ("sqlom (unoptimized engine)", make_sqlom, False),
     ("SQLAlchemy Core (tuned)", make_core, True),
     ("SQLAlchemy Core (default)", make_core, False),
+    ("SQLAlchemy Core positional (tuned)", make_core_fast, True),
+    ("SQLAlchemy Core positional (default)", make_core_fast, False),
     ("SQLAlchemy ORM (tuned)", make_orm, True),
     ("SQLAlchemy ORM (default)", make_orm, False),
 ]
