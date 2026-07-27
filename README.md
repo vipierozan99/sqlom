@@ -25,9 +25,11 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 ## 🧪 Tests
 
 ```bash
-pip install pytest pytest-asyncio
-python3 -m pytest tests/            # 698 tests, including two type checkers
+uv sync --all-extras          # installs dev tools plus asyncpg/psycopg/orjson
+uv run pytest                 # 698 tests, including two type checkers
 ```
+
+Without `uv`, `pip install pytest pytest-asyncio` and `python3 -m pytest tests/` still work; the Postgres-backed and typing tests just skip until their extras (`asyncpg`/`psycopg[binary]`/`psycopg-pool`, `mypy`/`pyright`) are installed too.
 
 Two tiers. Everything testable without a server is — SQL generation, code
 generation, validation, and joins end-to-end against sqlite — so most of the suite
@@ -127,11 +129,14 @@ a clone:
 
 ```bash
 git clone https://github.com/vipierozan99/sqlom && cd sqlom
-pip install orjson                              # required
-pip install asyncpg                             # for DatabaseEngine
-pip install "psycopg[binary]" psycopg-pool      # for PsycopgEngine
-python3 -c "from sqlom import Query; print('ok')"
+uv sync --extra asyncpg --extra psycopg --extra orjson   # or --all-extras
+uv run python -c "from sqlom import Query; print('ok')"
 ```
+
+Without `uv`: `pip install orjson` (required for JSON serialization), `pip install
+asyncpg` (for `DatabaseEngine`), `pip install "psycopg[binary]" psycopg-pool` (for
+`PsycopgEngine`) — each is an optional extra (`sqlom[orjson]`, `sqlom[asyncpg]`,
+`sqlom[psycopg]`) once installed from a clone.
 
 To reproduce the benchmarks as well, see
 [docs/METHODOLOGY.md](docs/METHODOLOGY.md#reproducing).
