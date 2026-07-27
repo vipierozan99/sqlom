@@ -91,9 +91,12 @@ class TestColumnComparisons:
 
 
 def test_repr_distinguishes_the_two_forms():
-    assert repr(Author.id > 1) == "<Condition Author.id > 1>"
-    assert repr(Book.author_id == Author.id) == \
-        "<Condition Book.author_id = Author.id>"
+    # The repr identifies columns by the source's rendered prefix, since with an
+    # alias in play the model name alone no longer says which table it is.
+    assert repr(Author.id > 1) == "<Condition <ColumnExpr t_authors.id> > 1>"
+    assert repr(Book.author_id == Author.id) == (
+        "<Condition <ColumnExpr t_books.author_id> = <ColumnExpr t_authors.id>>"
+    )
 
 
 def test_column_expr_is_hashable_so_it_can_key_a_dict():

@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It has a pytest suite (197 tests) covering SQL generation, codegen, joins and transactions, but it is not packaged, not on PyPI, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It has a pytest suite (337 tests) covering SQL generation, codegen, joins, predicates, grouping and transactions, but it is not packaged, not on PyPI, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -15,7 +15,7 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 * **Two schema styles:** a custom-metaclass model, or real stdlib `@dataclass(slots=True)` models that still support `User.id > 100`.
 * **Slotted objects:** 73 B/instance vs 113 B for a `__dict__`-backed equivalent.
 * **Async-first:** Native `asyncpg` pool integration — ~6x SQLAlchemy's async ORM under concurrent load, i.e. ~1 core to serve what the ORM needs ~6 cores for. Costs ~10-25% more CPU than doing no object mapping at all.
-* **Joins and multi-model selects:** `Query(User, Post).join(Post, Post.user_id == User.id)` returns `(User, Post)` tuples, like SQLAlchemy's `select(User, Post)`. `outer_join` yields `None` for a missing match. Individual columns can be selected too.
+* **A real query builder:** multi-model selects returning tuples (`Query(User, Post)`), all four join kinds, table aliases and self-joins, `or_`/`and_`/`not_` groups, `in_`/`exists`/scalar subqueries, `GROUP BY` with aggregates and `HAVING`, derived tables, `DISTINCT` and `OFFSET`.
 * **Transactions and savepoints:** `async with db.transaction() as tx:` on both engines, with `Query` reads on the transaction's connection, nesting as savepoints, and isolation levels. Calling `engine.fetch_all()` inside a block raises rather than silently using another connection.
 * **Postgres `json_agg` support:** Implemented (`Query.to_json_sql`), but **not the current focus** — see [If you only ever emit JSON](#if-you-only-ever-emit-json-use-the-database).
 
@@ -25,7 +25,7 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 
 ```bash
 pip install pytest pytest-asyncio
-python3 -m pytest tests/            # 197 tests
+python3 -m pytest tests/            # 337 tests
 ```
 
 Two tiers. Everything testable without a server is — SQL generation, code
@@ -43,14 +43,23 @@ a feature cannot end up quietly asyncpg-only — `PsycopgEngine` began life with
 |---|---|
 | `test_conditions.py` | predicate forms: value, `IS NULL`, column-to-column, and what each binds |
 | `test_query_sql.py` | exact SQL and params per shape, plus every validation error |
-| `test_hydrators.py` | generated code for single-model, joined and outer-joined rows |
+| `test_predicates.py` | `or_`/`and_`/`not_`, operator forms, `in_`, empty `IN`, `exists`, scalar subqueries |
+| `test_aliases.py` | aliases and self-joins, including prefix-collision refusal |
+| `test_join_kinds.py` | all four joins and which side each one makes nullable |
+| `test_grouping.py` | aggregates, `GROUP BY`, `HAVING`, `DISTINCT`, `OFFSET`, derived tables |
+| `test_hydrators.py` | generated code for single-model, joined, outer-joined and single-column rows |
 | `test_joins_sqlite.py` | joins end to end — real SQL *and* real hydrator, so a select list and hydrator that disagree get caught |
-| `test_engines_pg.py` | lifecycle, `fetch_all`, `fetch_json`, joins, `acquire` |
+| `test_engines_pg.py` | lifecycle, `fetch_all`, `fetch_json`, every query feature against a real server |
 | `test_transactions_pg.py` | commit, rollback, savepoints, isolation, the in-transaction guard, the session-reset invariant |
 
-The suite has already earned its keep: writing it found that a filtering join
-returned 1-tuples instead of instances, and that a `readonly=True` transaction on
-psycopg left the pooled connection permanently read-only for the next borrower.
+The suite keeps earning its keep. Bugs it found, none of which were visible by
+reading the code: a filtering join returned 1-tuples instead of instances; a
+`readonly=True` transaction on psycopg left the pooled connection permanently
+read-only for the next borrower; `for f0 in rows` binds each row *tuple* to `f0`
+rather than unpacking it, so any single-column select (and any single-column model)
+came back nested; and a RIGHT-joined single-entity query took the fast hydrator and
+built an object whose every field was `None`, because dispatch and the cache key
+were deciding nullability two different ways.
 
 ---
 
@@ -242,21 +251,107 @@ That last shape returns plain `User` instances, not 1-tuples: a join changes the
 
 Once a join is present, every column is rendered table-qualified (`users.id`), because `id` would otherwise be ambiguous. A single-table query still emits bare names, so its SQL is unchanged.
 
-**What is checked for you**, because each of these otherwise produces plausible wrong results rather than an error:
+**Aliases and self-joins.** Once the same table appears twice, the model class no longer identifies which side a column came from, so alias one of them. Columns reached off the alias carry the alias as their source, all the way through rendering:
+
+```python
+from sqlom import Alias
+
+mgr = Alias(Employee, "mgr")
+rows = await db.fetch_all(
+    Query(Employee, mgr)
+    .join(mgr, Employee.manager_id == mgr.id)
+    .where(mgr.active == True)
+)
+# SELECT employees.id, ..., mgr.id, ... FROM employees
+#   JOIN employees AS mgr ON employees.manager_id = mgr.id WHERE mgr.active = $1
+```
+
+**All four join kinds**, and the part that matters is which side can be `None`:
+
+| | keyword | nullable side |
+|---|---|---|
+| `join` | `JOIN` | neither |
+| `outer_join` / `left_join` | `LEFT OUTER JOIN` | the joined table |
+| `right_join` | `RIGHT OUTER JOIN` | **everything already in the query, including the primary entity** |
+| `full_join` | `FULL OUTER JOIN` | both |
+
+So `Query(User, Post).right_join(Post, ...)` can yield `(None, post)`. Nullability is computed from the join graph rather than assumed, and it only ever grows: an over-marked entity costs a few redundant NULL checks per row, while an under-marked one hands back an object whose every field is `None` as though it were data.
+
+### 4. OR, AND, NOT
+
+`where()` AND-s its arguments — several arguments or several calls are the same thing. Anything else is explicit:
+
+```python
+from sqlom import and_, not_, or_
+
+Query(User).where(
+    or_(User.name == "ada",
+        and_(User.active == True, User.id.in_([1, 2, 3])))
+).where(not_(User.email.is_null()))
+```
+
+Operators work too — `(a) | (b)`, `(a) & (b)`, `~(a)` — but **parenthesise every operand**. Python binds `|` and `&` tighter than the comparison operators, so `User.id > 1 | User.id < 9` parses as `User.id > (1 | User.id) < 9`. Same trap as SQLAlchemy, same reason.
+
+Groups always render their own brackets, since `AND` binds tighter than `OR` in SQL and an unbracketed nested clause silently changes meaning. Repeated `where()` calls do *not* add an outer pair, so `WHERE a AND b` stays exactly that.
+
+`in_` / `not_in` take a sequence or a subquery. An **empty** sequence renders as `FALSE` (or `TRUE` for `not_in`) rather than the `IN ()` that Postgres rejects — an empty collection is an ordinary thing for calling code to arrive at.
+
+### 5. GROUP BY, aggregates, subqueries
+
+```python
+from sqlom import avg, count, exists, max_, min_, sum_
+
+# aggregate per group, filtered after grouping
+Query(Post.user_id, count().label("posts"), avg(Post.score))
+    .group_by(Post.user_id)
+    .having(count() > 5)
+    .order_by(count(), descending=True)
+
+# correlated EXISTS. correlate() is required, and deliberately so: guessing
+# which outer reference is a correlation and which is a typo is how a mistake
+# becomes a cross join.
+Query(User).where(
+    ~exists(Query(Post.id).correlate(User).where(Post.user_id == User.id))
+)
+
+# IN, and a scalar subquery as a value
+Query(User).where(User.id.in_(Query(Post.user_id).where(Post.score > 10)))
+Query(Post).where(Post.score > Query(avg(Post.score)).scalar_subquery())
+
+# a derived table in FROM, joined like any other source
+busy = Query(Post.user_id, count().label("n")).group_by(Post.user_id).subquery("busy")
+Query(User, busy.n).join(busy, busy.user_id == User.id).where(busy.n > 5)
+```
+
+`count()` is `count(*)`; `count(col)`, `count(col, distinct=True)`, `sum_`, `avg`, `min_`, `max_` take a column. Only `count` is typed (as `int`) — `avg` of an integer is `numeric` in Postgres and `sum` is `bigint`, so guessing a Python type would pick a converter and corrupt the value. `.label()` names an expression, which is also how a subquery exposes it.
+
+Also here: `distinct()`, `offset()`.
+
+Nothing checks that every non-aggregated selected column is grouped. That is the database's job and it produces a clear error; duplicating the rule here would only add a second place to be wrong.
+
+### 6. What is checked for you
+
+Each of these otherwise produces plausible wrong results rather than an error:
 
 | you write | you get |
 |---|---|
 | `Query(User).where(Post.title == "x")` without a join | `ValueError` — Post is not in the query |
-| `.join(Post, Post.title == "x")` | `ValueError` — an ON clause must compare two columns |
-| `.join(Tag, Post.user_id == User.id)` | `ValueError` — the ON clause never mentions Tag, so it would cross join |
-| `.join(User, ...)` (self-join) | `ValueError` — needs table aliases, which sqlom does not have |
-| `.order_by(Post.id)` without a join | `ValueError` — same reason as `where` |
+| `.join(Post, Post.title == "x")` | `ValueError` — the ON clause links no two tables, so it is a cross join |
+| `.join(Tag, Post.user_id == User.id)` | `ValueError` — the ON clause never mentions Tag |
+| `.join(User, ...)` — unaliased self-join | `ValueError`, naming `Alias` as the fix |
+| a join whose alias collides with a table name | `ValueError` — both would render as the same prefix |
+| `.order_by(Post.id)` / `.group_by(Post.id)` without a join | `ValueError` — same reason as `where` |
+| a correlated subquery without `.correlate()` | `ValueError` — indistinguishable from a typo |
+| `Query(count())` with nothing else | `TypeError` — no table to select from |
+| `Query(subquery)` | `TypeError` — no model to hydrate into; select its columns |
 
-**Not supported:** table aliases and therefore self-joins; `RIGHT`/`FULL` joins; `OR` and grouped predicates (`where()` is `AND`-only); `GROUP BY`, aggregates and subqueries; relationship declarations, so there is no lazy loading and no `selectinload` equivalent — you write the join. `to_json_sql()` raises on a joined query rather than guessing at a nested shape.
+The ON check looks for a column-to-column comparison linking the joined table to one already present, *anywhere* in the clause — so `and_(Post.user_id == User.id, Post.published == True)` is fine, while `and_(Post.published == True, Post.score > 1)` is not.
+
+**Still not supported:** relationship declarations, so no lazy loading and no `selectinload` equivalent — you write the join. Set operations (`UNION`, `INTERSECT`), window functions, `CASE`, arbitrary SQL functions and expressions (`a + b`), `RETURNING`, and bulk insert/update as builder methods (`tx.execute()` takes SQL). `to_json_sql()` handles a single-model query with no joins or grouping and raises otherwise, rather than guessing at a nested shape.
 
 There is no de-duplication: an inner join to a one-to-many yields the left row once per match, as SQL does. SQLAlchemy's ORM collapses those via its identity map — which is precisely the machinery sqlom skips to be fast, so this is a real behavioural difference and not an oversight.
 
-### 4. Transactions
+### 7. Transactions
 
 `engine.fetch_all()` takes a pooled connection per call and hands it straight back, which is right for a one-shot read and useless for anything atomic — two calls run on two connections. `engine.transaction()` pins one connection for the block, commits on clean exit and rolls back on any exception:
 
@@ -292,7 +387,7 @@ Two things worth knowing:
 
 Semantics are covered by [`tests/test_transactions_pg.py`](tests/test_transactions_pg.py) on **both** engines: commit, rollback, read-your-writes, invisibility to other connections, savepoint depth and nesting, the guard, isolation levels, and the session-reset invariant.
 
-### 5. DB-side JSON (not the focus yet)
+### 8. DB-side JSON (not the focus yet)
 
 `Query.to_json_sql` / `DatabaseEngine.fetch_json` push row shaping and JSON encoding into the database and hand back response-ready bytes, skipping Python objects entirely. It works and it benchmarks well, but it's a different product than an object mapper — **treat it as experimental and out of scope for now.** The object path above is the one being optimized.
 

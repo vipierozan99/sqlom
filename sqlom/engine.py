@@ -197,10 +197,15 @@ class DatabaseEngine:
         key = query._hydration_key
         hydrator = self._hydrators.get(key)
         if hydrator is None:
-            # Only a multi-entity select needs the tuple-producing hydrator. A
-            # join alone changes the SQL, not the row shape.
-            if query.is_multi_entity:
-                hydrator = compile_join_hydrator(query.hydration_spec(), ASYNCPG_CONVERTERS)
+            # Dispatch on the key's own shape rather than on a second predicate:
+            # a plain model key means the fast single-model hydrator, a tuple key
+            # means the general one. Deciding this two different ways is how a
+            # RIGHT-joined single-entity query once got the fast hydrator and
+            # returned an object with every field None.
+            if isinstance(key, tuple):
+                hydrator = compile_join_hydrator(
+                    query.hydration_spec(), ASYNCPG_CONVERTERS, wrap=query.is_multi_entity
+                )
             else:
                 hydrator = compile_batch_hydrator(query.model, ASYNCPG_CONVERTERS)
             self._hydrators[key] = hydrator

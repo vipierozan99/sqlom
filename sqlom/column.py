@@ -7,118 +7,36 @@ descriptor protocol, so `Column` can behave as a live instance accessor
 """
 
 
-# `x = NULL` is never true in SQL — comparison against NULL yields unknown, so
-# a row is neither matched nor excluded. Equality operators against None have to
-# become IS / IS NOT instead, which also means they bind no parameter.
-_NULL_FORMS = {"=": "IS NULL", "!=": "IS NOT NULL"}
-
-
-def _bare(model, name):
-    """Default column renderer: the bare name, no table qualifier.
-
-    A single-table query needs no qualifier, and adding one would change the SQL
-    every existing benchmark emits. `Query` passes a qualifying resolver instead
-    as soon as a join makes bare names ambiguous.
-    """
-    return name
-
-
-class ColumnExpr:
-    """Returned by `Column.__get__` when accessed on the class rather than
-    an instance. Comparisons build a `Condition` instead of a bool."""
-
-    __slots__ = ("model", "name", "py_type")
-
-    def __init__(self, model, name, py_type):
-        self.model = model
-        self.name = name
-        self.py_type = py_type
-
-    def __eq__(self, other):
-        return Condition(self.model, self.name, "=", other)
-
-    def __ne__(self, other):
-        return Condition(self.model, self.name, "!=", other)
-
-    def __gt__(self, other):
-        return Condition(self.model, self.name, ">", other)
-
-    def __ge__(self, other):
-        return Condition(self.model, self.name, ">=", other)
-
-    def __lt__(self, other):
-        return Condition(self.model, self.name, "<", other)
-
-    def __le__(self, other):
-        return Condition(self.model, self.name, "<=", other)
-
-    def __hash__(self):
-        return hash((self.model, self.name))
-
-    def __repr__(self):
-        return f"<ColumnExpr {self.model.__name__}.{self.name}>"
-
-
-class Condition:
-    """A single predicate: `column OP value`, or `column OP other_column`.
-
-    Built by comparing a `ColumnExpr` at class scope — `User.id > 100` for the
-    value form, `Post.user_id == User.id` for the column form, which is what an
-    ON clause is made of.
-
-    Carries the model it came from so a query can reject a predicate built
-    against a different one — two models with an `id` column would otherwise
-    produce a silently wrong `WHERE id = $1`.
-    """
-
-    __slots__ = ("model", "column_name", "op", "value")
-
-    def __init__(self, model, column_name, op, value):
-        self.model = model
-        self.column_name = column_name
-        self.op = op
-        self.value = value
-
-    @property
-    def is_column_comparison(self):
-        """True when the right-hand side is another column rather than a value."""
-        return isinstance(self.value, ColumnExpr)
-
-    def to_sql(self, placeholder="?", resolve=_bare):
-        """Return `(clause, params)`.
-
-        `params` is a tuple rather than a single value because a predicate does
-        not always bind one. Two cases bind nothing:
-
-        * `User.email == None` must render `email IS NULL`, not `email = $1`
-          with NULL bound, which matches no row.
-        * `Post.user_id == User.id` is a column-to-column comparison — the
-          right-hand side is SQL, not a parameter.
-
-        `resolve(model, name) -> str` renders a column reference. It qualifies
-        with the table name once a join is present and returns the bare name
-        otherwise.
-        """
-        left = resolve(self.model, self.column_name)
-        if self.is_column_comparison:
-            return f"{left} {self.op} {resolve(self.value.model, self.value.name)}", ()
-        if self.value is None and self.op in _NULL_FORMS:
-            return f"{left} {_NULL_FORMS[self.op]}", ()
-        return f"{left} {self.op} {placeholder}", (self.value,)
-
-    def models(self):
-        """Every model this predicate references — one, or two for a join clause."""
-        if self.is_column_comparison:
-            return (self.model, self.value.model)
-        return (self.model,)
-
-    def __repr__(self):
-        model = getattr(self.model, "__name__", self.model)
-        if self.is_column_comparison:
-            other = getattr(self.value.model, "__name__", "?")
-            return (f"<Condition {model}.{self.column_name} {self.op} "
-                    f"{other}.{self.value.name}>")
-        return f"<Condition {model}.{self.column_name} {self.op} {self.value!r}>"
+# ColumnExpr, Condition and the predicate tree live in expr.py, which grew out of
+# this module once aliases, OR-groups and aggregates arrived. They are re-exported
+# here because that is where they were first defined and callers import them from
+# `sqlom` anyway.
+from .expr import (  # noqa: F401
+    Aggregate,
+    Alias,
+    BooleanClause,
+    ColumnExpr,
+    Condition,
+    ExistsClause,
+    Expression,
+    InClause,
+    Labelled,
+    Not,
+    Predicate,
+    Subquery,
+    _bare,
+    and_,
+    avg,
+    count,
+    exists,
+    max_,
+    min_,
+    not_,
+    or_,
+    source_name,
+    source_prefix,
+    sum_,
+)
 
 
 class Column:

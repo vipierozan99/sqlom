@@ -1,4 +1,17 @@
-from .column import ColumnExpr, Condition, _bare
+from .expr import (
+    Aggregate,
+    Alias,
+    ColumnExpr,
+    Expression,
+    Labelled,
+    Predicate,
+    Subquery,
+    _bare,
+    and_,
+    from_sql,
+    source_name,
+    source_prefix,
+)
 
 # How each backend spells "aggregate these rows into one JSON array", plus
 # how it renders a boolean. sqlite has no bool type (columns come back as
@@ -33,6 +46,15 @@ DIALECTS = {
     },
 }
 
+# How each join kind affects nullability. "right" is the table being joined;
+# "left" is everything already in the query.
+JOIN_KINDS = {
+    "inner": ("JOIN", False, False),
+    "left": ("LEFT OUTER JOIN", True, False),
+    "right": ("RIGHT OUTER JOIN", False, True),
+    "full": ("FULL OUTER JOIN", True, True),
+}
+
 
 def json_bytes(payload):
     """Normalise a DB-side JSON result to bytes, or say why it can't be.
@@ -56,45 +78,67 @@ def json_bytes(payload):
 
 
 class Query:
-    """A SELECT over one or more models.
+    """A SELECT over one or more sources.
 
-        Query(User)                                   -> [User]
+        Query(User)                                        -> [User]
         Query(User, Post).join(Post, Post.user_id == User.id)
-                                                      -> [(User, Post)]
-        Query(User, Post.title).join(Post, ...)        -> [(User, str)]
-        Query(User).outer_join(Post, ...)              -> [User]  (filtering join)
+                                                           -> [(User, Post)]
+        Query(User, Post.title).join(Post, ...)             -> [(User, str)]
+        Query(Post.user_id, count()).group_by(Post.user_id) -> [(int, int)]
 
     A multi-entity query yields tuples in select order, like SQLAlchemy's
-    `select(User, Post)`. Entities reached by an outer join arrive as `None` when
-    the row has no match.
+    `select(User, Post)`. An entity that an outer join can leave unmatched arrives
+    as `None`.
     """
 
     def __init__(self, *entities):
         if not entities:
-            raise TypeError("Query() needs at least one model or column to select")
+            raise TypeError("Query() needs at least one model, column or aggregate")
 
         self._entities = []
         for entity in entities:
-            if isinstance(entity, ColumnExpr):
-                self._entities.append(("column", entity))
+            if isinstance(entity, Expression):
+                self._entities.append(("expr", entity))
+            elif isinstance(entity, Subquery):
+                raise TypeError(
+                    f"a subquery cannot be selected as a whole ({entity!r}); there "
+                    f"is no model to hydrate into. Select its columns: "
+                    f"Query({entity.alias}.some_column)"
+                )
             elif hasattr(entity, "__columns__"):
                 self._entities.append(("model", entity))
             else:
                 raise TypeError(
-                    f"Query() takes models or columns (e.g. Query(User) or "
-                    f"Query(User, Post.title)), got {entity!r}"
+                    f"Query() takes models, aliases, columns or aggregates "
+                    f"(e.g. Query(User) or Query(User, Post.title)), got {entity!r}"
                 )
 
-        # `self.model` stays the primary/leftmost model: it is the FROM table, the
-        # target of `where()` validation for unqualified use, and what every
-        # existing caller expects.
-        first = self._entities[0][1]
-        self.model = first.model if self._entities[0][0] == "column" else first
+        # The primary source: the FROM table, and the default target of a bare
+        # column name in order_by/group_by. Taken from the first entity that has
+        # one — `count(*)` references no table, so `Query(count(), Book.id)` has
+        # to look past it.
+        self.source = None
+        for kind, entity in self._entities:
+            candidates = (entity,) if kind == "model" else entity.sources()
+            if candidates:
+                self.source = candidates[0]
+                break
+        if self.source is None:
+            raise TypeError(
+                "no table to select from — every selected entity is independent "
+                "of any column (e.g. Query(count())). Select at least one column, "
+                "or count a column: Query(count(Model.id))."
+            )
 
-        self._conditions = []
-        self._joins = []          # list of (model, on_condition, is_outer)
+        self._conditions = []       # AND-ed predicates for WHERE
+        self._having = []           # AND-ed predicates for HAVING
+        self._joins = []            # (source, on, kind)
+        self._group_by = []         # expressions
+        self._order_by = []         # (expression, descending)
         self._limit = None
-        self._order_by = []
+        self._offset = None
+        self._distinct = False
+        self._correlated = []       # extra sources allowed in predicates
         # Compiled SQL is cached per (kind, dialect/placeholder). A hot endpoint
         # builds the same query shape on every request, and regenerating the
         # string each time is pure overhead — it measured as ~4% of throughput.
@@ -102,45 +146,86 @@ class Query:
         self._hydration_key = None
         self._recompute_key()
 
-    # ------------------------------------------------------------------ shape
+    # ------------------------------------------------------------------ model
+
+    @property
+    def model(self):
+        """The primary model class. For an aliased primary source this is the
+        model behind the alias, which is what hydration needs."""
+        return getattr(self.source, "model", self.source)
 
     def _sources(self):
-        """Every model that can be referenced: the FROM table plus joined ones."""
-        return [self.model] + [model for model, _, _ in self._joins]
+        """Every source a predicate may reference."""
+        return ([self.source]
+                + [source for source, _, _ in self._joins]
+                + list(self._correlated))
+
+    def _nullable_sources(self):
+        """Which sources an outer join can leave with no matching row.
+
+        Only ever grows. An INNER join after an outer one arguably un-nullifies a
+        source, but reasoning about that correctly is subtle, and the two error
+        directions are not symmetric: over-marking costs a few redundant NULL
+        checks per row, while under-marking builds an object whose every field is
+        None and hands it back as real data. So this stays conservative.
+        """
+        nullable = set()
+        for source, _, kind in self._joins:
+            _, right_null, left_null = JOIN_KINDS[kind]
+            if right_null:
+                nullable.add(source)
+            if left_null:
+                # A RIGHT/FULL join can leave everything to its left unmatched.
+                nullable.add(self.source)
+                nullable.update(
+                    previous for previous, _, _ in self._joins if previous is not source
+                )
+        return nullable
 
     def _recompute_key(self):
         """The cache key an engine uses to look up this query's hydrator.
 
-        Deliberately just the model class whenever exactly one model is selected,
-        so the engine's dict lookup stays as cheap as it was before joins existed
-        (hashing a class beats hashing a tuple). Joins do not enter the key: a
-        join changes the SQL, not the row *shape*, and the hydrator only depends
-        on the shape. A filtering join — `Query(Author).join(Book, ...)`, where
-        Book is joined but not selected — therefore reuses the plain single-model
-        hydrator, which is exactly right, and must not produce 1-tuples.
+        Deliberately just the model class whenever exactly one model is selected
+        and nothing can null it, so the engine's dict lookup stays as cheap as it
+        was before joins existed. A join changes the SQL, not the row shape — so a
+        join used only for filtering reuses the plain single-model hydrator.
         """
-        if not self.is_multi_entity:
+        nullable = self._nullable_sources()
+        if not self.is_multi_entity and self.source not in nullable:
             self._hydration_key = self.model
             return
-        outer = {model for model, _, is_outer in self._joins if is_outer}
         parts = []
         for kind, entity in self._entities:
             if kind == "model":
-                parts.append(("model", entity, entity in outer))
+                parts.append(("model", getattr(entity, "model", entity),
+                              entity in nullable))
             else:
-                parts.append(("column", entity.model, entity.name))
+                parts.append(("expr", id(entity), getattr(entity, "py_type", None)))
         self._hydration_key = tuple(parts)
 
     def hydration_spec(self):
         """The entity specs `compile_join_hydrator` needs, in select order."""
-        outer = {model for model, _, is_outer in self._joins if is_outer}
+        nullable = self._nullable_sources()
         specs = []
         for kind, entity in self._entities:
             if kind == "model":
-                specs.append(("model", entity, entity in outer))
+                specs.append(("model", getattr(entity, "model", entity),
+                              entity in nullable))
             else:
-                specs.append(("column", entity.py_type))
+                specs.append(("column", getattr(entity, "py_type", None)))
         return specs
+
+    def output_columns(self):
+        """`(name, py_type)` per selected column — what a subquery exposes."""
+        columns = []
+        for kind, entity in self._entities:
+            if kind == "model":
+                columns.extend(
+                    (name, column.py_type) for name, column in entity.__columns__.items()
+                )
+            else:
+                columns.append((entity.output_name(), getattr(entity, "py_type", None)))
+        return columns
 
     @property
     def is_multi_entity(self):
@@ -153,83 +238,191 @@ class Query:
 
     # ------------------------------------------------------------------ joins
 
-    def _add_join(self, model, on, is_outer):
-        if not hasattr(model, "__columns__"):
-            raise TypeError(f"join() takes a model, got {model!r}")
-        if model is self.model or any(model is m for m, _, _ in self._joins):
-            # Rendering is qualified by table name, so the same table twice would
-            # make every reference to it ambiguous. Aliases would fix this; sqlom
-            # has none yet, so refuse rather than emit wrong SQL.
-            raise ValueError(
-                f"{model.__name__} is already in this query; self-joins need "
-                f"table aliases, which sqlom does not support yet"
-            )
-        if not isinstance(on, Condition):
+    def _add_join(self, source, on, kind):
+        if isinstance(source, Expression) or not hasattr(source, "__columns__"):
             raise TypeError(
-                f"join() needs an ON condition comparing two columns "
+                f"join() takes a model, Alias or Subquery, got {source!r}"
+            )
+        if any(source is existing for existing in self._sources()):
+            raise ValueError(
+                f"{source_name(source)} is already in this query. To join a table "
+                f"to itself, alias one side: Alias({self.model.__name__}, "
+                f"'other')"
+            )
+        prefix = source_prefix(source)
+        for existing in self._sources():
+            if source_prefix(existing) == prefix:
+                raise ValueError(
+                    f"two sources would both render as {prefix!r}; alias one of "
+                    f"them so their columns can be told apart"
+                )
+        if not isinstance(on, Predicate):
+            raise TypeError(
+                f"join() needs an ON predicate comparing columns "
                 f"(e.g. Post.user_id == User.id), got {type(on).__name__}"
             )
-        if not on.is_column_comparison:
-            raise ValueError(
-                f"join() ON clause must compare two columns, not a column to a "
-                f"value; got {on!r}. Use where() for value predicates."
-            )
-        known = set(self._sources()) | {model}
-        for referenced in on.models():
-            if referenced not in known:
+        known = self._sources() + [source]
+        for referenced in on.sources():
+            if not any(referenced is candidate for candidate in known):
                 raise ValueError(
-                    f"ON clause references {referenced.__name__}, which is not "
+                    f"ON clause references {source_name(referenced)}, which is not "
                     f"part of this query"
                 )
-        if model not in on.models():
+        if not _links_sources(on, source, self._sources()):
             raise ValueError(
-                f"ON clause does not reference {model.__name__}, the table being "
-                f"joined; it would produce a cross join"
+                f"ON clause does not compare a column of {source_name(source)} to "
+                f"a column of a table already in the query, so this would be a "
+                f"cross join. Got {on!r}."
             )
-        self._joins.append((model, on, is_outer))
+        self._joins.append((source, on, kind))
         self._invalidate()
         return self
 
-    def join(self, model, on):
-        """INNER JOIN `model` ON `on` (a column-to-column comparison)."""
-        return self._add_join(model, on, False)
+    def join(self, source, on):
+        """INNER JOIN."""
+        return self._add_join(source, on, "inner")
 
-    def outer_join(self, model, on):
-        """LEFT OUTER JOIN. If `model` is also selected, unmatched rows hydrate
-        that slot as `None` rather than an object of Nones."""
-        return self._add_join(model, on, True)
+    def outer_join(self, source, on):
+        """LEFT OUTER JOIN. A selected right-hand entity hydrates as `None` when
+        there is no match."""
+        return self._add_join(source, on, "left")
+
+    left_join = outer_join
+
+    def right_join(self, source, on):
+        """RIGHT OUTER JOIN. Note this makes the *left* side nullable, including
+        the primary entity — so `Query(User, Post).right_join(Post, ...)` can yield
+        `(None, post)`."""
+        return self._add_join(source, on, "right")
+
+    def full_join(self, source, on):
+        """FULL OUTER JOIN. Either side can be `None`."""
+        return self._add_join(source, on, "full")
+
+    def correlate(self, *sources):
+        """Declare outer sources this query may reference as a subquery.
+
+        A correlated subquery mentions a table from the query that contains it,
+        which the inner query has no other way to know about:
+
+            Query(User).where(exists(
+                Query(Post).correlate(User).where(Post.user_id == User.id)
+            ))
+
+        Explicit rather than inferred: guessing which references are correlations
+        and which are mistakes is exactly how a typo becomes a cross join.
+        """
+        for source in sources:
+            if not hasattr(source, "__columns__"):
+                raise TypeError(f"correlate() takes models or aliases, got {source!r}")
+            self._correlated.append(source)
+        self._invalidate()
+        return self
+
+    def subquery(self, alias):
+        """Wrap this query as a derived table usable in FROM and joins."""
+        return Subquery(self, alias)
+
+    def scalar_subquery(self):
+        """Use this query as a single value in a comparison.
+
+        Returns the query itself — `Condition` renders any object with `_render`
+        as a parenthesised subquery. It exists so calling code reads as intended
+        and so the one-row-one-column requirement has somewhere to be documented:
+        it is the database that enforces it, not sqlom.
+        """
+        return self
 
     # ------------------------------------------------------------- predicates
 
-    def _check_column(self, model, name, what):
+    def _check(self, predicate, what):
         sources = self._sources()
-        if model is not None and not any(model is source for source in sources):
-            raise ValueError(
-                f"{what} references {model.__name__}, which is not part of this "
-                f"query (selecting from "
-                f"{', '.join(m.__name__ for m in sources)}). Add a join first."
-            )
-        owner = model if model is not None else self.model
-        if name not in owner.__columns__:
-            raise ValueError(f"{owner.__name__} has no column {name!r}")
+        for referenced in predicate.sources():
+            if not any(referenced is candidate for candidate in sources):
+                raise ValueError(
+                    f"{what} references {source_name(referenced)}, which is not "
+                    f"part of this query (selecting from "
+                    f"{', '.join(source_name(s) for s in sources)}). Add a join, "
+                    f"or correlate() it if this is a subquery."
+                )
+        for column in _columns_in(predicate):
+            if column.name not in column.source.__columns__:
+                raise ValueError(
+                    f"{source_name(column.source)} has no column {column.name!r}"
+                )
 
-    def where(self, condition: Condition):
-        if not isinstance(condition, Condition):
-            raise TypeError(
-                f"where() takes a Condition built from a column comparison "
-                f"(e.g. {self.model.__name__}.id > 100), got {type(condition).__name__}"
-            )
-        # A predicate from a model this query does not select would render as a
-        # bare or unknown column name and silently filter the wrong table.
-        self._check_column(condition.model, condition.column_name, "condition")
-        if condition.is_column_comparison:
-            self._check_column(condition.value.model, condition.value.name, "condition")
-        self._conditions.append(condition)
+    def where(self, *predicates):
+        """AND-ed predicates. Use `or_()` / `and_()` / `~` for anything else.
+
+        Several arguments are equivalent to several `where()` calls; both AND.
+        """
+        for predicate in predicates:
+            if not isinstance(predicate, Predicate):
+                raise TypeError(
+                    f"where() takes a predicate built from a column comparison "
+                    f"(e.g. {self.model.__name__}.id > 100), got "
+                    f"{type(predicate).__name__}"
+                )
+            self._check(predicate, "condition")
+            self._conditions.append(predicate)
+        self._invalidate()
+        return self
+
+    def having(self, *predicates):
+        """Predicates applied after grouping, where aggregates are allowed."""
+        for predicate in predicates:
+            if not isinstance(predicate, Predicate):
+                raise TypeError(
+                    f"having() takes a predicate, got {type(predicate).__name__}"
+                )
+            self._check(predicate, "having clause")
+            self._having.append(predicate)
+        self._invalidate()
+        return self
+
+    # ----------------------------------------------------------- shaping
+
+    def _as_expression(self, column, what):
+        """Accept a ColumnExpr, an Aggregate, or a bare column-name string."""
+        if isinstance(column, Expression):
+            self._check_expression(column, what)
+            return column
+        if isinstance(column, str):
+            if column not in self.source.__columns__:
+                raise ValueError(
+                    f"{source_name(self.source)} has no column {column!r}"
+                )
+            return ColumnExpr(self.source, column,
+                              self.source.__columns__[column].py_type)
+        raise TypeError(f"{what} takes a column or aggregate, got {column!r}")
+
+    def _check_expression(self, expression, what):
+        sources = self._sources()
+        for referenced in expression.sources():
+            if not any(referenced is candidate for candidate in sources):
+                raise ValueError(
+                    f"{what} references {source_name(referenced)}, which is not "
+                    f"part of this query"
+                )
+        for column in _columns_in(expression):
+            if column.name not in column.source.__columns__:
+                raise ValueError(
+                    f"{source_name(column.source)} has no column {column.name!r}"
+                )
+
+    def group_by(self, *columns):
+        """GROUP BY. Takes columns or bare column-name strings.
+
+        No attempt is made to check that every non-aggregated selected column is
+        grouped — that is the database's job, and it produces a clear error.
+        """
+        for column in columns:
+            self._group_by.append(self._as_expression(column, "group_by"))
         self._invalidate()
         return self
 
     def order_by(self, *columns, descending=False):
-        """Order the result set. Accepts `ColumnExpr`s or column-name strings.
+        """Order the result set. Accepts columns, aggregates, or bare names.
 
         Worth being explicit about why this exists: `LIMIT` without `ORDER BY`
         returns an arbitrary subset. Postgres is free to pick a different plan
@@ -237,17 +430,16 @@ class Query:
         rows, so any query that limits without ordering is only reproducible by
         luck. Anything paginating, or comparing two implementations byte for
         byte, needs a total order.
-
-        A bare string names a column on the primary model; pass a `ColumnExpr`
-        (`Post.created_at`) to order by a joined one.
         """
         for column in columns:
-            if isinstance(column, ColumnExpr):
-                self._check_column(column.model, column.name, "order_by")
-                self._order_by.append((column.model, column.name, descending))
-            else:
-                self._check_column(None, column, "order_by")
-                self._order_by.append((self.model, column, descending))
+            self._order_by.append(
+                (self._as_expression(column, "order_by"), descending)
+            )
+        self._invalidate()
+        return self
+
+    def distinct(self, on=True):
+        self._distinct = bool(on)
         self._invalidate()
         return self
 
@@ -255,11 +447,12 @@ class Query:
         # sqlite reads a negative LIMIT as "no limit" while Postgres raises, so
         # the same query would either silently return everything or blow up
         # depending on the backend. Neither is a useful thing to ship.
-        if not isinstance(n, int) or isinstance(n, bool):
-            raise TypeError(f"limit() takes an int, got {type(n).__name__}")
-        if n < 0:
-            raise ValueError(f"limit() must be >= 0, got {n}")
-        self._limit = n
+        self._limit = _non_negative_int(n, "limit")
+        self._invalidate()
+        return self
+
+    def offset(self, n: int):
+        self._offset = _non_negative_int(n, "offset")
         self._invalidate()
         return self
 
@@ -268,73 +461,92 @@ class Query:
     def _resolver(self):
         """How to render a column reference.
 
-        With no joins, bare names — which keeps the SQL of every existing
-        single-table query byte-identical. With joins, qualify by table name,
-        because `id` would otherwise be ambiguous across the joined tables.
+        With a single source, bare names — which keeps the SQL of every existing
+        single-table query byte-identical. With more than one, qualify by table
+        name or alias, because `id` would otherwise be ambiguous.
         """
-        if not self._joins:
+        if not self._joins and not self._correlated:
             return _bare
-        return lambda model, name: f"{model.__tablename__}.{name}"
+        return lambda source, name: f"{source_prefix(source)}.{name}"
 
-    def _where_clause(self, placeholder, resolve=None):
-        """`placeholder` of "$" means Postgres-style numbering: $1, $2, ...
-
-        Numbering here rather than post-processing with a regex avoids a
-        substitution pass over the SQL on every call.
-        """
-        # "$" means asyncpg-style numbering ($1, $2, ...). "?" (sqlite) and
-        # "%s" (psycopg) are positional and repeat unchanged.
-        if resolve is None:
-            resolve = self._resolver()
-        numbered = placeholder == "$"
-        sql = ""
-        params = []
-
-        def next_placeholder():
-            return f"${len(params) + 1}" if numbered else placeholder
-
-        # JOIN clauses come before WHERE, and their ON parameters (there are none
-        # today, since an ON clause must compare two columns) would number first.
-        for model, on, is_outer in self._joins:
-            clause, values = on.to_sql(next_placeholder(), resolve)
-            kind = "LEFT OUTER JOIN" if is_outer else "JOIN"
-            sql += f" {kind} {model.__tablename__} ON {clause}"
-            params.extend(values)
-
-        if self._conditions:
-            clauses = []
-            for condition in self._conditions:
-                # `params` is extended, not appended to: a NULL predicate and a
-                # column-to-column comparison both bind nothing, and numbering
-                # has to stay in step with what is actually bound.
-                clause, values = condition.to_sql(next_placeholder(), resolve)
-                clauses.append(clause)
-                params.extend(values)
-            sql += " WHERE " + " AND ".join(clauses)
-        if self._order_by:
-            terms = ", ".join(
-                f"{resolve(model, name)} DESC" if desc else resolve(model, name)
-                for model, name, desc in self._order_by
-            )
-            sql += f" ORDER BY {terms}"
-        if self._limit is not None:
-            sql += f" LIMIT {next_placeholder()}"
-            params.append(self._limit)
-        return sql, params
-
-    def _select_list(self, resolve):
-        """The selected columns, flattened in entity order.
-
-        The hydrator relies on this order and width exactly — it unpacks the row
-        tuple positionally — so the two are generated from the same entity list.
-        """
-        parts = []
+    def _select_list(self, nxt, resolve):
+        parts, params = [], ()
         for kind, entity in self._entities:
             if kind == "model":
                 parts.extend(resolve(entity, name) for name in entity.__columns__)
             else:
-                parts.append(resolve(entity.model, entity.name))
-        return parts
+                render = getattr(entity, "select_sql", entity.to_sql)
+                sql, entity_params = render(nxt, resolve)
+                parts.append(sql)
+                params += entity_params
+        return parts, params
+
+    def _render(self, nxt=None, resolve=None):
+        """Build the whole statement. `nxt` is the shared placeholder generator, so
+        a subquery's parameters number in sequence with the outer query's."""
+        params = []
+        if nxt is None:
+            def nxt():
+                return "?"
+        if resolve is None:
+            resolve = self._resolver()
+
+        def advance():
+            placeholder = nxt()
+            return placeholder
+
+        select_parts, select_params = self._select_list(advance, resolve)
+        params.extend(select_params)
+        prefix = "SELECT DISTINCT " if self._distinct else "SELECT "
+        sql = prefix + ", ".join(select_parts)
+
+        from_sql_text, from_params = from_sql(self.source, advance)
+        params.extend(from_params)
+        sql += f" FROM {from_sql_text}"
+
+        for source, on, kind in self._joins:
+            keyword, _, _ = JOIN_KINDS[kind]
+            joined_text, joined_params = from_sql(source, advance)
+            params.extend(joined_params)
+            clause, clause_params = on.to_sql(advance, resolve)
+            params.extend(clause_params)
+            sql += f" {keyword} {joined_text} ON {clause}"
+
+        if self._conditions:
+            # Each condition is rendered separately and joined with AND rather
+            # than wrapped in one BooleanClause. A compound predicate already
+            # brings its own brackets, and this keeps `WHERE a AND b` free of the
+            # redundant outer pair — which matters only because it keeps the SQL
+            # of every previously benchmarked query byte-identical.
+            sql += " WHERE " + _and_join(self._conditions, advance, resolve, params)
+
+        if self._group_by:
+            terms = []
+            for expression in self._group_by:
+                text, group_params = expression.to_sql(advance, resolve)
+                params.extend(group_params)
+                terms.append(text)
+            sql += " GROUP BY " + ", ".join(terms)
+
+        if self._having:
+            sql += " HAVING " + _and_join(self._having, advance, resolve, params)
+
+        if self._order_by:
+            terms = []
+            for expression, descending in self._order_by:
+                text, order_params = expression.to_sql(advance, resolve)
+                params.extend(order_params)
+                terms.append(f"{text} DESC" if descending else text)
+            sql += " ORDER BY " + ", ".join(terms)
+
+        if self._limit is not None:
+            sql += f" LIMIT {advance()}"
+            params.append(self._limit)
+        if self._offset is not None:
+            sql += f" OFFSET {advance()}"
+            params.append(self._offset)
+
+        return sql, params
 
     def to_sql(self, placeholder="?"):
         """Return `(sql, params)`. `params` is a **tuple**.
@@ -349,11 +561,8 @@ class Query:
         cached = self._sql_cache.get(("select", placeholder))
         if cached is not None:
             return cached
-        resolve = self._resolver()
-        columns = self._select_list(resolve)
-        sql = f"SELECT {', '.join(columns)} FROM {self.model.__tablename__}"
-        tail, params = self._where_clause(placeholder, resolve)
-        result = (sql + tail, tuple(params))
+        sql, params = self._render(_placeholders(placeholder))
+        result = (sql, tuple(params))
         self._sql_cache[("select", placeholder)] = result
         return result
 
@@ -371,25 +580,22 @@ class Query:
         # Shaping a join into nested JSON is a different feature (and a different
         # decision about what the shape should be), so refuse rather than emit
         # something plausible and wrong.
-        if self._joins or self.is_multi_entity:
+        if self._joins or self.is_multi_entity or self._group_by:
             raise NotImplementedError(
-                "to_json_sql() supports a single-model query only; this query "
-                "selects "
+                "to_json_sql() supports a single-model query with no joins or "
+                "grouping; this query selects "
                 f"{len(self._entities)} entities with {len(self._joins)} join(s). "
                 "Use fetch_all() and serialize in Python."
             )
         spec = DIALECTS[dialect]
-        placeholder = spec["placeholder"]
-        columns = self.model.__columns__
+        columns = self.source.__columns__
 
         object_args = ", ".join(
             f"'{name}', {spec['bool'](name) if column.py_type is bool else name}"
             for name, column in columns.items()
         )
 
-        inner = f"SELECT {', '.join(columns)} FROM {self.model.__tablename__}"
-        tail, params = self._where_clause(placeholder)
-        inner += tail
+        inner, params = self._render(_placeholders(spec["placeholder"]))
 
         agg = f"{spec['agg']}({spec['object']}({object_args}))"
         if spec["coalesce"]:
@@ -400,3 +606,93 @@ class Query:
         result = (f"SELECT {agg} FROM ({inner}) AS t", tuple(params))
         self._sql_cache[("json", dialect)] = result
         return result
+
+    def __repr__(self):
+        entities = ", ".join(
+            source_name(e) if k == "model" else repr(e) for k, e in self._entities
+        )
+        return f"<Query {entities}{' +joins' if self._joins else ''}>"
+
+
+def _and_join(predicates, advance, resolve, params):
+    fragments = []
+    for predicate in predicates:
+        fragment, predicate_params = predicate.to_sql(advance, resolve)
+        params.extend(predicate_params)
+        fragments.append(fragment)
+    return " AND ".join(fragments)
+
+
+def _links_sources(predicate, joined, existing):
+    """Does this ON predicate compare a column of `joined` to a column of one of
+    `existing`?
+
+    Without such a link the join is a cross product with a filter — legal SQL,
+    almost never what was meant, and catastrophic on a large table. Compound ON
+    clauses are allowed (`and_(Post.user_id == User.id, Post.published == True)`),
+    so this looks for the link anywhere in the tree rather than requiring the
+    whole clause to be one comparison.
+    """
+    stack = [predicate]
+    while stack:
+        node = stack.pop()
+        left = getattr(node, "left", None)
+        right = getattr(node, "right", None)
+        if isinstance(left, ColumnExpr) and isinstance(right, ColumnExpr):
+            pair = {id(left.source), id(right.source)}
+            if id(joined) in pair and any(id(s) in pair for s in existing):
+                return True
+        for child in (left, right, getattr(node, "part", None)):
+            if isinstance(child, Expression):
+                stack.append(child)
+        stack.extend(getattr(node, "parts", ()))
+    return False
+
+
+def _placeholders(placeholder):
+    """Return a `nxt()` that yields placeholders in the backend's style.
+
+    "$" means asyncpg-style numbering ($1, $2, ...). "?" (sqlite) and "%s"
+    (psycopg) are positional and repeat unchanged. Numbering here rather than
+    post-processing with a regex avoids a substitution pass over the SQL.
+    """
+    if placeholder == "$":
+        counter = [0]
+
+        def nxt():
+            counter[0] += 1
+            return f"${counter[0]}"
+
+        return nxt
+    return lambda: placeholder
+
+
+def _non_negative_int(n, what):
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise TypeError(f"{what}() takes an int, got {type(n).__name__}")
+    if n < 0:
+        raise ValueError(f"{what}() must be >= 0, got {n}")
+    return n
+
+
+def _columns_in(expression):
+    """Every ColumnExpr reachable from an expression, for validation."""
+    found = []
+    stack = [expression]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ColumnExpr):
+            found.append(node)
+        elif isinstance(node, Labelled):
+            stack.append(node.expr)
+        elif isinstance(node, Aggregate):
+            if node.operand is not None:
+                stack.append(node.operand)
+        else:
+            for attribute in ("left", "right", "part"):
+                child = getattr(node, attribute, None)
+                if isinstance(child, Expression):
+                    stack.append(child)
+            for child in getattr(node, "parts", ()):
+                stack.append(child)
+    return found

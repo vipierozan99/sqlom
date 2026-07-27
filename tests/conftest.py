@@ -138,8 +138,12 @@ def run_query(db):
     def _run(query):
         sql, params = query.to_sql(placeholder="?")
         rows = db.execute(sql, params).fetchall()
-        if query.is_multi_entity:
-            hydrate = compile_join_hydrator(query.hydration_spec(), SQLITE_CONVERTERS)
+        # Mirrors the engines' dispatch exactly: key shape decides.
+        if isinstance(query._hydration_key, tuple):
+            hydrate = compile_join_hydrator(
+                query.hydration_spec(), SQLITE_CONVERTERS,
+                wrap=query.is_multi_entity,
+            )
         else:
             hydrate = compile_batch_hydrator(query.model, SQLITE_CONVERTERS)
         return hydrate(rows)

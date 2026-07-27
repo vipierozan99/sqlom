@@ -1,4 +1,4 @@
-from .column import Column, ColumnExpr, Condition, ModelMeta, as_dict, hydrate
+from .column import Column, ModelMeta, as_dict, hydrate
 from .compile import (
     ASYNCPG_CONVERTERS,
     PSYCOPG_CONVERTERS,
@@ -12,6 +12,29 @@ from .compile import (
 from .dataclass_model import DATACLASS_DUMP_OPTION, model
 from .engine import DatabaseEngine
 from .psycopg_engine import PsycopgEngine
+from .expr import (
+    Aggregate,
+    Alias,
+    BooleanClause,
+    ColumnExpr,
+    Condition,
+    ExistsClause,
+    Expression,
+    InClause,
+    Labelled,
+    Not,
+    Predicate,
+    Subquery,
+    and_,
+    avg,
+    count,
+    exists,
+    max_,
+    min_,
+    not_,
+    or_,
+    sum_,
+)
 from .query import Query, json_bytes
 from .transaction import Transaction, active_transaction
 
@@ -19,6 +42,25 @@ __all__ = [
     "Column",
     "ColumnExpr",
     "Condition",
+    "Expression",
+    "Predicate",
+    "Alias",
+    "Subquery",
+    "Aggregate",
+    "Labelled",
+    "BooleanClause",
+    "Not",
+    "InClause",
+    "ExistsClause",
+    "and_",
+    "or_",
+    "not_",
+    "exists",
+    "count",
+    "sum_",
+    "avg",
+    "min_",
+    "max_",
     "ModelMeta",
     "as_dict",
     "hydrate",

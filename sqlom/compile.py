@@ -78,7 +78,11 @@ def compile_batch_hydrator(model_cls, converters=None):
         "def _hydrate_all(rows):",
         "    out = []",
         "    append = out.append",
-        f"    for {', '.join(field_vars)} in rows:",
+        # Trailing comma is load-bearing: `for f0 in rows` binds each row
+        # *tuple* to f0 instead of unpacking it, so a single selected column
+        # would nest. `for f0, in rows` unpacks, and the trailing comma is
+        # harmless at every other arity.
+        f"    for {', '.join(field_vars)}, in rows:",
         "        obj = _new(_cls)",
     ]
 
@@ -101,7 +105,7 @@ def compile_batch_hydrator(model_cls, converters=None):
     return fn
 
 
-def compile_join_hydrator(entities, converters=None):
+def compile_join_hydrator(entities, converters=None, wrap=True):
     """Build a `rows -> [tuple]` function for a multi-entity (joined) select.
 
     `entities` is a sequence of specs describing what each slot of the output
@@ -114,6 +118,12 @@ def compile_join_hydrator(entities, converters=None):
     — so this generates the same shape as `compile_batch_hydrator`: unpack the
     whole row in the `for` statement, then straight-line slot stores. No slicing,
     no per-entity function call, no zip.
+
+    `wrap` controls the output shape. True (the default) appends a tuple per row.
+    False appends the single entity directly, which is what a one-model query needs
+    even when a RIGHT or FULL join can make it None — `Query(Author).right_join(...)`
+    yields `[author, None, author]`, not a list of 1-tuples. It only applies to a
+    single-entity spec.
 
     `nullable` marks an entity reached by an OUTER join, where the row can carry
     all-NULL columns for a missing match. Those become `None` rather than an
@@ -153,7 +163,11 @@ def compile_join_hydrator(entities, converters=None):
         "def _hydrate_join(rows):",
         "    out = []",
         "    append = out.append",
-        f"    for {', '.join(field_vars)} in rows:",
+        # Trailing comma is load-bearing: `for f0 in rows` binds each row
+        # *tuple* to f0 instead of unpacking it, so a single selected column
+        # would nest. `for f0, in rows` unpacks, and the trailing comma is
+        # harmless at every other arity.
+        f"    for {', '.join(field_vars)}, in rows:",
     ]
 
     object_vars = []
@@ -183,7 +197,10 @@ def compile_join_hydrator(entities, converters=None):
                 value_expr = f"{converter_name}({var})"
             lines.append(f"{indent}{obj}.{column._storage_name} = {value_expr}")
 
-    lines.append(f"        append(({', '.join(object_vars)},))")
+    if wrap or len(object_vars) != 1:
+        lines.append(f"        append(({', '.join(object_vars)},))")
+    else:
+        lines.append(f"        append({object_vars[0]})")
     lines.append("    return out")
     source = "\n".join(lines)
 

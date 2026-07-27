@@ -176,3 +176,121 @@ class TestAcquire:
             else:
                 cur = await conn.execute("SELECT 1")
                 assert (await cur.fetchone())[0] == 1
+
+
+class TestNewQueryFeaturesOnPostgres:
+    """The features added after the first join release, exercised against a real
+    server — sqlite is permissive about some of this and Postgres is not."""
+
+    async def test_self_join_via_alias(self, engine):
+        from sqlom import Alias
+
+        other = Alias(Book, "other")
+        rows = await engine.fetch_all(
+            Query(Book, other)
+            .join(other, Book.author_id == other.author_id)
+            .where(Book.id < other.id)
+            .order_by(Book.id)
+        )
+        assert [(a.title, b.title) for a, b in rows] == [("structures", "algorithms")]
+
+    async def test_right_join_nulls_the_primary_entity(self, engine):
+        async with engine.acquire() as conn:
+            await conn.execute("INSERT INTO t_books VALUES (99, 999, 'orphan')")
+        try:
+            rows = await engine.fetch_all(
+                Query(Author, Book)
+                .right_join(Book, Book.author_id == Author.id)
+                .where(Book.title == "orphan")
+            )
+            assert len(rows) == 1 and rows[0][0] is None
+            assert rows[0][1].title == "orphan"
+        finally:
+            async with engine.acquire() as conn:
+                await conn.execute("DELETE FROM t_books WHERE id = 99")
+
+    async def test_full_join(self, engine):
+        rows = await engine.fetch_all(
+            Query(Author, Book).full_join(Book, Book.author_id == Author.id)
+        )
+        assert any(book is None for _, book in rows)
+
+    async def test_or_and_not(self, engine):
+        from sqlom import and_, or_
+
+        rows = await engine.fetch_all(
+            Query(Author)
+            .where(or_(and_(Author.active == True, Author.id == 1),  # noqa: E712
+                       ~(Author.name != "carol")))
+            .order_by("id")
+        )
+        assert [a.name for a in rows] == ["ada", "carol"]
+
+    async def test_in_and_not_in(self, engine):
+        rows = await engine.fetch_all(
+            Query(Author).where(Author.id.in_([1, 3])).where(Author.id.not_in([3]))
+        )
+        assert [a.name for a in rows] == ["ada"]
+
+    async def test_empty_in_is_valid_sql_on_postgres(self, engine):
+        # `IN ()` is a syntax error here, which is why it renders as FALSE.
+        assert await engine.fetch_all(Query(Author).where(Author.id.in_([]))) == []
+
+    async def test_in_subquery(self, engine):
+        rows = await engine.fetch_all(
+            Query(Author).where(
+                Author.id.in_(Query(Book.author_id).where(Book.title == "compilers"))
+            )
+        )
+        assert [a.name for a in rows] == ["brian"]
+
+    async def test_correlated_exists(self, engine):
+        from sqlom import exists
+
+        rows = await engine.fetch_all(
+            Query(Author)
+            .where(~exists(Query(Book.id).correlate(Author)
+                           .where(Book.author_id == Author.id)))
+        )
+        assert [a.name for a in rows] == ["dan"]
+
+    async def test_group_by_with_having(self, engine):
+        from sqlom import count
+
+        rows = await engine.fetch_all(
+            Query(Book.author_id, count())
+            .group_by(Book.author_id)
+            .having(count() > 1)
+        )
+        assert rows == [(1, 2)]
+
+    async def test_aggregates(self, engine):
+        from sqlom import count, max_, min_
+
+        rows = await engine.fetch_all(
+            Query(count(), min_(Book.id), max_(Book.id))
+        )
+        assert rows == [(4, 10, 13)]
+
+    async def test_derived_table(self, engine):
+        from sqlom import count
+
+        sub = (Query(Book.author_id, count().label("n"))
+               .group_by(Book.author_id)
+               .subquery("s"))
+        rows = await engine.fetch_all(
+            Query(Author, sub.n).join(sub, sub.author_id == Author.id).where(sub.n > 1)
+        )
+        assert len(rows) == 1
+        author, n = rows[0]
+        assert author.name == "ada" and n == 2
+
+    async def test_distinct_and_offset(self, engine):
+        rows = await engine.fetch_all(
+            Query(Book.author_id).distinct().order_by(Book.author_id).limit(2).offset(1)
+        )
+        assert rows == [(2,), (3,)]
+
+    async def test_single_column_select_is_not_nested(self, engine):
+        rows = await engine.fetch_all(Query(Author.name).order_by(Author.name).limit(2))
+        assert rows == [("ada",), ("brian",)]

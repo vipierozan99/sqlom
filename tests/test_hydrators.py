@@ -44,6 +44,18 @@ class TestSingleModelHydrators:
         with pytest.raises(AttributeError):
             obj.surprise = 1
 
+    def test_a_single_column_model_is_not_nested(self):
+        """Same trailing-comma trap as the join hydrator: a one-column model used
+        to hydrate its only field from the whole row tuple."""
+        from sqlom import Column, ModelMeta
+
+        class Single(metaclass=ModelMeta):
+            __tablename__ = "single"
+            id = Column(int)
+
+        objs = compile_batch_hydrator(Single)([(1,), (2,)])
+        assert [o.id for o in objs] == [1, 2]
+
     def test_a_model_with_no_columns_is_refused(self):
         class Empty:
             __tablename__ = "empty"
@@ -146,6 +158,26 @@ class TestJoinHydrator:
         spec = [("model", Author, False), ("model", Book, False)]
         with pytest.raises(ValueError):  # unpack error from the for statement
             compile_join_hydrator(spec)([(1, "ada", True)])
+
+    def test_a_single_selected_column_is_not_nested(self):
+        """`for f0 in rows` binds each row *tuple* to f0 instead of unpacking it,
+        so a one-column select used to come back as [((1,),), ((2,),)]. The
+        generated loop carries a trailing comma to force a tuple pattern."""
+        rows = compile_join_hydrator([("column", int)])([(1,), (2,)])
+        assert rows == [(1,), (2,)]
+
+    def test_wrap_false_returns_the_entity_directly(self):
+        # A one-model query yields instances even when nullable, so the hydrator
+        # must be able to skip the tuple.
+        spec = [("model", Author, True)]
+        rows = compile_join_hydrator(spec, wrap=False)([(1, "ada", True), (None, None, None)])
+        assert rows[0].name == "ada"
+        assert rows[1] is None
+
+    def test_wrap_false_is_ignored_for_multiple_entities(self):
+        spec = [("model", Author, False), ("column", str)]
+        rows = compile_join_hydrator(spec, wrap=False)([(1, "ada", True, "x")])
+        assert isinstance(rows[0], tuple) and len(rows[0]) == 2
 
     def test_empty_entity_list_is_refused(self):
         with pytest.raises(ValueError, match="at least one entity"):

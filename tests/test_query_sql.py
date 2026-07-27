@@ -65,11 +65,11 @@ class TestValidation:
             Query()
 
     def test_query_rejects_a_non_model(self):
-        with pytest.raises(TypeError, match="models or columns"):
+        with pytest.raises(TypeError, match="takes models, aliases"):
             Query("t_authors")
 
     def test_where_rejects_a_non_condition(self):
-        with pytest.raises(TypeError, match="takes a Condition"):
+        with pytest.raises(TypeError, match="takes a predicate"):
             Query(Author).where("id > 5")
 
     def test_where_rejects_a_predicate_from_an_unjoined_model(self):
@@ -77,11 +77,14 @@ class TestValidation:
             Query(Author).where(Book.title == "x")
 
     def test_where_rejects_an_unknown_column(self):
-        class Ghost(type(Author)):
-            pass
+        from sqlom import ColumnExpr
 
-        with pytest.raises(ValueError, match="has no column"):
-            Query(Author).where(Author.id > 1)._check_column(Author, "nope", "condition")
+        # Reaching a column that the model does not declare can only happen by
+        # constructing the expression by hand, but the guard is what keeps a
+        # renamed column from rendering as valid-looking SQL.
+        ghost = ColumnExpr(Author, "nope", int)
+        with pytest.raises(ValueError, match="has no column 'nope'"):
+            Query(Author).where(ghost > 1)
 
     def test_order_by_rejects_an_unknown_column(self):
         with pytest.raises(ValueError, match="has no column 'nope'"):
@@ -167,20 +170,20 @@ class TestJoins:
 
 
 class TestJoinValidation:
-    def test_on_must_compare_two_columns(self):
-        with pytest.raises(ValueError, match="must compare two columns"):
+    def test_on_must_link_the_two_tables(self):
+        with pytest.raises(ValueError, match="cross join"):
             Query(Author, Book).join(Book, Book.title == "x")
 
-    def test_on_must_be_a_condition(self):
-        with pytest.raises(TypeError, match="ON condition"):
+    def test_on_must_be_a_predicate(self):
+        with pytest.raises(TypeError, match="ON predicate"):
             Query(Author, Book).join(Book, "books.author_id = authors.id")
 
-    def test_join_target_must_be_a_model(self):
-        with pytest.raises(TypeError, match="takes a model"):
+    def test_join_target_must_be_a_source(self):
+        with pytest.raises(TypeError, match="takes a model, Alias or Subquery"):
             Query(Author).join("t_books", Book.author_id == Author.id)
 
     def test_on_must_mention_the_joined_table(self):
-        with pytest.raises(ValueError, match="does not reference Tag"):
+        with pytest.raises(ValueError, match="cross join"):
             (Query(Author)
              .join(Book, Book.author_id == Author.id)
              .join(Tag, Book.author_id == Author.id))
@@ -189,8 +192,8 @@ class TestJoinValidation:
         with pytest.raises(ValueError, match="not part of this query"):
             Query(Author).join(Tag, Tag.book_id == Book.id)
 
-    def test_self_join_is_refused_rather_than_rendered_ambiguously(self):
-        with pytest.raises(ValueError, match="self-joins need table aliases"):
+    def test_unaliased_self_join_is_refused_and_points_at_the_fix(self):
+        with pytest.raises(ValueError, match="alias one side"):
             Query(Author).join(Author, Author.id == Author.id)
 
     def test_selecting_an_unjoined_model_is_caught_at_render_time(self):
@@ -218,7 +221,7 @@ class TestJsonSql:
 
     def test_joins_are_refused_rather_than_shaped_wrongly(self):
         query = Query(Author, Book).join(Book, Book.author_id == Author.id)
-        with pytest.raises(NotImplementedError, match="single-model query only"):
+        with pytest.raises(NotImplementedError, match="single-model query"):
             query.to_json_sql()
 
     def test_multi_entity_without_a_join_is_also_refused(self):
