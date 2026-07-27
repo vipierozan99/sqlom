@@ -10,6 +10,15 @@ from typing import Any, assert_type
 from sqlom import (
     Aggregate,
     Alias,
+    BinaryOp,
+    Case,
+    CompoundSelect,
+    Delete,
+    FunctionCall,
+    Insert,
+    Over,
+    UnaryOp,
+    Update,
     Column,
     ColumnExpr,
     Condition,
@@ -21,12 +30,24 @@ from sqlom import (
     Subquery,
     and_,
     avg,
+    case,
     count,
+    dense_rank,
     exists,
+    first_value,
+    func,
+    lag,
+    last_value,
+    lead,
     max_,
+    max_rows_per_statement,
     min_,
     not_,
+    ntile,
     or_,
+    rank,
+    row_number,
+    sql_function,
     sum_,
 )
 
@@ -199,3 +220,100 @@ assert_type(mgr.id, ColumnExpr[Any])
 
 # to_sql's shape
 assert_type(Query(Author).to_sql(), tuple[str, tuple[Any, ...]])
+
+
+# --------------------------------------------------------------------------
+# Arithmetic, functions, CASE, windows
+# --------------------------------------------------------------------------
+
+# Arithmetic keeps the operand's type, so the result still compares against it.
+assert_type(Book.id + 1, BinaryOp[int])
+assert_type(Book.id - 1, BinaryOp[int])
+assert_type(Book.id * 2, BinaryOp[int])
+assert_type(Book.id % 2, BinaryOp[int])
+assert_type(1 + Book.id, BinaryOp[int])
+assert_type(-Book.id, UnaryOp[int])
+assert_type(Book.id * 2 > 10, Condition)
+# Division does not preserve the type: integer division is not an integer in
+# Postgres for every operand pairing, so it is Any rather than a guess.
+assert_type(Book.id / 2, BinaryOp[Any])
+# `||` yields text whatever went in.
+assert_type(Book.title.concat("!"), BinaryOp[str])
+assert_type(Book.id.operate("#>>", "x"), BinaryOp[Any])
+
+# A function's return type is unknowable without a signature database, so it is
+# Any unless stated.
+assert_type(func.lower(Book.title), FunctionCall[Any])
+assert_type(sql_function("lower", Book.title), FunctionCall[Any])
+
+assert_type(case((Book.id > 1, "a"), else_="b"), Case[Any])
+
+# Window functions that are inherently integers say so.
+assert_type(row_number(), FunctionCall[int])
+assert_type(rank(), FunctionCall[int])
+assert_type(dense_rank(), FunctionCall[int])
+assert_type(ntile(4), FunctionCall[int])
+# lag/lead/first/last carry the column's type through.
+assert_type(lag(Book.id), FunctionCall[int])
+assert_type(lead(Book.title), FunctionCall[str])
+assert_type(first_value(Book.title), FunctionCall[str])
+assert_type(last_value(Book.id), FunctionCall[int])
+
+assert_type(row_number().over(order_by=Book.id), Over[int])
+assert_type(count().over(), Over[int])
+assert_type(sum_(Book.id).over(), Over[Any])
+
+# And they flow into a row type.
+assert_type(
+    Query(Book.id, row_number().over(order_by=Book.id)),
+    Query[tuple[int, int]],
+)
+assert_type(Query(Book.id, Book.id * 2), Query[tuple[int, int]])
+assert_type(Query(count(Book)), Query[tuple[int]])
+
+
+# --------------------------------------------------------------------------
+# Set operations preserve the row type
+# --------------------------------------------------------------------------
+
+assert_type(Query(Author).union(Query(Author)), CompoundSelect[Author])
+assert_type(Query(Author).union_all(Query(Author)), CompoundSelect[Author])
+assert_type(Query(Author).intersect(Query(Author)), CompoundSelect[Author])
+assert_type(Query(Author).except_(Query(Author)), CompoundSelect[Author])
+assert_type(
+    Query(Author.id).union(Query(Author.id)).order_by("id").limit(5),
+    CompoundSelect[tuple[int]],
+)
+
+
+async def fetching_a_compound(db: DatabaseEngine) -> None:
+    rows = await db.fetch_all(Query(Author).union(Query(Author)))
+    assert_type(rows, list[Author])
+    assert_type(rows[0].name, str)
+
+
+# --------------------------------------------------------------------------
+# DML
+# --------------------------------------------------------------------------
+
+assert_type(Insert(Author).values(name="ada"), Insert)
+assert_type(Update(Author).set(name="z"), Update)
+assert_type(Delete(Author).all_rows(), Delete)
+assert_type(Insert(Author).values(name="a").returning(Author.id), Insert)
+assert_type(Insert(Author).values(name="a").row_count, int)
+assert_type(Insert(Author).values(name="a").returns_rows, bool)
+assert_type(max_rows_per_statement(Author), int)
+
+
+async def writing(db: DatabaseEngine) -> None:
+    # No RETURNING: execute, which reports the driver's own status.
+    await db.execute(Insert(Author).values(name="ada"))
+    await db.execute(Update(Author).set(name="z").where(Author.id == 1))
+    await db.execute(Delete(Author).where(Author.id == 1))
+
+    # With RETURNING: fetch_all, and the rows hydrate.
+    # list[Any], not list[int]: returning() is chained after construction, so a
+    # checker cannot re-parameterise the statement the way Query's constructor
+    # overloads do. Stated rather than faked — see tests/typing/README.md.
+    ids = await db.fetch_all(Insert(Author).values(name="a").returning(Author.id))
+    assert_type(ids, list[Any])

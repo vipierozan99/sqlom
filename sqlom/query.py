@@ -74,6 +74,9 @@ M = TypeVar("M")
 # `tuple[User, str]` without anyone enumerating that pairing.
 _Sel = Union[type[T], "Alias[T]", "Expression[T]"]
 
+# The operand of a set operation: another select of the same row type.
+_Selectable = Union["Query[R]", "CompoundSelect[R]"]
+
 
 def json_bytes(payload: Any) -> bytes:
     """Normalise a DB-side JSON result to bytes, or say why it can't be.
@@ -367,6 +370,37 @@ class Query(Generic[R]):
             self._correlated.append(source)
         self._invalidate()
         return self
+
+    # ------------------------------------------------------- set operations
+
+    def _compound(self, operator: str, other: _Selectable[R]) -> CompoundSelect[R]:
+        if not hasattr(other, "output_columns"):
+            raise TypeError(
+                f"{operator} takes another Query or compound, got "
+                f"{type(other).__name__}"
+            )
+        return CompoundSelect(operator, [self, other])
+
+    def union(self, other: _Selectable[R]) -> CompoundSelect[R]:
+        """`UNION` — de-duplicates, as SQL does."""
+        return self._compound("UNION", other)
+
+    def union_all(self, other: _Selectable[R]) -> CompoundSelect[R]:
+        """`UNION ALL` — keeps duplicates, and is the cheaper of the two."""
+        return self._compound("UNION ALL", other)
+
+    def intersect(self, other: _Selectable[R]) -> CompoundSelect[R]:
+        return self._compound("INTERSECT", other)
+
+    def intersect_all(self, other: _Selectable[R]) -> CompoundSelect[R]:
+        return self._compound("INTERSECT ALL", other)
+
+    def except_(self, other: _Selectable[R]) -> CompoundSelect[R]:
+        """`EXCEPT`. Named with a trailing underscore because `except` is a keyword."""
+        return self._compound("EXCEPT", other)
+
+    def except_all(self, other: _Selectable[R]) -> CompoundSelect[R]:
+        return self._compound("EXCEPT ALL", other)
 
     def subquery(self, alias: str) -> Subquery:
         """Wrap this query as a derived table usable in FROM and joins."""
@@ -746,3 +780,154 @@ def _columns_in(expression):
             for child in getattr(node, "parts", ()):
                 stack.append(child)
     return found
+
+
+SET_OPERATORS = {
+    "union": "UNION",
+    "union_all": "UNION ALL",
+    "intersect": "INTERSECT",
+    "intersect_all": "INTERSECT ALL",
+    "except_": "EXCEPT",
+    "except_all": "EXCEPT ALL",
+}
+
+
+class CompoundSelect(Generic[R]):
+    """Two or more SELECTs joined by UNION / INTERSECT / EXCEPT.
+
+    Presents the same surface the engines use — `to_sql`, `_hydration_key`,
+    `hydration_spec`, `is_multi_entity`, `model` — so `fetch_all` needs no special
+    case and rows hydrate exactly as they do for a single select.
+
+    The row shape comes from the *first* operand. SQL requires every operand to
+    agree on column count and compatible types, and this checks the count, since a
+    mismatch there is a confusing server error rather than an obvious one. Type
+    compatibility is left to the database.
+
+    `ORDER BY`, `LIMIT` and `OFFSET` apply to the whole compound and are rendered
+    after the last operand. They reference output column *names*, not
+    table-qualified ones — a compound has no single table to qualify against — so
+    ordering takes a column of the first operand or a bare string.
+    """
+
+    def __init__(self, operator: str, operands: Any) -> None:
+        self.operator = operator
+        self.operands = list(operands)
+        if len(self.operands) < 2:
+            raise ValueError("a compound select needs at least two operands")
+        widths = {len(operand.output_columns()) for operand in self.operands}
+        if len(widths) != 1:
+            raise ValueError(
+                f"every operand of a {operator} must select the same number of "
+                f"columns; got widths {sorted(widths)}"
+            )
+        self._order_by: list[tuple[Any, bool]] = []
+        self._limit: int | None = None
+        self._offset: int | None = None
+        self._sql_cache: dict[Any, Any] = {}
+
+    # --- the interface the engines rely on ---------------------------------
+
+    @property
+    def model(self) -> Any:
+        return self.operands[0].model
+
+    @property
+    def is_multi_entity(self) -> bool:
+        return self.operands[0].is_multi_entity
+
+    @property
+    def _hydration_key(self) -> Any:
+        return self.operands[0]._hydration_key
+
+    def hydration_spec(self) -> list[tuple[Any, ...]]:
+        return self.operands[0].hydration_spec()
+
+    def output_columns(self) -> list[tuple[str, Any]]:
+        return self.operands[0].output_columns()
+
+    # --- building ----------------------------------------------------------
+
+    def _combine(self, operator: str, other: _Selectable[R]) -> CompoundSelect[R]:
+        # Chaining the same operator extends this compound; a different one nests,
+        # because UNION and EXCEPT do not associate the way that would imply.
+        if operator == self.operator:
+            return CompoundSelect(operator, [*self.operands, other])
+        return CompoundSelect(operator, [self, other])
+
+    def union(self, other: _Selectable[R]) -> CompoundSelect[R]:
+        return self._combine("UNION", other)
+
+    def union_all(self, other: _Selectable[R]) -> CompoundSelect[R]:
+        return self._combine("UNION ALL", other)
+
+    def intersect(self, other: _Selectable[R]) -> CompoundSelect[R]:
+        return self._combine("INTERSECT", other)
+
+    def except_(self, other: _Selectable[R]) -> CompoundSelect[R]:
+        return self._combine("EXCEPT", other)
+
+    def order_by(self, *columns: Any, descending: bool = False) -> Self:
+        for column in columns:
+            name = column if isinstance(column, str) else getattr(column, "name", None)
+            if name is None:
+                raise TypeError(
+                    f"a compound select orders by output column name; got {column!r}"
+                )
+            known = {output for output, _ in self.output_columns()}
+            if name not in known:
+                raise ValueError(
+                    f"{name!r} is not an output column of this compound "
+                    f"({', '.join(sorted(known))})"
+                )
+            self._order_by.append((name, descending))
+        self._sql_cache.clear()
+        return self
+
+    def limit(self, n: int) -> Self:
+        self._limit = _non_negative_int(n, "limit")
+        self._sql_cache.clear()
+        return self
+
+    def offset(self, n: int) -> Self:
+        self._offset = _non_negative_int(n, "offset")
+        self._sql_cache.clear()
+        return self
+
+    # --- rendering ---------------------------------------------------------
+
+    def _render(self, nxt=None, resolve=None):
+        if nxt is None:
+            def nxt():
+                return "?"
+        parts, params = [], []
+        for operand in self.operands:
+            sql, operand_params = operand._render(nxt)
+            params.extend(operand_params)
+            parts.append(sql)
+        sql = f" {self.operator} ".join(parts)
+        if self._order_by:
+            terms = ", ".join(
+                f"{name} DESC" if descending else name
+                for name, descending in self._order_by
+            )
+            sql += f" ORDER BY {terms}"
+        if self._limit is not None:
+            sql += f" LIMIT {nxt()}"
+            params.append(self._limit)
+        if self._offset is not None:
+            sql += f" OFFSET {nxt()}"
+            params.append(self._offset)
+        return sql, params
+
+    def to_sql(self, placeholder: str = "?") -> tuple[str, tuple[Any, ...]]:
+        cached = self._sql_cache.get(placeholder)
+        if cached is not None:
+            return cached
+        sql, params = self._render(_placeholders(placeholder))
+        result = (sql, tuple(params))
+        self._sql_cache[placeholder] = result
+        return result
+
+    def __repr__(self) -> str:
+        return f"<CompoundSelect {self.operator} x{len(self.operands)}>"

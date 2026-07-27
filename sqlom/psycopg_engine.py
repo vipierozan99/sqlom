@@ -19,18 +19,32 @@ from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
-from typing import Any, AsyncIterator, Callable, TypeVar
+from typing import Any, AsyncIterator, Callable, TypeVar, Union, overload
 
 from .compile import (
     PSYCOPG_CONVERTERS,
     compile_batch_hydrator,
     compile_join_hydrator,
 )
-from .query import Query
+from .dml import _Statement
+from .query import CompoundSelect, Query
 from .query import json_bytes as _json_bytes
 from .transaction import _ACTIVE, Transaction
 
 R = TypeVar("R")
+
+# Anything the engine can hydrate rows from.
+_Select = Union[Query[R], "CompoundSelect[R]"]
+
+
+def _require_rows(statement: Any) -> None:
+    """A write with no RETURNING produces no rows; hydrating it would return [] and
+    look like "nothing matched" rather than "you asked the wrong way"."""
+    if hasattr(statement, "returns_rows") and not statement.returns_rows:
+        raise ValueError(
+            f"{type(statement).__name__} has no returning(); it produces no rows. "
+            f"Use engine.execute() for it, or add returning(...)."
+        )
 
 
 class PsycopgTransaction(Transaction):
@@ -210,13 +224,36 @@ class PsycopgEngine:
                 f"uncommitted state. Use tx.{method}() instead."
             )
 
-    async def fetch_all(self, query: Query[R]) -> list[R]:
+    @overload
+    async def fetch_all(self, query: _Select[R]) -> list[R]: ...
+
+    @overload
+    async def fetch_all(self, query: _Statement) -> list[Any]: ...
+
+    async def fetch_all(self, query: Any) -> Any:
         self._reject_if_in_transaction("fetch_all")
+        _require_rows(query)
         sql, params = query.to_sql(placeholder="%s")
         async with self._require_pool().connection() as conn:
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
         return self._hydrator_for(query)(rows)
+
+    async def execute(self, statement: _Statement) -> int:
+        """Run an Insert/Update/Delete that has no RETURNING; returns the rowcount.
+
+        psycopg reports an integer here where asyncpg reports a status string; both
+        are the driver's own answer rather than a normalisation across them.
+        """
+        if getattr(statement, "returns_rows", False):
+            raise ValueError(
+                "this statement has RETURNING, so it produces rows — use "
+                "fetch_all() to get them"
+            )
+        sql, params = statement.to_sql(placeholder="%s")
+        async with self._require_pool().connection() as conn:
+            cur = await conn.execute(sql, params)
+            return cur.rowcount
 
     async def fetch_json(self, query: Query[Any]) -> bytes:
         """Result set as JSON bytes built by Postgres, no per-row Python objects.

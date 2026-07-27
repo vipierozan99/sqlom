@@ -10,11 +10,23 @@ from .compile import (
     json_default,
 )
 from .dataclass_model import DATACLASS_DUMP_OPTION, model
+from .dml import (
+    MAX_PARAMETERS,
+    Delete,
+    Insert,
+    Update,
+    max_rows_per_statement,
+)
 from .engine import DatabaseEngine
 from .psycopg_engine import PsycopgEngine
 from .expr import (
     Aggregate,
     Alias,
+    BinaryOp,
+    Case,
+    FunctionCall,
+    Over,
+    UnaryOp,
     BooleanClause,
     ColumnExpr,
     Condition,
@@ -28,14 +40,25 @@ from .expr import (
     and_,
     avg,
     count,
+    case,
+    dense_rank,
     exists,
+    first_value,
+    func,
+    lag,
+    last_value,
+    lead,
     max_,
     min_,
     not_,
+    ntile,
     or_,
+    rank,
+    row_number,
+    sql_function,
     sum_,
 )
-from .query import Query, json_bytes
+from .query import CompoundSelect, Query, json_bytes
 from .transaction import Transaction, active_transaction
 
 __all__ = [
@@ -58,6 +81,22 @@ __all__ = [
     "exists",
     "count",
     "sum_",
+    "BinaryOp",
+    "UnaryOp",
+    "FunctionCall",
+    "Case",
+    "Over",
+    "case",
+    "func",
+    "sql_function",
+    "row_number",
+    "rank",
+    "dense_rank",
+    "lag",
+    "lead",
+    "first_value",
+    "last_value",
+    "ntile",
     "avg",
     "min_",
     "max_",
@@ -77,6 +116,12 @@ __all__ = [
     "DatabaseEngine",
     "PsycopgEngine",
     "Query",
+    "CompoundSelect",
+    "Insert",
+    "Update",
+    "Delete",
+    "max_rows_per_statement",
+    "MAX_PARAMETERS",
     "json_bytes",
     "Transaction",
     "active_transaction",

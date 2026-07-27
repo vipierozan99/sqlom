@@ -53,6 +53,14 @@ only works in one of them is not something to advertise.
   bigint and `avg(int)` to numeric, which arrives as `Decimal`. `count` is `int` and
   `min_`/`max_` keep the column's type.
 - **Six or more selected entities.** The row degrades to `tuple[Any, ...]`.
+- **DML row types.** `fetch_all()` on a statement with `RETURNING` is `list[Any]`.
+  `returning()` is chained after construction, so a checker cannot re-parameterise
+  the statement the way `Query`'s constructor overloads can. The DML builders are
+  therefore not generic at all, rather than carrying a type variable that resolves
+  to `Never`.
+- **`-column` on a non-numeric column.** `__neg__` takes no operand, so there is no
+  argument to constrain by the column's type. Expressing "numeric columns only"
+  would need per-type descriptor classes instead of one generic `ColumnExpr`.
 - **Outer-join nullability.** `Query(User, Post).outer_join(...)` is typed
   `tuple[User, Post]`, but at runtime the second slot is `Post | None`. The join is
   declared after the row type is fixed, so expressing this would need the builder to

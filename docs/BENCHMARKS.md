@@ -1387,10 +1387,12 @@ Artifact: [`results/locust_end_to_end.txt`](../benchmarks/results/locust_end_to_
 - **Narrow shape.** One flat 4-column table of small ints and short strings. No
   nested shaping, wide rows, large text/JSONB or writes.
 - **Everything the query builder grew after the single-table read is
-  unbenchmarked.** Joins (all four kinds), aliases, `OR`/`NOT` groups, `IN`,
-  `EXISTS`, aggregates with `GROUP BY`/`HAVING`, derived tables and transactions
-  are all covered by the pytest suite (`tests/`), and none of them appears in any
-  ratio in this document.
+  unbenchmarked.** Joins, aliases, boolean groups, `IN`/`EXISTS`, aggregates with
+  `GROUP BY`/`HAVING`, derived tables, set operations, window functions, `CASE`,
+  arithmetic, and every write path (`Insert`/`Update`/`Delete`, `RETURNING`, bulk
+  insert) are covered by the pytest suite and appear in no ratio here. In
+  particular **no write is benchmarked at all**: every figure in this document is a
+  single-table read.
   A joined query costs strictly more than the single-table read measured here: the
   select list is wider, rows are more numerous for a one-to-many, and the hydrator
   builds several objects per row. A transaction costs more still — it marks the

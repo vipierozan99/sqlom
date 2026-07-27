@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It has a pytest suite (340 tests) covering SQL generation, codegen, joins, predicates, grouping, transactions and static types, but it is not packaged, not on PyPI, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It has a pytest suite (529 tests) covering SQL generation, codegen, joins, predicates, grouping, expressions, set operations, writes, transactions and static types, but it is not packaged, not on PyPI, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -15,7 +15,8 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 * **Two schema styles:** a custom-metaclass model, or real stdlib `@dataclass(slots=True)` models that still support `User.id > 100`.
 * **Slotted objects:** 73 B/instance vs 113 B for a `__dict__`-backed equivalent.
 * **Async-first:** Native `asyncpg` pool integration — ~6x SQLAlchemy's async ORM under concurrent load, i.e. ~1 core to serve what the ORM needs ~6 cores for. Costs ~10-25% more CPU than doing no object mapping at all.
-* **A real query builder:** multi-model selects returning tuples (`Query(User, Post)`), all four join kinds, table aliases and self-joins, `or_`/`and_`/`not_` groups, `in_`/`exists`/scalar subqueries, `GROUP BY` with aggregates and `HAVING`, derived tables, `DISTINCT` and `OFFSET`.
+* **A real query builder:** multi-model selects returning tuples, all four join kinds, aliases and self-joins, `or_`/`and_`/`not_`, `in_`/`exists`/scalar subqueries, `GROUP BY`/`HAVING`, derived tables, set operations, window functions, `CASE`, arithmetic and SQL functions.
+* **Writes:** `Insert`/`Update`/`Delete` builders with `RETURNING`, bulk insert in one statement, and expression assignments (`set(score=Post.score + 1)`).
 * **Transactions and savepoints:** `async with db.transaction() as tx:` on both engines, with `Query` reads on the transaction's connection, nesting as savepoints, and isolation levels. Calling `engine.fetch_all()` inside a block raises rather than silently using another connection.
 * **Postgres `json_agg` support:** Implemented (`Query.to_json_sql`), but **not the current focus** — see [If you only ever emit JSON](#if-you-only-ever-emit-json-use-the-database).
 
@@ -25,7 +26,7 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 
 ```bash
 pip install pytest pytest-asyncio
-python3 -m pytest tests/            # 340 tests, including two type checkers
+python3 -m pytest tests/            # 529 tests, including two type checkers
 ```
 
 Two tiers. Everything testable without a server is — SQL generation, code
@@ -47,6 +48,9 @@ a feature cannot end up quietly asyncpg-only — `PsycopgEngine` began life with
 | `test_aliases.py` | aliases and self-joins, including prefix-collision refusal |
 | `test_join_kinds.py` | all four joins and which side each one makes nullable |
 | `test_grouping.py` | aggregates, `GROUP BY`, `HAVING`, `DISTINCT`, `OFFSET`, derived tables |
+| `test_expressions.py` | arithmetic, SQL functions, `CASE`, window functions, fragment validation |
+| `test_set_operations.py` | `UNION`/`INTERSECT`/`EXCEPT`, chaining, compound ordering |
+| `test_dml.py` + `test_dml_pg.py` | `Insert`/`Update`/`Delete`, `RETURNING`, bulk limits, executed on both engines |
 | `test_hydrators.py` | generated code for single-model, joined, outer-joined and single-column rows |
 | `test_joins_sqlite.py` | joins end to end — real SQL *and* real hydrator, so a select list and hydrator that disagree get caught |
 | `test_engines_pg.py` | lifecycle, `fetch_all`, `fetch_json`, every query feature against a real server |
@@ -389,7 +393,82 @@ Also here: `distinct()`, `offset()`.
 
 Nothing checks that every non-aggregated selected column is grouped. That is the database's job and it produces a clear error; duplicating the rule here would only add a second place to be wrong.
 
-### 6. What is checked for you
+### 6. Expressions: arithmetic, functions, CASE, windows
+
+Anything that produces a value can go in a select list, a predicate, `GROUP BY`, `ORDER BY` or an `UPDATE ... SET`:
+
+```python
+from sqlom import case, func, row_number, sum_
+
+Query(Post.id, Post.score * 2, Post.title.concat(" (draft)"))
+Query(Post).where(Post.score * 2 > 100)
+Query(func.lower(Post.title), func.coalesce(Post.score, 0))
+
+Query(Post.id, case((Post.score > 100, "hot"), (Post.score > 10, "warm"), else_="cold"))
+
+Query(Post.user_id, Post.score,
+      row_number().over(partition_by=Post.user_id, order_by=(Post.score, "DESC")))
+Query(Post.id, sum_(Post.score).over(order_by=Post.id,
+                                     frame="ROWS UNBOUNDED PRECEDING"))
+```
+
+`+ - * / %` and unary `-` keep the operand's type, so `Post.score * 2` still compares against ints. **String joining is `.concat()`, not `+`** — Postgres has no `+` for text, so a `+` that type-checked would produce SQL the server rejects. `.operate("#>>", x)` reaches an operator this library doesn't wrap.
+
+`func.anything(...)` calls any SQL function; `sql_function("lower", x, py_type=str)` does the same with a declared result type. Window helpers: `row_number`, `rank`, `dense_rank`, `lag`, `lead`, `first_value`, `last_value`, `ntile`, and `.over()` on any aggregate. A windowed aggregate needs no `GROUP BY` — it produces a value per row.
+
+**Three places accept a SQL fragment rather than a value, and all three are validated** — everything else in the builder binds parameters and never interpolates:
+
+| | accepted |
+|---|---|
+| function names | an identifier: `[A-Za-z_][A-Za-z0-9_]*` |
+| `.operate()` operators | 1–4 operator characters |
+| window `frame=` | letters, digits, underscores and spaces |
+
+`count()` has three forms: `count()` is `count(*)`, `count(col)` counts non-nulls, and **`count(Model)`** is `count(*)` that also supplies the `FROM` table — so `Query(count(Post))` works where `Query(count())` has no table to select from and says so.
+
+### 7. Set operations
+
+```python
+Query(User).where(User.active == True) \
+    .union(Query(User).where(User.id < 100)) \
+    .order_by("id").limit(20)
+```
+
+`union`, `union_all`, `intersect`, `intersect_all`, `except_`, `except_all`. Rows hydrate exactly as for a single select, since a compound presents the same interface to the engine. Chaining the *same* operator extends the compound; a *different* one nests, because `UNION` and `EXCEPT` don't associate the way flattening would imply.
+
+Operand column counts are checked when you build it — a mismatch is otherwise a confusing server error. `ORDER BY` on a compound references output column *names* (a compound has no single table to qualify against), and applies to the whole result.
+
+### 8. Writes: INSERT, UPDATE, DELETE, RETURNING
+
+```python
+from sqlom import Delete, Insert, Update
+
+await db.execute(Insert(User).values(name="ada", email="a@b.c"))
+
+# Bulk: one statement, one round trip
+await db.execute(Insert(User).values([{"name": "a"}, {"name": "b"}]))
+
+# RETURNING makes it a read, so it goes through fetch_all and hydrates
+ids = await db.fetch_all(Insert(User).values([...]).returning(User.id))
+rows = await db.fetch_all(Insert(User).values(name="a").returning(User))  # [User]
+
+# Read-modify-write in one statement
+await db.execute(Update(Post).set(score=Post.score + 1).where(Post.id == 1))
+
+gone = await db.fetch_all(Delete(User).where(User.id == 1).returning(User))
+```
+
+`execute()` reports what the driver reports — asyncpg's status tag (`"INSERT 0 3"`), psycopg's rowcount — rather than something normalised across them, because normalising would hide the difference between "no rows matched" and "the statement did nothing".
+
+Three deliberate frictions:
+
+- **`Delete` with no `where()` raises.** Emptying a table is fine, but it has to say `.all_rows()`. A forgotten `where()` is not a mistake worth making easy.
+- **`execute()` refuses a statement with `RETURNING`** and `fetch_all()` refuses one without. Either mismatch otherwise returns `[]`, which reads as "nothing matched".
+- **Bulk inserts are bounded.** `values([...])` renders one multi-row `VALUES`, which is a single round trip and — unlike `executemany` on asyncpg — supports `RETURNING`. The cost is a parameter per column per row, so it refuses to exceed the statement parameter limit rather than letting the server reject the batch. `max_rows_per_statement(Model)` gives the ceiling.
+
+Writes outside `transaction()` commit on their own: a lone statement runs in autocommit on both pools. Group them in a transaction when they need to be atomic. DML built here still can't dirty a connection (no `SET`, no temp table, no `LISTEN`), so the conditional session reset still applies.
+
+### 9. What is checked for you
 
 Each of these otherwise produces plausible wrong results rather than an error:
 
@@ -402,16 +481,21 @@ Each of these otherwise produces plausible wrong results rather than an error:
 | a join whose alias collides with a table name | `ValueError` — both would render as the same prefix |
 | `.order_by(Post.id)` / `.group_by(Post.id)` without a join | `ValueError` — same reason as `where` |
 | a correlated subquery without `.correlate()` | `ValueError` — indistinguishable from a typo |
+| `Delete(User)` with no `where()` | `ValueError` — say `.all_rows()` if that is the intent |
+| `execute()` on a statement with `RETURNING`, or `fetch_all()` on one without | `ValueError` — either mismatch silently returns `[]` |
+| a bulk insert past the parameter limit | `ValueError` naming the row ceiling, instead of a server error |
+| `count(distinct=True)` or `count(Model, distinct=True)` | `ValueError` — `count(DISTINCT *)` is a syntax error |
+| a function name, operator or window frame that is not one | `ValueError` — the three places a fragment is accepted are all validated |
 | `Query(count())` with nothing else | `TypeError` — no table to select from |
 | `Query(subquery)` | `TypeError` — no model to hydrate into; select its columns |
 
 The ON check looks for a column-to-column comparison linking the joined table to one already present, *anywhere* in the clause — so `and_(Post.user_id == User.id, Post.published == True)` is fine, while `and_(Post.published == True, Post.score > 1)` is not.
 
-**Still not supported:** relationship declarations, so no lazy loading and no `selectinload` equivalent — you write the join. Set operations (`UNION`, `INTERSECT`), window functions, `CASE`, arbitrary SQL functions and expressions (`a + b`), `RETURNING`, and bulk insert/update as builder methods (`tx.execute()` takes SQL). `to_json_sql()` handles a single-model query with no joins or grouping and raises otherwise, rather than guessing at a nested shape.
+**Still not supported:** relationship declarations, so no lazy loading and no `selectinload` equivalent — you write the join. `ON CONFLICT` / upsert. CTEs (`WITH`). `UPDATE ... FROM` and `DELETE ... USING` across tables. Schema management: there is no DDL, no migrations, and no reflection. `to_json_sql()` handles a single-model query with no joins or grouping and raises otherwise, rather than guessing at a nested shape.
 
 There is no de-duplication: an inner join to a one-to-many yields the left row once per match, as SQL does. SQLAlchemy's ORM collapses those via its identity map — which is precisely the machinery sqlom skips to be fast, so this is a real behavioural difference and not an oversight.
 
-### 7. Transactions
+### 10. Transactions
 
 `engine.fetch_all()` takes a pooled connection per call and hands it straight back, which is right for a one-shot read and useless for anything atomic — two calls run on two connections. `engine.transaction()` pins one connection for the block, commits on clean exit and rolls back on any exception:
 
@@ -447,7 +531,7 @@ Two things worth knowing:
 
 Semantics are covered by [`tests/test_transactions_pg.py`](tests/test_transactions_pg.py) on **both** engines: commit, rollback, read-your-writes, invisibility to other connections, savepoint depth and nesting, the guard, isolation levels, and the session-reset invariant.
 
-### 8. DB-side JSON (not the focus yet)
+### 11. DB-side JSON (not the focus yet)
 
 `Query.to_json_sql` / `DatabaseEngine.fetch_json` push row shaping and JSON encoding into the database and hand back response-ready bytes, skipping Python objects entirely. It works and it benchmarks well, but it's a different product than an object mapper — **treat it as experimental and out of scope for now.** The object path above is the one being optimized.
 

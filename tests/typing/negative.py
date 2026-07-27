@@ -13,9 +13,13 @@ this file proves the bad cases are caught.
 from sqlom import (
     Column,
     DatabaseEngine,
+    Delete,
+    Insert,
     ModelMeta,
     Query,
+    Update,
     and_,
+    case,
     count,
     exists,
     not_,
@@ -130,6 +134,46 @@ async def row_type_is_enforced(engine: DatabaseEngine) -> None:
 
 
 # --------------------------------------------------------------------------
+# The new expression surface
+# --------------------------------------------------------------------------
+
+# Arithmetic keeps the column's type, so the result is still checked.
+Book.id * "two"  # type: ignore[operator]  # pyright: ignore[reportOperatorIssue]
+Book.id + "one"  # type: ignore[operator]  # pyright: ignore[reportOperatorIssue]
+(Book.id * 2) > "abc"  # type: ignore[operator]  # pyright: ignore[reportOperatorIssue]
+
+# case() takes (predicate, value) pairs, not a bare predicate.
+case(Book.id > 1)  # type: ignore[arg-type]  # pyright: ignore
+
+# A window is built from a function, and over() lives on those rather than on a
+# plain column.
+Book.id.over()  # type: ignore[attr-defined]  # pyright: ignore
+
+
+# --------------------------------------------------------------------------
+# Set operations
+# --------------------------------------------------------------------------
+
+Query(Author).union("SELECT 1")  # type: ignore[arg-type]  # pyright: ignore
+Query(Author).union(Query(Author)).limit("5")  # type: ignore[arg-type]  # pyright: ignore
+
+
+# --------------------------------------------------------------------------
+# DML
+# --------------------------------------------------------------------------
+
+Insert("authors")  # type: ignore[arg-type]  # pyright: ignore
+Update(Author).set(name="z").where("id = 1")  # type: ignore[arg-type]  # pyright: ignore
+Delete(Author).where("id = 1")  # type: ignore[arg-type]  # pyright: ignore
+Insert(Author).values(name="a").returning("id")  # type: ignore[arg-type]  # pyright: ignore
+
+
+async def execute_only_takes_statements(engine: DatabaseEngine) -> None:
+    # execute() is for writes; a select has no rowcount to report.
+    await engine.execute(Query(Author))  # type: ignore[arg-type]  # pyright: ignore
+
+
+# --------------------------------------------------------------------------
 # What cannot be caught, and why
 # --------------------------------------------------------------------------
 # `Author.name == 5` is not a type error in either checker, and no annotation makes
@@ -145,3 +189,8 @@ async def row_type_is_enforced(engine: DatabaseEngine) -> None:
 # Uncomment either line and both checkers stay silent:
 #     Author.name == 5
 #     Author.id == "abc"
+#
+# `-Author.name` is also not caught. `__neg__` takes no operand, so there is no
+# argument to constrain by the column's type; expressing "only numeric columns"
+# would need per-type descriptor classes rather than one generic ColumnExpr.
+#     -Author.name

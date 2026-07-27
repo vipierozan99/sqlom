@@ -47,12 +47,14 @@ from __future__ import annotations
 
 import contextvars
 from contextlib import AbstractAsyncContextManager
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, Union, overload
 
 if TYPE_CHECKING:
-    from .query import Query
+    from .dml import _Statement
+    from .query import CompoundSelect, Query
 
 R = TypeVar("R")
+_Select = Union["Query[R]", "CompoundSelect[R]"]
 
 # Holds the innermost active Transaction for the current task. contextvars, not an
 # instance attribute: one engine serves many concurrent tasks, and each needs its
@@ -119,7 +121,13 @@ class Transaction:
 
     # --- the read API, shared -----------------------------------------------
 
-    async def fetch_all(self, query: Query[R]) -> list[R]:
+    @overload
+    async def fetch_all(self, query: _Select[R]) -> list[R]: ...
+
+    @overload
+    async def fetch_all(self, query: _Statement) -> list[Any]: ...
+
+    async def fetch_all(self, query: Any) -> Any:
         """Hydrated model instances, read inside this transaction."""
         sql, params = query.to_sql(placeholder=self._placeholder)
         rows = await self._fetch_rows(sql, params)

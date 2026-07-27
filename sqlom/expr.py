@@ -26,7 +26,15 @@ sources by identity.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Generic, Iterable, TypeVar, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Generic,
+    Iterable,
+    TypeVar,
+    overload,
+)
 
 if TYPE_CHECKING:
     from .query import Query
@@ -207,6 +215,11 @@ class Expression(Generic[T]):
     def sources(self):
         return ()
 
+    def output_name(self) -> str:
+        """The name this expression takes in a subquery's output. Overridden by
+        anything with a better answer (a column its name, a function its own)."""
+        return "expr"
+
     # Comparisons build predicates rather than booleans. The right-hand side is
     # narrowed to this expression's own type (or None, or another expression of
     # the same type), so `User.id > "abc"` is a type error.
@@ -252,6 +265,65 @@ class Expression(Generic[T]):
     def label(self, name: str) -> Labelled[T]:
         """Name this expression in the select list (`AS name`)."""
         return Labelled(self, name)
+
+    # --- arithmetic, as values rather than predicates ----------------------
+    # These keep the operand's own type, so `Post.score * 2` is an
+    # `Expression[int]` and still compares against ints. The right-hand side is
+    # bound as a parameter, never interpolated.
+    #
+    # `+` renders SQL `+`. For text use `.concat()`, which renders `||`: Postgres
+    # has no `+` for text, so a typed-through `+` on a string column would produce
+    # SQL the server rejects.
+    def __add__(self, other: T | Expression[T]) -> BinaryOp[T]:
+        return BinaryOp(self, "+", other)
+
+    def __radd__(self, other: T) -> BinaryOp[T]:
+        return BinaryOp(other, "+", self)
+
+    def __sub__(self, other: T | Expression[T]) -> BinaryOp[T]:
+        return BinaryOp(self, "-", other)
+
+    def __rsub__(self, other: T) -> BinaryOp[T]:
+        return BinaryOp(other, "-", self)
+
+    def __mul__(self, other: T | Expression[T]) -> BinaryOp[T]:
+        return BinaryOp(self, "*", other)
+
+    def __rmul__(self, other: T) -> BinaryOp[T]:
+        return BinaryOp(other, "*", self)
+
+    def __truediv__(self, other: T | Expression[T]) -> BinaryOp[Any]:
+        return BinaryOp(self, "/", other)
+
+    def __mod__(self, other: T | Expression[T]) -> BinaryOp[T]:
+        return BinaryOp(self, "%", other)
+
+    def __neg__(self) -> UnaryOp[T]:
+        return UnaryOp("-", self)
+
+    def concat(self, other: Any) -> BinaryOp[str]:
+        """SQL `||`. The portable string concatenation on both backends."""
+        return BinaryOp(self, "||", other)
+
+    def operate(self, operator: str, other: Any) -> BinaryOp[Any]:
+        """An operator this library does not wrap, e.g. `col.operate("#>>", path)`.
+
+        Named `operate` rather than `op` because `Condition` and `BinaryOp` both
+        carry an `op` *attribute*; a method of that name would be shadowed by the
+        assignment in their `__init__` and silently stop existing on them.
+
+        The operator is inserted verbatim, so it is restricted to the punctuation
+        SQL operators are made of — everything else here binds values as
+        parameters, and this is the one place a caller supplies a fragment.
+        """
+        import re
+
+        if not re.fullmatch(r"[-+*/%<>=!~@#&|^?]{1,4}", operator):
+            raise ValueError(
+                f"{operator!r} is not an accepted SQL operator; expected 1-4 "
+                f"operator characters"
+            )
+        return BinaryOp(self, operator, other)
 
     def __hash__(self) -> int:
         return id(self)
@@ -335,11 +407,32 @@ class Aggregate(Expression[T]):
 
     __slots__ = ("func", "operand", "distinct")
 
-    def __init__(self, func: str, operand: Expression[Any] | None = None,
+    def __init__(self, func: str, operand: Any = None,
                  distinct: bool = False) -> None:
         self.func = func
         self.operand = operand
         self.distinct = distinct
+        if distinct and (operand is None or self._counts_a_table):
+            # `count(DISTINCT *)` is not valid SQL. Rendering it would produce a
+            # syntax error from the server about a statement the caller did not
+            # write, so it is refused here.
+            raise ValueError(
+                "distinct=True needs a column: count(*) and count(Model) have "
+                "nothing to de-duplicate"
+            )
+
+    @property
+    def _counts_a_table(self) -> bool:
+        """True for `count(Model)`: renders `count(*)` but names the table.
+
+        `count()` alone references nothing, so a query built only from it has no
+        FROM clause to derive. `count(Model)` is the ordinary "how many rows" and
+        supplies the table without making the caller name a column that has
+        nothing to do with the question.
+        """
+        operand = self.operand
+        return (operand is not None and not isinstance(operand, Expression)
+                and hasattr(operand, "__columns__"))
 
     @property
     def py_type(self):
@@ -350,7 +443,7 @@ class Aggregate(Expression[T]):
         return int if self.func == "count" else None
 
     def to_sql(self, nxt, resolve=_bare):
-        if self.operand is None:
+        if self.operand is None or self._counts_a_table:
             inner, params = "*", ()
         else:
             inner, params = self.operand.to_sql(nxt, resolve)
@@ -358,12 +451,22 @@ class Aggregate(Expression[T]):
         return f"{self.func}({prefix}{inner})", params
 
     def sources(self):
+        if self._counts_a_table:
+            return (self.operand,)
         return () if self.operand is None else self.operand.sources()
 
     def output_name(self):
-        if self.operand is None:
+        if self.operand is None or self._counts_a_table:
             return f"{self.func}_all"
         return f"{self.func}_{self.operand.output_name()}"
+
+    def over(self, **kwargs: Any) -> Over[T]:
+        """`count() OVER (PARTITION BY ...)` — the aggregate as a window.
+
+        A windowed aggregate is not an aggregate for grouping purposes: it produces
+        a value per row rather than per group, so it needs no GROUP BY.
+        """
+        return Over(self, **kwargs)
 
     def __hash__(self):
         return id(self)
@@ -373,9 +476,13 @@ class Aggregate(Expression[T]):
         return f"<Aggregate {self.func}({inner})>"
 
 
-def count(column: Expression[Any] | None = None,
-          distinct: bool = False) -> Aggregate[int]:
-    """`count(*)` with no argument, `count(col)` with one."""
+def count(column: Any = None, distinct: bool = False) -> Aggregate[int]:
+    """`count(*)`, `count(col)`, or `count(Model)`.
+
+    `count(Model)` also renders `count(*)`, but names the table — so
+    `Query(count(Model))` has a FROM clause, where `Query(count())` on its own has
+    nothing to select from and is refused.
+    """
     return Aggregate("count", column, distinct)
 
 
@@ -658,3 +765,384 @@ def exists(query: Query[Any]) -> Predicate:
     if not hasattr(query, "_render"):
         raise TypeError(f"exists() takes a Query, got {type(query).__name__}")
     return ExistsClause(query)
+
+
+# --------------------------------------------------------------------------
+# Composite value expressions: arithmetic, functions, CASE, windows
+# --------------------------------------------------------------------------
+
+
+def _operand_sql(value: Any, nxt: Any, resolve: Any) -> tuple[str, tuple[Any, ...]]:
+    """Render either side of a binary operation.
+
+    An `Expression` renders itself; anything else is a literal and gets bound as a
+    parameter rather than interpolated, which is the whole reason this helper
+    exists rather than an f-string at each call site.
+    """
+    if isinstance(value, Expression):
+        return value.to_sql(nxt, resolve)
+    if hasattr(value, "_render"):  # a Query used as a scalar subquery
+        sql, params = value._render(nxt)
+        return f"({sql})", tuple(params)
+    return nxt(), (value,)
+
+
+class BinaryOp(Expression[T]):
+    """`left OP right` as a *value*: `a + b`, `a || b`, `a * 2`.
+
+    Always parenthesised. SQL operator precedence differs from Python's in places
+    (notably `||` versus comparison), and a redundant bracket costs nothing while a
+    missing one silently changes meaning.
+    """
+
+    __slots__ = ("left", "op", "right")
+
+    def __init__(self, left: Any, op: str, right: Any) -> None:
+        self.left = left
+        self.op = op
+        self.right = right
+
+    def to_sql(self, nxt, resolve=_bare):
+        advance = nxt if callable(nxt) else (lambda value=nxt: value)
+        left, left_params = _operand_sql(self.left, advance, resolve)
+        right, right_params = _operand_sql(self.right, advance, resolve)
+        return f"({left} {self.op} {right})", left_params + right_params
+
+    def sources(self):
+        found: tuple[Any, ...] = ()
+        for side in (self.left, self.right):
+            if isinstance(side, Expression):
+                found += side.sources()
+        return found
+
+    def output_name(self) -> str:
+        return "expr"
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def __repr__(self) -> str:
+        return f"<BinaryOp {self.left!r} {self.op} {self.right!r}>"
+
+
+class UnaryOp(Expression[T]):
+    """`-x`, and anywhere else a prefix operator is needed."""
+
+    __slots__ = ("op", "operand")
+
+    def __init__(self, op: str, operand: Expression[T]) -> None:
+        self.op = op
+        self.operand = operand
+
+    def to_sql(self, nxt, resolve=_bare):
+        advance = nxt if callable(nxt) else (lambda value=nxt: value)
+        inner, params = self.operand.to_sql(advance, resolve)
+        return f"({self.op}{inner})", params
+
+    def sources(self):
+        return self.operand.sources()
+
+    def output_name(self) -> str:
+        return "expr"
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def __repr__(self) -> str:
+        return f"<UnaryOp {self.op}{self.operand!r}>"
+
+
+_IDENTIFIER = None  # set below, after `re` is imported lazily
+
+
+class FunctionCall(Expression[T]):
+    """A call to a SQL function: `lower(x)`, `coalesce(a, b)`.
+
+    The name is validated against an identifier pattern. Everything else in this
+    library binds values as parameters and never interpolates them, and a function
+    name is the one place a caller supplies a *fragment* — so it is checked rather
+    than trusted.
+    """
+
+    __slots__ = ("name", "args", "py_type")
+
+    def __init__(self, name: str, *args: Any, py_type: Any = None) -> None:
+        import re
+
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError(
+                f"{name!r} is not a valid SQL function name; expected an identifier "
+                f"like 'lower' or 'coalesce'"
+            )
+        self.name = name
+        self.args = args
+        self.py_type = py_type
+
+    def to_sql(self, nxt, resolve=_bare):
+        advance = nxt if callable(nxt) else (lambda value=nxt: value)
+        parts, params = [], ()
+        for arg in self.args:
+            sql, arg_params = _operand_sql(arg, advance, resolve)
+            parts.append(sql)
+            params += arg_params
+        return f"{self.name}({', '.join(parts)})", params
+
+    def sources(self):
+        found: tuple[Any, ...] = ()
+        for arg in self.args:
+            if isinstance(arg, Expression):
+                found += arg.sources()
+        return found
+
+    def output_name(self) -> str:
+        return self.name
+
+    def over(self, **kwargs: Any) -> Over[T]:
+        """Turn this into a window function. See `Over`."""
+        return Over(self, **kwargs)
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def __repr__(self) -> str:
+        return f"<FunctionCall {self.name}({len(self.args)} args)>"
+
+
+class _FunctionNamespace:
+    """`func.lower(x)` — any SQL function by attribute access.
+
+    Returns `FunctionCall[Any]`: a checker cannot know what `lower` returns, and
+    claiming otherwise would be a guess it then enforces. Use
+    `sql_function("lower", x, py_type=str)` when the type is worth stating.
+    """
+
+    __slots__ = ()
+
+    def __getattr__(self, name: str) -> Callable[..., FunctionCall[Any]]:
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def call(*args: Any, py_type: Any = None) -> FunctionCall[Any]:
+            return FunctionCall(name, *args, py_type=py_type)
+
+        return call
+
+
+func = _FunctionNamespace()
+
+
+def sql_function(name: str, *args: Any, py_type: Any = None) -> FunctionCall[Any]:
+    """`func.name(...)` with an explicit result type."""
+    return FunctionCall(name, *args, py_type=py_type)
+
+
+class Case(Expression[T]):
+    """`CASE WHEN cond THEN value ... ELSE other END`."""
+
+    __slots__ = ("whens", "else_")
+
+    def __init__(self, whens: Any, else_: Any = None) -> None:
+        self.whens = list(whens)
+        if not self.whens:
+            raise ValueError("case() needs at least one (condition, value) pair")
+        for pair in self.whens:
+            if not (isinstance(pair, tuple) and len(pair) == 2):
+                raise TypeError(
+                    f"case() takes (condition, value) pairs, got {pair!r}"
+                )
+            if not isinstance(pair[0], Predicate):
+                raise TypeError(
+                    f"case() condition must be a predicate, got "
+                    f"{type(pair[0]).__name__}"
+                )
+        self.else_ = else_
+
+    def to_sql(self, nxt, resolve=_bare):
+        advance = nxt if callable(nxt) else (lambda value=nxt: value)
+        sql = "CASE"
+        params: tuple[Any, ...] = ()
+        for condition, value in self.whens:
+            cond_sql, cond_params = condition.to_sql(advance, resolve)
+            params += cond_params
+            value_sql, value_params = _operand_sql(value, advance, resolve)
+            params += value_params
+            sql += f" WHEN {cond_sql} THEN {value_sql}"
+        if self.else_ is not None:
+            else_sql, else_params = _operand_sql(self.else_, advance, resolve)
+            params += else_params
+            sql += f" ELSE {else_sql}"
+        return sql + " END", params
+
+    def sources(self):
+        found: tuple[Any, ...] = ()
+        for condition, value in self.whens:
+            found += condition.sources()
+            if isinstance(value, Expression):
+                found += value.sources()
+        if isinstance(self.else_, Expression):
+            found += self.else_.sources()
+        return found
+
+    def output_name(self) -> str:
+        return "case"
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def __repr__(self) -> str:
+        return f"<Case {len(self.whens)} when(s)>"
+
+
+class Over(Expression[T]):
+    """A window: `f(...) OVER (PARTITION BY ... ORDER BY ... frame)`.
+
+    `partition_by` and `order_by` take a single column or a sequence. `order_by`
+    entries may be a bare column (ascending) or `(column, "DESC")`. `frame` is
+    passed through verbatim after validation, e.g. `"ROWS BETWEEN 1 PRECEDING AND
+    CURRENT ROW"`, since the grammar is large and mostly not worth modelling.
+    """
+
+    __slots__ = ("function", "partition_by", "order_by", "frame")
+
+    def __init__(self, function: Expression[T], partition_by: Any = (),
+                 order_by: Any = (), frame: str | None = None) -> None:
+        self.function = function
+        self.partition_by = _as_sequence(partition_by)
+        self.order_by = _as_order_sequence(order_by)
+        if frame is not None:
+            import re
+
+            if not re.fullmatch(r"[A-Za-z0-9_ ]+", frame):
+                raise ValueError(
+                    f"frame clause {frame!r} may only contain letters, digits, "
+                    f"underscores and spaces; it is inserted verbatim"
+                )
+        self.frame = frame
+
+    @property
+    def py_type(self) -> Any:
+        return getattr(self.function, "py_type", None)
+
+    def to_sql(self, nxt, resolve=_bare):
+        advance = nxt if callable(nxt) else (lambda value=nxt: value)
+        inner, params = self.function.to_sql(advance, resolve)
+        clauses = []
+        if self.partition_by:
+            parts = []
+            for expression in self.partition_by:
+                sql, extra = expression.to_sql(advance, resolve)
+                params += extra
+                parts.append(sql)
+            clauses.append("PARTITION BY " + ", ".join(parts))
+        if self.order_by:
+            parts = []
+            for entry in self.order_by:
+                expression, direction = _order_entry(entry)
+                sql, extra = expression.to_sql(advance, resolve)
+                params += extra
+                parts.append(f"{sql} {direction}" if direction else sql)
+            clauses.append("ORDER BY " + ", ".join(parts))
+        if self.frame:
+            clauses.append(self.frame)
+        return f"{inner} OVER ({' '.join(clauses)})", params
+
+    def sources(self):
+        found = self.function.sources()
+        for expression in self.partition_by:
+            found += expression.sources()
+        for entry in self.order_by:
+            found += _order_entry(entry)[0].sources()
+        return found
+
+    def output_name(self) -> str:
+        return self.function.output_name()
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def __repr__(self) -> str:
+        return f"<Over {self.function!r}>"
+
+
+def _as_sequence(value: Any) -> tuple[Any, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    return (value,)
+
+
+def _as_order_sequence(value: Any) -> tuple[Any, ...]:
+    """Normalise a window ORDER BY.
+
+    `(col, "DESC")` is a single directed entry, while `(col_a, col_b)` is two
+    entries — the two are only told apart by the second element being a direction
+    string, so that check lives here rather than being guessed at render time.
+    """
+    if value is None:
+        return ()
+    if (isinstance(value, tuple) and len(value) == 2
+            and isinstance(value[1], str)):
+        entries: tuple[Any, ...] = (value,)
+    else:
+        entries = _as_sequence(value)
+    # Validate eagerly. Deferring to render time means a typo surfaces on the
+    # first query execution rather than where it was written.
+    for entry in entries:
+        _order_entry(entry)
+    return entries
+
+
+def _order_entry(entry: Any) -> tuple[Any, str]:
+    """Accept `col` or `(col, "DESC")` in a window's ORDER BY."""
+    if isinstance(entry, tuple):
+        expression, direction = entry
+        direction = str(direction).upper()
+        if direction not in ("ASC", "DESC"):
+            raise ValueError(
+                f"window order direction must be 'ASC' or 'DESC', got {direction!r}"
+            )
+        return expression, direction
+    return entry, ""
+
+
+def case(*whens: tuple[Predicate, Any], else_: Any = None) -> Case[Any]:
+    """`case((User.active == True, "on"), else_="off")`.
+
+    The pair type is spelled out so a bare predicate — `case(User.active == True)`
+    — is a type error rather than a runtime one.
+    """
+    return Case(whens, else_)
+
+
+# Window functions. Each is a FunctionCall, so `.over(...)` is available on it.
+def row_number() -> FunctionCall[int]:
+    return FunctionCall("row_number", py_type=int)
+
+
+def rank() -> FunctionCall[int]:
+    return FunctionCall("rank", py_type=int)
+
+
+def dense_rank() -> FunctionCall[int]:
+    return FunctionCall("dense_rank", py_type=int)
+
+
+def lag(column: Expression[T], offset: int = 1) -> FunctionCall[T]:
+    return FunctionCall("lag", column, offset)
+
+
+def lead(column: Expression[T], offset: int = 1) -> FunctionCall[T]:
+    return FunctionCall("lead", column, offset)
+
+
+def first_value(column: Expression[T]) -> FunctionCall[T]:
+    return FunctionCall("first_value", column)
+
+
+def last_value(column: Expression[T]) -> FunctionCall[T]:
+    return FunctionCall("last_value", column)
+
+
+def ntile(buckets: int) -> FunctionCall[int]:
+    return FunctionCall("ntile", buckets, py_type=int)
