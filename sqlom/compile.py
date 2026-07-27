@@ -101,6 +101,98 @@ def compile_batch_hydrator(model_cls, converters=None):
     return fn
 
 
+def compile_join_hydrator(entities, converters=None):
+    """Build a `rows -> [tuple]` function for a multi-entity (joined) select.
+
+    `entities` is a sequence of specs describing what each slot of the output
+    tuple holds, in select order:
+
+        ("model", model_cls, nullable)  build an instance from that model's columns
+        ("column", py_type)             take a single scalar
+
+    A joined row arrives as one flat tuple — `(u.id, u.name, ..., p.id, p.title)`
+    — so this generates the same shape as `compile_batch_hydrator`: unpack the
+    whole row in the `for` statement, then straight-line slot stores. No slicing,
+    no per-entity function call, no zip.
+
+    `nullable` marks an entity reached by an OUTER join, where the row can carry
+    all-NULL columns for a missing match. Those become `None` rather than an
+    object with every field set to None, which is what SQLAlchemy does and what
+    calling code expects from a left join. The test is "every selected column of
+    this entity is NULL", since sqlom models declare no primary key to test
+    instead — so an entity whose columns are *all* genuinely NULL in the data
+    hydrates as None. Give such a query at least one NOT NULL column, or select
+    it without the outer join.
+    """
+    converters = converters or {}
+    namespace = {"_new": object.__new__}
+
+    # One field variable per selected column, across all entities.
+    total = 0
+    plans = []
+    for slot, spec in enumerate(entities):
+        if spec[0] == "model":
+            _, model_cls, nullable = spec
+            columns = list(model_cls.__columns__.values())
+            if not columns:
+                raise ValueError(f"{model_cls.__name__} declares no columns")
+            namespace[f"_cls{slot}"] = model_cls
+            plans.append((slot, columns, nullable, total))
+            total += len(columns)
+        elif spec[0] == "column":
+            plans.append((slot, None, False, total))
+            total += 1
+        else:  # pragma: no cover - internal
+            raise ValueError(f"unknown entity spec {spec[0]!r}")
+
+    if not plans:
+        raise ValueError("a query must select at least one entity")
+
+    field_vars = [f"f{i}" for i in range(total)]
+    lines = [
+        "def _hydrate_join(rows):",
+        "    out = []",
+        "    append = out.append",
+        f"    for {', '.join(field_vars)} in rows:",
+    ]
+
+    object_vars = []
+    for slot, columns, nullable, offset in plans:
+        if columns is None:
+            object_vars.append(field_vars[offset])
+            continue
+
+        obj = f"o{slot}"
+        object_vars.append(obj)
+        mine = field_vars[offset:offset + len(columns)]
+        indent = "        "
+        if nullable:
+            test = " is None and ".join(mine) + " is None"
+            lines.append(f"{indent}if {test}:")
+            lines.append(f"{indent}    {obj} = None")
+            lines.append(f"{indent}else:")
+            indent += "    "
+        lines.append(f"{indent}{obj} = _new(_cls{slot})")
+        for column, var in zip(columns, mine):
+            converter = converters.get(column.py_type)
+            if converter is None:
+                value_expr = var
+            else:
+                converter_name = f"_conv_{slot}_{var}"
+                namespace[converter_name] = converter
+                value_expr = f"{converter_name}({var})"
+            lines.append(f"{indent}{obj}.{column._storage_name} = {value_expr}")
+
+    lines.append(f"        append(({', '.join(object_vars)},))")
+    lines.append("    return out")
+    source = "\n".join(lines)
+
+    exec(source, namespace)
+    fn = namespace["_hydrate_join"]
+    fn.__source__ = source
+    return fn
+
+
 def compile_json_default(model_cls):
     """Build a specialized `orjson(default=...)` hook for `model_cls`.
 

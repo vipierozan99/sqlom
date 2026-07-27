@@ -107,7 +107,7 @@ class Transaction:
         """Hydrated model instances, read inside this transaction."""
         sql, params = query.to_sql(placeholder=self._placeholder)
         rows = await self._fetch_rows(sql, params)
-        return self._engine._hydrator_for(query.model)(rows)
+        return self._engine._hydrator_for(query)(rows)
 
     async def fetch_json(self, query):
         """JSON bytes built by the database, read inside this transaction."""

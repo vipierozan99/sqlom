@@ -17,7 +17,11 @@ psycopg3, which suits the positional hydrator directly.
 
 from contextlib import asynccontextmanager
 
-from .compile import PSYCOPG_CONVERTERS, compile_batch_hydrator
+from .compile import (
+    PSYCOPG_CONVERTERS,
+    compile_batch_hydrator,
+    compile_join_hydrator,
+)
 from .query import json_bytes as _json_bytes
 from .transaction import _ACTIVE, Transaction
 
@@ -98,11 +102,21 @@ class PsycopgEngine:
             )
         return self.pool
 
-    def _hydrator_for(self, model):
-        hydrator = self._hydrators.get(model)
+    def _hydrator_for(self, query):
+        """Compiled once per query *shape*, then reused for every row of every
+        request. The key is the model class itself for a plain single-model
+        select, so this stays the same single dict lookup it always was; joined
+        and multi-entity selects key on a tuple describing their entities."""
+        key = query._hydration_key
+        hydrator = self._hydrators.get(key)
         if hydrator is None:
-            hydrator = compile_batch_hydrator(model, PSYCOPG_CONVERTERS)
-            self._hydrators[model] = hydrator
+            # Only a multi-entity select needs the tuple-producing hydrator. A
+            # join alone changes the SQL, not the row shape.
+            if query.is_multi_entity:
+                hydrator = compile_join_hydrator(query.hydration_spec(), PSYCOPG_CONVERTERS)
+            else:
+                hydrator = compile_batch_hydrator(query.model, PSYCOPG_CONVERTERS)
+            self._hydrators[key] = hydrator
         return hydrator
 
     @asynccontextmanager
@@ -122,15 +136,23 @@ class PsycopgEngine:
 
         `isolation` accepts the same names as the asyncpg engine
         ("read_committed", "repeatable_read", "serializable") and is translated
-        to psycopg's `IsolationLevel`. psycopg sets these on the *connection*
-        rather than per transaction, so they are applied before the block opens
-        — and the pool resets them on release, so they do not leak.
+        to psycopg's `IsolationLevel`.
 
-        Note the setters are awaited: on an `AsyncConnection` the corresponding
-        properties are read-only, and assigning to them raises rather than
-        silently doing nothing.
+        Where the two drivers genuinely differ: asyncpg puts these on the
+        `BEGIN` itself, so they expire with the transaction. psycopg puts them on
+        the **connection**, and `psycopg_pool` does *not* restore them on release
+        — its reset rolls back an open transaction and nothing more. So a
+        `readonly=True` block would hand a permanently read-only connection back
+        to the pool and the next borrower's first write would fail somewhere
+        unrelated. This restores whatever was set before, which is what makes the
+        two engines behave the same way.
+
+        The setters are awaited because the corresponding properties are
+        read-only on an `AsyncConnection`; assignment raises rather than silently
+        doing nothing.
         """
         async with self._require_pool().connection() as conn:
+            level = None
             if isolation is not None:
                 from psycopg import IsolationLevel
 
@@ -141,13 +163,26 @@ class PsycopgEngine:
                         f"unknown isolation level {isolation!r}; expected one of "
                         f"{', '.join(lvl.name.lower() for lvl in IsolationLevel)}"
                     ) from None
-                await conn.set_isolation_level(level)
-            if readonly is not None:
-                await conn.set_read_only(readonly)
-            if deferrable is not None:
-                await conn.set_deferrable(deferrable)
-            async with _psycopg_block(self, conn, 0, {}) as tx:
-                yield tx
+
+            previous = (conn.isolation_level, conn.read_only, conn.deferrable)
+            try:
+                if level is not None:
+                    await conn.set_isolation_level(level)
+                if readonly is not None:
+                    await conn.set_read_only(readonly)
+                if deferrable is not None:
+                    await conn.set_deferrable(deferrable)
+                async with _psycopg_block(self, conn, 0, {}) as tx:
+                    yield tx
+            finally:
+                # Restore before the connection goes back to the pool. Must run
+                # outside the transaction block, since psycopg refuses these
+                # changes while a transaction is open.
+                current = (conn.isolation_level, conn.read_only, conn.deferrable)
+                if current != previous:
+                    await conn.set_isolation_level(previous[0])
+                    await conn.set_read_only(previous[1])
+                    await conn.set_deferrable(previous[2])
 
     def _reject_if_in_transaction(self, method):
         active = _ACTIVE.get()
@@ -164,7 +199,7 @@ class PsycopgEngine:
         async with self._require_pool().connection() as conn:
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
-        return self._hydrator_for(query.model)(rows)
+        return self._hydrator_for(query)(rows)
 
     async def fetch_json(self, query):
         """Result set as JSON bytes built by Postgres, no per-row Python objects.

@@ -3,7 +3,11 @@ import re
 import weakref
 from contextlib import asynccontextmanager
 
-from .compile import ASYNCPG_CONVERTERS, compile_batch_hydrator
+from .compile import (
+    ASYNCPG_CONVERTERS,
+    compile_batch_hydrator,
+    compile_join_hydrator,
+)
 from .query import json_bytes as _json_bytes
 from .transaction import _ACTIVE, Transaction
 
@@ -185,12 +189,21 @@ class DatabaseEngine:
             async with _asyncpg_block(self, conn, 0, kwargs) as tx:
                 yield tx
 
-    def _hydrator_for(self, model):
-        # Compiled once per model, then reused for every row of every query.
-        hydrator = self._hydrators.get(model)
+    def _hydrator_for(self, query):
+        """Compiled once per query *shape*, then reused for every row of every
+        request. The key is the model class itself for a plain single-model
+        select, so this stays the same single dict lookup it always was; joined
+        and multi-entity selects key on a tuple describing their entities."""
+        key = query._hydration_key
+        hydrator = self._hydrators.get(key)
         if hydrator is None:
-            hydrator = compile_batch_hydrator(model, ASYNCPG_CONVERTERS)
-            self._hydrators[model] = hydrator
+            # Only a multi-entity select needs the tuple-producing hydrator. A
+            # join alone changes the SQL, not the row shape.
+            if query.is_multi_entity:
+                hydrator = compile_join_hydrator(query.hydration_spec(), ASYNCPG_CONVERTERS)
+            else:
+                hydrator = compile_batch_hydrator(query.model, ASYNCPG_CONVERTERS)
+            self._hydrators[key] = hydrator
         return hydrator
 
     @staticmethod
@@ -222,7 +235,7 @@ class DatabaseEngine:
         sql, params = query.to_sql(placeholder="$")
         async with self._require_pool().acquire() as conn:
             rows = await conn.fetch(sql, *params)
-        return self._hydrator_for(query.model)(rows)
+        return self._hydrator_for(query)(rows)
 
     async def fetch_json(self, query):
         """Return the result set as JSON bytes built by Postgres itself.

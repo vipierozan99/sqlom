@@ -1,0 +1,178 @@
+Test suite output. Run: python3 -m pytest tests/
+
+Replaces the earlier hand-rolled benchmarks/verify_transactions.py, which
+printed PASS/FAIL lines a human had to read. Everything it checked is now a
+pytest assertion, plus joins, SQL generation, codegen and validation.
+
+Tiers: tests needing no server (SQL generation, codegen, validation, joins
+end-to-end on sqlite) always run. Engine and transaction tests need
+PostgreSQL and skip with a reason otherwise; --pg-required turns that skip
+into a failure for CI.
+
+Both PostgreSQL engines are parameterised, so a feature cannot be quietly
+asyncpg-only -- PsycopgEngine started out with no acquire() at all.
+
+--- per file ---
+tests/test_query_sql.py ..............................................   [ 74%]
+tests/test_transactions_pg.py .......................................... [ 95%]
+........                                                                 [100%]
+
+============================= 197 passed in 2.31s ==============================
+
+tests/test_conditions.py           ============================== 19 passed in 0.02s ==============================
+tests/test_engines_pg.py           ============================== 39 passed in 0.79s ==============================
+tests/test_hydrators.py            ============================== 25 passed in 0.03s ==============================
+tests/test_joins_sqlite.py         ============================== 18 passed in 0.06s ==============================
+tests/test_query_sql.py            ============================== 46 passed in 0.03s ==============================
+tests/test_transactions_pg.py      ============================== 50 passed in 1.55s ==============================
+
+--- test names ---
+test_a_filtering_join_reuses_the_plain_single_model_hydrator
+test_a_model_with_no_columns_is_refused
+test_a_where_on_the_left_table
+test_a_where_on_the_right_table
+test_active_transaction_tracks_the_innermost_block
+test_as_dict_refuses_a_non_model
+test_authors_without_books_are_excluded
+test_batch_hydrator
+test_binds_no_parameter
+test_booleans_are_converted_on_the_joined_shape_too
+test_booleans_are_real_bools
+test_chained_joins
+test_class_access_returns_an_expression_not_a_value
+test_close_clears_the_pool_and_is_repeatable
+test_column_expr_is_hashable_so_it_can_key_a_dict
+test_commit_persists_every_statement
+test_comparison_builds_a_condition_not_a_bool
+test_compiled_hook_matches_as_dict
+test_conditions
+test_connect_is_idempotent
+test_content_matches_fetch_all
+test_converters_apply_per_entity
+test_converters_are_applied
+test_dataclass_models_work_too
+test_duplicates_appear_once_per_match
+test_empty_entity_list_is_refused
+test_empty_result
+test_empty_result_is_an_empty_array
+test_engine_fetch_all_inside_a_transaction_raises
+test_engine_fetch_json_inside_a_transaction_raises
+test_engines_pg
+test_eq_none_renders_is_null_and_binds_nothing
+test_every_author_appears
+test_exception_rolls_the_whole_block_back
+test_fetch_all_hydrates_models
+test_fetch_json_returns_bytes
+test_filtering_join_returns_instances
+test_generated_source_is_attached_for_inspection
+test_generic_hook_dispatches_on_type
+test_generic_hook_refuses_an_unknown_type
+test_guard_is_scoped_to_the_same_engine
+test_hydrators
+test_inner_and_outer_join_do_not_share_a_key
+test_inner_failure_keeps_the_outer_work
+test_inner_join_entity_is_not_null_checked
+test_inner_join_qualifies_every_column
+test_inner_join_two_models
+test_inner_success_is_kept
+test_instances_are_slotted
+test_invisible_to_other_connections_until_commit
+test_is_null_predicate
+test_is_null_predicate_against_real_data
+test_is_recognised_as_a_column_comparison
+test_isolation_level_does_not_leak_either
+test_join_and_plain_query_get_different_hydrators
+test_join_target_must_be_a_model
+test_joins_are_refused_rather_than_shaped_wrongly
+test_joins_render_in_the_order_added
+test_joins_sqlite
+test_joins_work_inside_a_transaction
+test_left_side_is_never_none
+test_limit_applies_to_joined_rows
+test_limit_rejects_bad_values
+test_limit_zero
+test_limit_zero_is_allowed
+test_mixed_inner_and_outer
+test_model_plus_column
+test_model_plus_scalar_column
+test_models_reports_both_sides
+test_models_reports_one_side_for_a_value_predicate
+test_multi_entity_keys_on_a_tuple
+test_multi_entity_without_a_join_is_also_refused
+test_mutation_invalidates_the_cache
+test_ne_none_renders_is_not_null
+test_nested_block_reports_depth
+test_null_predicate_does_not_consume_a_placeholder_number
+test_on_cannot_reference_an_unknown_model
+test_on_clause_binds_no_parameters
+test_on_must_be_a_condition
+test_on_must_compare_two_columns
+test_on_must_mention_the_joined_table
+test_operators_render
+test_order_by_ascending_and_descending
+test_order_by_may_reference_a_joined_model
+test_order_by_rejects_an_unjoined_model
+test_order_by_rejects_an_unknown_column
+test_ordering_operators_against_none_are_left_alone
+test_outer_failure_discards_a_committed_savepoint
+test_outer_join_all_null_entity_becomes_none
+test_outer_join_entity_is_null_checked_on_every_column
+test_outer_join_keyword
+test_outer_join_partial_null_still_builds_the_object
+test_outer_join_yields_none_for_no_match
+test_pairs_are_matched_correctly
+test_params_are_an_immutable_tuple
+test_per_row_hydrator
+test_plain_reads_still_skip_the_reset
+test_plain_select
+test_plain_select_is_unqualified
+test_positional_placeholders_repeat
+test_psycopg_dialect_casts_to_text
+test_qualified_rendering
+test_query_needs_at_least_one_entity
+test_query_rejects_a_non_model
+test_query_sql
+test_readonly_does_not_leak_to_the_next_borrower
+test_readonly_transaction_refuses_a_write
+test_reads_its_own_uncommitted_writes
+test_repeatable_read_is_accepted
+test_repr_distinguishes_the_two_forms
+test_returns_bytes_not_a_parsed_object
+test_returns_hydrated_instances
+test_returns_plain_instances
+test_round_trip
+test_row_width_must_match_the_spec
+test_selecting_a_column_differs_from_selecting_the_model
+test_selecting_a_single_column_alongside_a_model
+test_selecting_an_unjoined_model_is_caught_at_render_time
+test_self_join_is_refused_rather_than_rendered_ambiguously
+test_serializable_is_accepted
+test_single_model_json
+test_single_model_keys_on_the_class_itself
+test_source_is_attached
+test_spec_matches_the_select_list_width
+test_sql_is_cached_by_identity
+test_sqlite_dialect_casts_booleans
+test_the_engine_and_transaction_share_compiled_hydrators
+test_the_engine_works_again_after_the_block
+test_the_exception_is_not_swallowed
+test_the_hydrator_is_compiled_once_per_shape
+test_three_entities
+test_three_way_join
+test_transaction_triggers_the_sql_reset
+test_transactions_pg
+test_two_columns_only
+test_two_models_produce_a_tuple_each
+test_unknown_isolation_name_is_rejected
+test_unmatched_right_side_is_none
+test_use_after_close_raises
+test_use_before_connect_raises
+test_value_predicate_binds_exactly_one_parameter
+test_where_and_limit
+test_where_and_limit_numbered_for_asyncpg
+test_where_may_reference_a_joined_model
+test_where_rejects_a_non_condition
+test_where_rejects_a_predicate_from_an_unjoined_model
+test_where_rejects_an_unknown_column
+test_wrong_width_rows_are_rejected
+test_yields_a_usable_raw_connection

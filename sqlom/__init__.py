@@ -5,6 +5,7 @@ from .compile import (
     SQLITE_CONVERTERS,
     compile_batch_hydrator,
     compile_hydrator,
+    compile_join_hydrator,
     compile_json_default,
     json_default,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "hydrate",
     "compile_hydrator",
     "compile_batch_hydrator",
+    "compile_join_hydrator",
     "compile_json_default",
     "json_default",
     "SQLITE_CONVERTERS",
