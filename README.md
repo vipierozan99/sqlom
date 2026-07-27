@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It has a pytest suite (529 tests) covering SQL generation, codegen, joins, predicates, grouping, expressions, set operations, writes, transactions and static types, but it is not packaged, not on PyPI, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It has a pytest suite (698 tests) covering SQL generation, codegen, joins, predicates, grouping, expressions, set operations, CTEs, writes, upserts, transactions and static types, but it is not packaged, not on PyPI, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -15,8 +15,8 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 * **Two schema styles:** a custom-metaclass model, or real stdlib `@dataclass(slots=True)` models that still support `User.id > 100`.
 * **Slotted objects:** 73 B/instance vs 113 B for a `__dict__`-backed equivalent.
 * **Async-first:** Native `asyncpg` pool integration — ~6x SQLAlchemy's async ORM under concurrent load, i.e. ~1 core to serve what the ORM needs ~6 cores for. Costs ~10-25% more CPU than doing no object mapping at all.
-* **A real query builder:** multi-model selects returning tuples, all four join kinds, aliases and self-joins, `or_`/`and_`/`not_`, `in_`/`exists`/scalar subqueries, `GROUP BY`/`HAVING`, derived tables, set operations, window functions, `CASE`, arithmetic and SQL functions.
-* **Writes:** `Insert`/`Update`/`Delete` builders with `RETURNING`, bulk insert in one statement, and expression assignments (`set(score=Post.score + 1)`).
+* **A real query builder:** multi-model selects returning tuples, all four join kinds, aliases and self-joins, `or_`/`and_`/`not_`, `in_`/`exists`/scalar subqueries, `GROUP BY`/`HAVING`, derived tables, set operations, window functions, `CASE`, arithmetic and SQL functions, and CTEs — including recursive ones — collected into the `WITH` clause automatically.
+* **Writes:** `Insert`/`Update`/`Delete` builders with `RETURNING`, bulk insert in one statement, expression assignments (`set(score=Post.score + 1)`), `ON CONFLICT` upserts with `excluded()`, and `UPDATE ... FROM` / `DELETE ... USING` across tables.
 * **Transactions and savepoints:** `async with db.transaction() as tx:` on both engines, with `Query` reads on the transaction's connection, nesting as savepoints, and isolation levels. Calling `engine.fetch_all()` inside a block raises rather than silently using another connection.
 * **Postgres `json_agg` support:** Implemented (`Query.to_json_sql`), but **not the current focus** — see [If you only ever emit JSON](#if-you-only-ever-emit-json-use-the-database).
 
@@ -26,7 +26,7 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 
 ```bash
 pip install pytest pytest-asyncio
-python3 -m pytest tests/            # 529 tests, including two type checkers
+python3 -m pytest tests/            # 698 tests, including two type checkers
 ```
 
 Two tiers. Everything testable without a server is — SQL generation, code
@@ -51,6 +51,10 @@ a feature cannot end up quietly asyncpg-only — `PsycopgEngine` began life with
 | `test_expressions.py` | arithmetic, SQL functions, `CASE`, window functions, fragment validation |
 | `test_set_operations.py` | `UNION`/`INTERSECT`/`EXCEPT`, chaining, compound ordering |
 | `test_dml.py` + `test_dml_pg.py` | `Insert`/`Update`/`Delete`, `RETURNING`, bulk limits, executed on both engines |
+| `test_ctes.py` | `WITH`, nesting and dependency order, recursive CTEs, collection from every position |
+| `test_upsert.py` | `ON CONFLICT DO NOTHING`/`DO UPDATE`, `excluded()`, executed upserts on sqlite |
+| `test_update_from.py` | `UPDATE ... FROM`, `DELETE ... USING`, the qualification rule, builder-order independence |
+| `test_dml_advanced_pg.py` | all three of the above against a real server on both engines, plus the Postgres-only forms |
 | `test_hydrators.py` | generated code for single-model, joined, outer-joined and single-column rows |
 | `test_joins_sqlite.py` | joins end to end — real SQL *and* real hydrator, so a select list and hydrator that disagree get caught |
 | `test_engines_pg.py` | lifecycle, `fetch_all`, `fetch_json`, every query feature against a real server |
@@ -62,9 +66,15 @@ reading the code: a filtering join returned 1-tuples instead of instances; a
 `readonly=True` transaction on psycopg left the pooled connection permanently
 read-only for the next borrower; `for f0 in rows` binds each row *tuple* to `f0`
 rather than unpacking it, so any single-column select (and any single-column model)
-came back nested; and a RIGHT-joined single-entity query took the fast hydrator and
+came back nested; a RIGHT-joined single-entity query took the fast hydrator and
 built an object whose every field was `None`, because dispatch and the cache key
-were deciding nullability two different ways.
+were deciding nullability two different ways; and a subquery exposed output names
+for unlabelled aggregates that the derived table does not actually have.
+
+Running the *same* feature against both backends earns its keep too, separately
+from the bugs above. `ON CONFLICT DO UPDATE SET n = n + excluded.n` is accepted by
+sqlite and rejected by Postgres as an ambiguous column reference; the sqlite tests
+passed, and only the Postgres run showed that the target had to be qualified.
 
 ---
 
@@ -468,7 +478,104 @@ Three deliberate frictions:
 
 Writes outside `transaction()` commit on their own: a lone statement runs in autocommit on both pools. Group them in a transaction when they need to be atomic. DML built here still can't dirty a connection (no `SET`, no temp table, no `LISTEN`), so the conditional session reset still applies.
 
-### 9. What is checked for you
+### 9. Upserts: ON CONFLICT
+
+```python
+from sqlom import Insert, excluded
+
+# Skip the row if it would violate a unique index
+await db.execute(Insert(User).values(email="a@b.c").on_conflict_do_nothing(User.email))
+
+# Overwrite the stored row with the incoming one
+await db.execute(
+    Insert(User).values(email="a@b.c", hits=1)
+    .on_conflict_do_update(User.email, set_={"hits": excluded(User.hits)})
+)
+
+# Accumulate: a bare column is the STORED row, excluded() is the incoming one
+await db.execute(
+    Insert(Counter).values(key="hits", n=1)
+    .on_conflict_do_update(Counter.key, set_={"n": Counter.n + excluded(Counter.n)})
+)
+
+# Conditional: leave the row alone when the condition doesn't hold
+keep_max = Insert(Gauge).values(key="k", v=5).on_conflict_do_update(
+    Gauge.key, set_={"v": excluded(Gauge.v)}, where=Gauge.v < excluded(Gauge.v)
+)
+
+# Bulk upsert is still one statement, and RETURNING still works
+rows = await db.fetch_all(
+    Insert(User).values([{...}, {...}])
+    .on_conflict_do_update(User.email, set_={"hits": excluded(User.hits)})
+    .returning(User.id, User.hits)
+)
+```
+
+`excluded(col)` is the row that failed to insert — SQLAlchemy spells it `stmt.excluded.email`, which needs the statement in a variable first; a free function composes inline. Getting `hits = excluded.hits` and `hits = hits + excluded.hits` the wrong way round produces valid SQL with the wrong answer, so the tests assert stored values rather than generated text.
+
+Both forms take either the conflicting columns or `constraint="name"` for a named unique constraint (Postgres only — sqlite has no `ON CONSTRAINT`). `on_conflict_do_nothing()` with no arguments swallows *any* unique violation on the table; `on_conflict_do_update` requires a target, because there is no way to say "the row that lost" without knowing which index it lost on.
+
+One non-obvious portability point, found by running these against a real server rather than only sqlite: inside `DO UPDATE`, references to the target table are **qualified** (`SET n = counter.n + excluded.n`). Postgres has both the table and `excluded` in scope there, so a bare `n` on the right is an `AmbiguousColumnError`; sqlite accepts the bare form, so the sqlite tests alone would have shipped SQL Postgres rejects. The assignment *target* stays unqualified, since Postgres rejects `SET t.col = ...`.
+
+`DO NOTHING` plus `RETURNING` is how you find out whether the row was new: no row comes back when the conflict fires.
+
+### 10. CTEs, including recursive
+
+```python
+from sqlom import Query, count, recursive_cte
+
+busy = Query(Post.user_id, count(Post.id).label("n")).group_by(Post.user_id).cte("busy")
+
+# Used exactly like a table: it renders as its name, and whichever query
+# references it hoists the definition into its own WITH clause
+Query(User, busy.n).join(busy, busy.user_id == User.id).where(busy.n > 5)
+Query(busy.user_id, busy.n).where(busy.n > 5)          # or as the FROM source
+
+# Recursive: walk a tree
+tree = recursive_cte(
+    "tree",
+    Query(Node.id, Node.parent_id).where(Node.parent_id == None),
+    lambda cte: Query(Node.id, Node.parent_id).join(cte, Node.parent_id == cte.id),
+)
+await db.fetch_all(Query(tree.id, tree.parent_id).order_by("id"))
+```
+
+**There is nothing to register.** References are collected from wherever they appear — `FROM`, `JOIN`, an `ON` clause, a `WHERE` subquery, an `EXISTS`, a `CASE` arm, another CTE's body — and emitted once, in dependency order, in a single `WITH` clause owned by the outermost statement. That collection is a reflective walk over the node graph rather than a visitor per node type, precisely so that an expression type added later cannot silently drop its CTEs and produce SQL that fails at the server with *relation does not exist*. `with_(cte)` forces one in for the case where the reference is somewhere sqlom cannot see (raw SQL via `sql_function`).
+
+`recursive_cte` takes the recursive term as a **callable** because that term has to reference a CTE that does not exist until its own column names are known — and those come from the base query. A lambda resolves the ordering without a two-phase API. `UNION ALL` by default; pass `union_all=False` for `UNION`, which de-duplicates and so terminates on cycles.
+
+**A cycle under `UNION ALL` is an infinite loop inside the database**, not an error sqlom can catch — it has no idea whether your data is acyclic. This is not theoretical: the first version of one of these tests pointed a row at itself and hung Postgres until the backend was terminated by hand. Both behaviours have tests now, including that `union_all=False` terminates on the same data.
+
+Two things a recursive CTE forced into the design, both worth knowing about:
+
+- **A CTE must name its output columns**, so an unlabelled aggregate is refused at build time: Postgres calls `count(id)` "count" and sqlite calls it `"count(id)"`, and exposing a guessed name would render a reference to a column that does not exist. `.label("n")` is the fix. (This was a latent bug in `Subquery`, which had the same hole and now shares the same check.)
+- **The reference walk is over a cyclic graph.** A recursive CTE's body refers to the CTE itself, so the walk carries an identity guard; without it, building the SQL is a `RecursionError`. Both facts have regression tests.
+
+A `WITH` clause in front of `INSERT`/`UPDATE`/`DELETE` works too. What is *not* supported is the data-modifying CTE (`WITH moved AS (DELETE ... RETURNING *) INSERT INTO ... SELECT * FROM moved`): `cte()` takes a select, and there is no `INSERT ... SELECT` builder to consume one.
+
+### 11. UPDATE ... FROM and DELETE ... USING
+
+```python
+# Copy across a join in one statement
+await db.execute(
+    Update(Post).set(author=User.name).from_(User).where(User.id == Post.user_id)
+)
+
+# Delete by a condition on another table
+await db.execute(
+    Delete(Post).using(User).where(User.id == Post.user_id, User.banned == True)
+)
+```
+
+**There is no `ON` clause** — the join condition goes in `where()`, which is how SQL spells it, and which is why a missing condition is a silent cross product rather than a syntax error. Both builders refuse to render without one; `all_rows()` does not license it either, because `USING other` with no condition deletes each target row once per row of `other`, which is not what "delete everything" asked for.
+
+Once a second table is in play, every column *reference* becomes qualified — in `set()` values, in `where()`, and in `returning()`, which may name the other table's columns. `SET` targets stay unqualified, because Postgres rejects `SET t.col = ...`. A single-table `UPDATE`/`DELETE` is untouched and renders exactly as before.
+
+Builder order does not matter: `from_()` may come before or after `set()` and `where()`. That is why column references are validated when the statement renders rather than in the method that received them — still client-side, before anything reaches the server, just not at the exact call that wrote it.
+
+Portability: `UPDATE ... FROM` works on Postgres and on sqlite 3.33+ (2020). **`DELETE ... USING` is Postgres-only** — sqlite has no such form, and the portable spelling is `Delete(Post).where(Post.user_id.in_(Query(User.id).where(...)))`, which is tested as equivalent.
+
+### 12. What is checked for you
 
 Each of these otherwise produces plausible wrong results rather than an error:
 
@@ -488,14 +595,20 @@ Each of these otherwise produces plausible wrong results rather than an error:
 | a function name, operator or window frame that is not one | `ValueError` — the three places a fragment is accepted are all validated |
 | `Query(count())` with nothing else | `TypeError` — no table to select from |
 | `Query(subquery)` | `TypeError` — no model to hydrate into; select its columns |
+| `Update(...).from_(T)` or `Delete(...).using(T)` with no `where()` | `ValueError` — that is a cross product, not a join |
+| a `cte()` or `subquery()` selecting an unlabelled aggregate | `ValueError` — SQL gives it no usable name; add `.label()` |
+| `on_conflict_do_update()` with no conflict target | `ValueError` — the database cannot tell which row lost |
+| `excluded(OtherModel.col)` | `ValueError` — `excluded` is the target row, checked by source identity not by name |
+| `constraint=` that is not a plain identifier | `ValueError` — it is rendered unquoted, so it is not a place for arbitrary text |
+| two DML sources rendering to the same qualifier | `ValueError` — every column reference would be ambiguous |
 
-The ON check looks for a column-to-column comparison linking the joined table to one already present, *anywhere* in the clause — so `and_(Post.user_id == User.id, Post.published == True)` is fine, while `and_(Post.published == True, Post.score > 1)` is not.
+The ON check looks for a comparison linking the joined table to one already present, *anywhere* in the clause — so `and_(Post.user_id == User.id, Post.published == True)` is fine, while `and_(Post.published == True, Post.score > 1)` is not. Either side may be an expression rather than a bare column: `Node.id == tree.parent_id + 1` links the two tables just as much as a plain equality does.
 
-**Still not supported:** relationship declarations, so no lazy loading and no `selectinload` equivalent — you write the join. `ON CONFLICT` / upsert. CTEs (`WITH`). `UPDATE ... FROM` and `DELETE ... USING` across tables. Schema management: there is no DDL, no migrations, and no reflection. `to_json_sql()` handles a single-model query with no joins or grouping and raises otherwise, rather than guessing at a nested shape.
+**Still not supported:** relationship declarations, so no lazy loading and no `selectinload` equivalent — you write the join. `INSERT ... SELECT`, and therefore the data-modifying CTE built on it. Schema management: there is no DDL, no migrations, and no reflection. `to_json_sql()` handles a single-model query with no joins or grouping and raises otherwise, rather than guessing at a nested shape.
 
 There is no de-duplication: an inner join to a one-to-many yields the left row once per match, as SQL does. SQLAlchemy's ORM collapses those via its identity map — which is precisely the machinery sqlom skips to be fast, so this is a real behavioural difference and not an oversight.
 
-### 10. Transactions
+### 13. Transactions
 
 `engine.fetch_all()` takes a pooled connection per call and hands it straight back, which is right for a one-shot read and useless for anything atomic — two calls run on two connections. `engine.transaction()` pins one connection for the block, commits on clean exit and rolls back on any exception:
 
@@ -531,7 +644,7 @@ Two things worth knowing:
 
 Semantics are covered by [`tests/test_transactions_pg.py`](tests/test_transactions_pg.py) on **both** engines: commit, rollback, read-your-writes, invisibility to other connections, savepoint depth and nesting, the guard, isolation levels, and the session-reset invariant.
 
-### 11. DB-side JSON (not the focus yet)
+### 14. DB-side JSON (not the focus yet)
 
 `Query.to_json_sql` / `DatabaseEngine.fetch_json` push row shaping and JSON encoding into the database and hand back response-ready bytes, skipping Python objects entirely. It works and it benchmarks well, but it's a different product than an object mapper — **treat it as experimental and out of scope for now.** The object path above is the one being optimized.
 

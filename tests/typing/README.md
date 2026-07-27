@@ -46,9 +46,15 @@ only works in one of them is not something to advertise.
   `AuthorDC.id` is `int` to a checker (the dataclass field) rather than
   `ColumnExpr[int]`, and comparisons against it are unchecked. `ModelMeta` models are
   fully typed; that is the trade for real `dataclasses` interop.
-- **Columns off an `Alias` or `Subquery`.** `mgr.id` is `ColumnExpr[Any]`: both
-  resolve names from a runtime column map through `__getattr__`, and a checker cannot
-  enumerate them. Reach the column off the model when you want the precise type.
+- **Columns off an `Alias`, `Subquery` or `CTE`.** `mgr.id` is `ColumnExpr[Any]`: all
+  three resolve names from a runtime column map through `__getattr__`, and a checker
+  cannot enumerate them. Reach the column off the model when you want the precise
+  type. One knock-on: `Query(cte.some_column)` has **no** `assert_type` in
+  `positive.py`, because the checkers disagree about it. mypy lets `Any` match the
+  whole-model overload first and infers `Query[Any]`; pyright picks the
+  single-column overload and infers `Query[tuple[Any]]`. Both are defensible
+  readings of an `Any` argument, so asserting either would fail the other — it is
+  recorded rather than picked.
 - **`sum_` and `avg`.** `Aggregate[Any]`, because Postgres widens `sum(int)` to
   bigint and `avg(int)` to numeric, which arrives as `Decimal`. `count` is `int` and
   `min_`/`max_` keep the column's type.
@@ -57,7 +63,9 @@ only works in one of them is not something to advertise.
   `returning()` is chained after construction, so a checker cannot re-parameterise
   the statement the way `Query`'s constructor overloads can. The DML builders are
   therefore not generic at all, rather than carrying a type variable that resolves
-  to `Never`.
+  to `Never`. The same applies to `on_conflict_do_update(set_=...)`: `set_` is
+  `dict[str, Any]`, so a value of the wrong type for its column is not caught. The
+  keys are runtime-checked against the model's columns instead.
 - **`-column` on a non-numeric column.** `__neg__` takes no operand, so there is no
   argument to constrain by the column's type. Expressing "numeric columns only"
   would need per-type descriptor classes instead of one generic `ColumnExpr`.

@@ -33,11 +33,17 @@ from typing import (
     Generic,
     Iterable,
     TypeVar,
+    Union,
     overload,
 )
 
 if TYPE_CHECKING:
-    from .query import Query
+    from .query import CompoundSelect, Query
+
+    # What a CTE or a derived table may wrap: a select, or a set operation over
+    # selects. Spelled here rather than imported from query.py because that module
+    # imports this one.
+    Select = Union["Query[Any]", "CompoundSelect[Any]"]
 
 T = TypeVar("T")
 M = TypeVar("M")
@@ -72,9 +78,16 @@ def source_prefix(source):
 def source_name(source):
     """A human name for error messages."""
     alias = getattr(source, "alias", None)
-    if alias is not None:
-        return f"{getattr(source, 'model', source).__name__ if hasattr(source, 'model') else 'subquery'} AS {alias}"
-    return source.__name__
+    if alias is None:
+        return source.__name__
+    # The isinstance checks come first because both of these resolve unknown
+    # attributes to output columns, so `hasattr(source, "model")` is True for a
+    # derived table that happens to expose a column called `model`.
+    if isinstance(source, CTE):
+        return f"CTE {alias}"
+    if isinstance(source, Subquery):
+        return f"subquery {alias}"
+    return f"{source.model.__name__} AS {alias}"
 
 
 def source_model(source):
@@ -133,6 +146,28 @@ class Alias(Generic[M]):
         return f"<Alias {self.model.__name__} AS {self.alias}>"
 
 
+def _named_output_columns(query: Any, kind: str, alias: str) -> Any:
+    """The inner query's output columns, refusing anything SQL will not name.
+
+    A derived table is referenced by column *name*, so every entity it selects
+    must have one: a model contributes its columns, a `ColumnExpr` its own name, a
+    `Labelled` its label. An unlabelled aggregate has no SQL name — Postgres calls
+    `count(id)` "count" and sqlite calls it "count(id)" — so exposing a guessed
+    name would render a reference to a column that does not exist. Requiring
+    `.label()` is the only honest option.
+    """
+    for entity_kind, entity in query._entities:
+        if entity_kind == "model":
+            continue
+        if isinstance(entity, (ColumnExpr, Labelled)):
+            continue
+        raise ValueError(
+            f"{kind} {alias!r} selects {entity!r}, which SQL gives no usable "
+            f"column name. Add .label('name') so it can be referenced."
+        )
+    return query.output_columns()
+
+
 class _SubqueryColumn:
     """Stands in for a `Column` on a subquery's output, so a `Subquery` can be
     used everywhere a model source can."""
@@ -163,7 +198,7 @@ class Subquery:
         self.__tablename__ = None
         self.__columns__ = {
             name: _SubqueryColumn(name, py_type)
-            for name, py_type in query.output_columns()
+            for name, py_type in _named_output_columns(query, "subquery", alias)
         }
 
     def __getattr__(self, name: str) -> ColumnExpr[Any]:
@@ -185,8 +220,237 @@ class Subquery:
         return f"<Subquery AS {self.alias}>"
 
 
+class CTE:
+    """A common table expression: `WITH name AS (SELECT ...)`.
+
+    Built by `Query.cte("name")`. Used as a source exactly like a table — it
+    renders as just its name in FROM and JOIN, with the body hoisted into the
+    query's WITH clause. A query collects the CTEs it references automatically, so
+    there is nothing to register.
+
+    `recursive_cte()` builds the self-referencing form.
+    """
+
+    __slots__ = ("query", "alias", "recursive", "column_names", "__columns__",
+                 "__tablename__", "_body")
+
+    def __init__(self, query: Select, alias: str,
+                 recursive: bool = False) -> None:
+        if not alias or not isinstance(alias, str):
+            raise TypeError("cte() needs a non-empty string alias")
+        import re
+
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias):
+            raise ValueError(
+                f"{alias!r} is not a valid CTE name; expected an identifier"
+            )
+        self.query = query
+        self.alias = alias
+        self.recursive = recursive
+        self.__tablename__ = None
+        columns = _named_output_columns(query, "CTE", alias)
+        # Annotated because `_named_output_columns` is Any-typed (it reaches into a
+        # Query's entity list), and a list comprehension over Any is list[Any].
+        self.column_names: list[str] = [name for name, _ in columns]
+        self.__columns__ = {
+            name: _SubqueryColumn(name, py_type) for name, py_type in columns
+        }
+        # For a recursive CTE the body is the base UNION ALL the recursive term,
+        # set after construction so the recursive term can reference this object.
+        self._body: Any = query
+
+    def __getattr__(self, name: str) -> ColumnExpr[Any]:
+        columns = self.__columns__
+        if name in columns:
+            return ColumnExpr(self, name, columns[name].py_type)
+        raise AttributeError(
+            f"CTE {self.alias!r} has no output column {name!r}; it exposes "
+            f"{', '.join(columns) or '(nothing)'}"
+        )
+
+    def definition_sql(self, nxt: Any) -> tuple[str, tuple[Any, ...]]:
+        """The `name AS (body)` entry for a WITH clause.
+
+        Rendered with `with_clause=False`: only the statement's outermost render
+        emits a WITH clause, and it owns every CTE in the graph. Letting the body
+        emit its own would put a nested `WITH` inside the outer one and define the
+        same CTE twice.
+        """
+        sql, params = self._body._render(nxt, with_clause=False)
+        if self.recursive:
+            # Naming the columns is what lets the recursive term refer to them
+            # when the two arms label things differently.
+            names = f"({', '.join(self.column_names)})"
+            return f"{self.alias}{names} AS ({sql})", tuple(params)
+        return f"{self.alias} AS ({sql})", tuple(params)
+
+    def referenced_ctes(self) -> list[CTE]:
+        """CTEs this one's body refers to, in dependency order.
+
+        A recursive CTE's body refers to the CTE itself; that self-reference is
+        not a dependency, so it is filtered out.
+        """
+        return [found for found in _collect_ctes(self._body) if found is not self]
+
+    def __repr__(self) -> str:
+        kind = "RECURSIVE CTE" if self.recursive else "CTE"
+        return f"<{kind} {self.alias}>"
+
+
+def recursive_cte(alias: str, base: Select,
+                  step: Callable[[CTE], Select],
+                  union_all: bool = True) -> CTE:
+    """A self-referencing CTE.
+
+        tree = recursive_cte(
+            "tree",
+            Query(Node.id, Node.parent_id).where(Node.parent_id == None),
+            lambda cte: Query(Node.id, Node.parent_id)
+                        .join(cte, Node.parent_id == cte.id),
+        )
+        Query(tree.id).order_by("id")
+
+    `step` is a callable receiving the CTE, because the recursive term has to
+    reference a CTE that does not exist until its own columns are known — which
+    come from `base`. A lambda resolves that ordering without a two-phase API.
+
+    `UNION ALL` by default, as recursive CTEs almost always want; pass
+    `union_all=False` for `UNION`, which de-duplicates and terminates on cycles.
+    """
+    cte = CTE(base, alias, recursive=True)
+    recursive_term = step(cte)
+    if not hasattr(recursive_term, "_render"):
+        raise TypeError(
+            f"the recursive term must be a Query or compound, got "
+            f"{type(recursive_term).__name__}"
+        )
+    cte._body = (base.union_all(recursive_term) if union_all
+                 else base.union(recursive_term))
+    return cte
+
+
+_ATOMS = (str, bytes, bytearray, int, float, complex, bool, type(None))
+
+
+def _child_values(node: Any) -> Any:
+    """Every attribute value held by a node, `__slots__` and `__dict__` alike.
+
+    Slots have to be read off the MRO because `__slots__` is per-class, and an
+    unset slot raises `AttributeError` — which for `CTE` arrives via `__getattr__`
+    as a column-lookup failure, so it is caught rather than tested for.
+
+    A class may list attributes in `__value_fields__` to keep them out of the walk.
+    That is for attributes holding *bound data* rather than nodes — a bulk INSERT's
+    row list, say, which cannot contain a CTE by construction and which the walk
+    would otherwise traverse element by element. Measured: it was 15.6 ms of the
+    29 ms it takes to render a 16000-row insert.
+    """
+    skip = getattr(type(node), "__value_fields__", ())
+    named: set[str] = set(skip)
+    for klass in type(node).__mro__:
+        for name in getattr(klass, "__slots__", ()):
+            if name in named:
+                continue
+            named.add(name)
+            try:
+                yield getattr(node, name)
+            except AttributeError:
+                pass
+    instance_dict = getattr(node, "__dict__", None)
+    if instance_dict:
+        yield from [
+            value for name, value in instance_dict.items() if name not in skip
+        ]
+
+
+def walk_nodes(node: Any) -> Any:
+    """Yield every node reachable from `node`, once each, depth-unbounded.
+
+    Reflective for the same reason `_collect_ctes` is (see below), and guarded by
+    identity so a self-referencing recursive CTE does not loop forever. `node`
+    itself is not yielded — callers ask "what is *inside* this".
+    """
+    visited: set[int] = {id(node)}
+    stack: list[Any] = list(_child_values(node))
+    while stack:
+        current = stack.pop()
+        if isinstance(current, _ATOMS) or isinstance(current, type):
+            continue
+        key = id(current)
+        if key in visited:
+            continue
+        visited.add(key)
+        yield current
+        if isinstance(current, (list, tuple, set, frozenset)):
+            stack.extend(current)
+        elif isinstance(current, dict):
+            stack.extend(current.values())
+        else:
+            stack.extend(_child_values(current))
+
+
+def _collect_ctes(node: Any) -> list[CTE]:
+    """Every CTE a statement references, in dependency order, de-duplicated.
+
+    Does not use `walk_nodes` despite the same traversal: a flat walk loses the
+    ordering, and a CTE's dependencies have to be emitted before it.
+
+    Order matters twice over: a CTE whose body uses another must come after it in
+    the WITH clause, and the WITH clause is rendered first so its parameters must
+    number first.
+
+    This is a reflective walk over the node graph rather than a hand-written visit
+    per node type. A CTE can be referenced from anywhere a name can appear — FROM,
+    JOIN, an ON clause, a WHERE subquery, an EXISTS, a CASE arm, a window frame,
+    inside another CTE — and enumerating those explicitly means every expression
+    type added later silently drops its CTEs from the WITH clause, producing SQL
+    that fails at the database with "relation does not exist". Walking attributes
+    cannot miss one. It runs only when a statement's SQL is being built, which is
+    once per query shape thanks to the render cache, so the cost is not on the hot
+    path.
+
+    The `visited` set is load-bearing, not just an optimization: a recursive CTE's
+    body refers to the CTE itself, so an unguarded walk recurses forever.
+    """
+    found: list[CTE] = []
+    visited: set[int] = set()
+
+    def walk(current: Any) -> None:
+        if isinstance(current, _ATOMS) or isinstance(current, type):
+            return
+        key = id(current)
+        if key in visited:
+            return
+        visited.add(key)
+        if isinstance(current, CTE):
+            # Marked visited above, so the self-reference in a recursive body
+            # stops here instead of recursing. Dependencies are walked first and
+            # therefore land in `found` first.
+            walk(current._body)
+            if not any(existing is current for existing in found):
+                found.append(current)
+            return
+        if isinstance(current, (list, tuple, set, frozenset)):
+            for item in current:
+                walk(item)
+            return
+        if isinstance(current, dict):
+            for item in current.values():
+                walk(item)
+            return
+        for value in _child_values(current):
+            walk(value)
+
+    for value in _child_values(node):
+        walk(value)
+    return found
+
+
 def from_sql(source, nxt):
     """Render a source for a FROM or JOIN clause."""
+    if isinstance(source, CTE):
+        # A CTE is referenced by name; the body lives in the WITH clause.
+        return source.alias, ()
     if isinstance(source, Subquery):
         return source.from_sql(nxt)
     if isinstance(source, Alias):
@@ -1146,3 +1410,53 @@ def last_value(column: Expression[T]) -> FunctionCall[T]:
 
 def ntile(buckets: int) -> FunctionCall[int]:
     return FunctionCall("ntile", buckets, py_type=int)
+
+
+class Excluded(Expression[T]):
+    """The row that failed to insert, inside `ON CONFLICT DO UPDATE`.
+
+    Renders `excluded.<column>`. Both Postgres and sqlite expose the proposed row
+    under that name, so an upsert can write the incoming value over the stored one:
+
+        Insert(User).values(email="a@b.c", hits=1).on_conflict_do_update(
+            User.email, set_={"hits": User.hits + excluded(User.hits)}
+        )
+
+    Built by `excluded()`, and it deliberately reports **no** source: `excluded` is
+    not a table in the statement, so a validator that treated it as one would demand
+    a join for it.
+    """
+
+    __slots__ = ("column",)
+
+    if TYPE_CHECKING:
+        column: ColumnExpr[T]
+
+    def __init__(self, column: ColumnExpr[T]) -> None:
+        if not isinstance(column, ColumnExpr):
+            raise TypeError(
+                f"excluded() takes a model column, got {type(column).__name__}"
+            )
+        self.column = column
+
+    def to_sql(self, nxt, resolve=_bare):
+        return f"excluded.{self.column.name}", ()
+
+    def output_name(self) -> str:
+        return self.column.name
+
+    @property
+    def py_type(self) -> Any:
+        return self.column.py_type
+
+    def __repr__(self) -> str:
+        return f"<excluded.{self.column.name}>"
+
+
+def excluded(column: ColumnExpr[T]) -> Excluded[T]:
+    """`excluded.<column>` — the value the conflicting INSERT tried to write.
+
+    SQLAlchemy spells this `stmt.excluded.email`, which needs the statement in a
+    variable first. A free function reads the same and composes inline.
+    """
+    return Excluded(column)

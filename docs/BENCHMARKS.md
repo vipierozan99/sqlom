@@ -1389,10 +1389,13 @@ Artifact: [`results/locust_end_to_end.txt`](../benchmarks/results/locust_end_to_
 - **Everything the query builder grew after the single-table read is
   unbenchmarked.** Joins, aliases, boolean groups, `IN`/`EXISTS`, aggregates with
   `GROUP BY`/`HAVING`, derived tables, set operations, window functions, `CASE`,
-  arithmetic, and every write path (`Insert`/`Update`/`Delete`, `RETURNING`, bulk
-  insert) are covered by the pytest suite and appear in no ratio here. In
-  particular **no write is benchmarked at all**: every figure in this document is a
-  single-table read.
+  arithmetic, CTEs (including recursive), and every write path
+  (`Insert`/`Update`/`Delete`, `RETURNING`, bulk insert, `ON CONFLICT` upserts,
+  `UPDATE ... FROM`, `DELETE ... USING`) are covered by the pytest suite and appear
+  in no ratio here. In particular **no write is benchmarked at all**: every figure
+  in this document is a single-table read.
+  A recursive CTE is in a different cost class again — its cost is the database's
+  iteration count, which has nothing to do with anything measured here.
   A joined query costs strictly more than the single-table read measured here: the
   select list is wider, rows are more numerous for a one-to-many, and the hydrator
   builds several objects per row. A transaction costs more still — it marks the

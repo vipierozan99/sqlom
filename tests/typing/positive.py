@@ -8,6 +8,7 @@ every other assertion pass.
 from typing import Any, assert_type
 
 from sqlom import (
+    CTE,
     Aggregate,
     Alias,
     BinaryOp,
@@ -23,6 +24,7 @@ from sqlom import (
     ColumnExpr,
     Condition,
     DatabaseEngine,
+    Excluded,
     InClause,
     ModelMeta,
     Predicate,
@@ -33,6 +35,7 @@ from sqlom import (
     case,
     count,
     dense_rank,
+    excluded,
     exists,
     first_value,
     func,
@@ -46,6 +49,7 @@ from sqlom import (
     ntile,
     or_,
     rank,
+    recursive_cte,
     row_number,
     sql_function,
     sum_,
@@ -317,3 +321,91 @@ async def writing(db: DatabaseEngine) -> None:
     # overloads do. Stated rather than faked — see tests/typing/README.md.
     ids = await db.fetch_all(Insert(Author).values(name="a").returning(Author.id))
     assert_type(ids, list[Any])
+
+
+# --------------------------------------------------------------------------
+# CTEs
+# --------------------------------------------------------------------------
+
+assert_type(Query(Author).cte("c"), CTE)
+assert_type(Query(Author).with_(Query(Author).cte("c")), Query[Author])
+assert_type(Query(Author.id).cte("c").alias, str)
+assert_type(Query(Author.id).cte("c").recursive, bool)
+assert_type(Query(Author.id).cte("c").column_names, list[str])
+assert_type(Query(Author.id).cte("c").referenced_ctes(), list[CTE])
+
+assert_type(
+    recursive_cte(
+        "tree",
+        Query(Book.id, Book.author_id),
+        lambda cte: Query(Book.id, Book.author_id).join(cte, Book.author_id == cte.id),
+    ),
+    CTE,
+)
+
+# A CTE's columns are ColumnExpr[Any], like a Subquery's and for the same reason:
+# the names come from a runtime column map a checker cannot enumerate. Reach the
+# column off the model when the precise type matters.
+assert_type(Query(Author.id).cte("c").id, ColumnExpr[Any])
+
+
+def cte_as_a_source() -> None:
+    counts = Query(Book.author_id).cte("counts")
+    # No assert_type for `Query(counts.author_id)`: the two checkers genuinely
+    # disagree. A CTE column is ColumnExpr[Any], and mypy lets Any match the
+    # whole-model overload first (Query[Any]) while pyright picks the single-column
+    # one (Query[tuple[Any]]). Both are defensible readings of an Any argument, and
+    # asserting either would fail the other, so this is recorded rather than picked.
+    # Reach the column off the model when the row type has to be precise.
+    # Joining one to a model keeps the model's own type precise.
+    assert_type(
+        Query(Author).join(counts, counts.author_id == Author.id),
+        Query[Author],
+    )
+
+
+# --------------------------------------------------------------------------
+# ON CONFLICT
+# --------------------------------------------------------------------------
+
+assert_type(
+    Insert(Author).values(name="a").on_conflict_do_nothing(Author.id),
+    Insert,
+)
+assert_type(
+    Insert(Author).values(name="a").on_conflict_do_nothing(constraint="authors_pkey"),
+    Insert,
+)
+assert_type(
+    Insert(Author).values(name="a").on_conflict_do_update(
+        Author.id, set_={"name": excluded(Author.name)}
+    ),
+    Insert,
+)
+assert_type(
+    Insert(Author).values(name="a").on_conflict_do_update(
+        "id", set_={"name": "x"}, where=Author.active == True
+    ),
+    Insert,
+)
+
+# excluded() keeps the column's type, so it composes with typed arithmetic and
+# comparisons rather than decaying to Any.
+assert_type(excluded(Author.id), Excluded[int])
+assert_type(excluded(Author.name), Excluded[str])
+assert_type(excluded(Author.id) > 5, Condition)
+assert_type(Author.id + excluded(Author.id), BinaryOp[int])
+assert_type(excluded(Author.id).py_type, Any)
+
+
+# --------------------------------------------------------------------------
+# UPDATE ... FROM and DELETE ... USING
+# --------------------------------------------------------------------------
+
+assert_type(
+    Update(Book).set(title=Author.name).from_(Author).where(Author.id == Book.author_id),
+    Update,
+)
+assert_type(Update(Book).from_(Author, Alias(Author, "a2")), Update)
+assert_type(Delete(Book).using(Author).where(Author.id == Book.author_id), Delete)
+assert_type(Delete(Book).using(Alias(Author, "a2")), Delete)

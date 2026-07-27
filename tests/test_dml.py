@@ -160,12 +160,14 @@ class TestUpdate:
             Update(Author).set(nope=1)
 
     def test_where_rejects_another_table(self):
+        # Checked when the statement renders, not in where(): from_() may still be
+        # coming, and requiring a particular builder order would be worse.
         with pytest.raises(ValueError, match="not the table being written to"):
-            Update(Author).set(name="z").where(Book.id == 1)
+            Update(Author).set(name="z").where(Book.id == 1).to_sql()
 
     def test_set_expression_rejects_another_table(self):
         with pytest.raises(ValueError, match="not the table being written to"):
-            Update(Author).set(id=Book.id + 1)
+            Update(Author).set(id=Book.id + 1).to_sql()
 
     def test_where_rejects_a_non_predicate(self):
         with pytest.raises(TypeError, match="takes a predicate"):
@@ -193,7 +195,7 @@ class TestDelete:
 
     def test_where_rejects_another_table(self):
         with pytest.raises(ValueError, match="not the table being written to"):
-            Delete(Author).where(Book.id == 1)
+            Delete(Author).where(Book.id == 1).to_sql()
 
 
 class TestReturningValidation:
@@ -203,7 +205,7 @@ class TestReturningValidation:
 
     def test_returning_another_table_column_is_refused(self):
         with pytest.raises(ValueError, match="not the table being written to"):
-            Insert(Author).values(id=1).returning(Book.id)
+            Insert(Author).values(id=1).returning(Book.id).to_sql()
 
     def test_returning_a_non_entity_is_refused(self):
         with pytest.raises(TypeError, match="takes the model or its columns"):

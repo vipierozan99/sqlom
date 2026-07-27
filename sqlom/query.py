@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Generic, Iterable, Self, TypeVar, Union, overload
 
 from .expr import (
+    CTE,
     Aggregate,
     Alias,
     ColumnExpr,
@@ -11,6 +12,7 @@ from .expr import (
     Predicate,
     Subquery,
     _bare,
+    _collect_ctes,
     and_,
     from_sql,
     source_name,
@@ -191,6 +193,7 @@ class Query(Generic[R]):
         self._offset = None
         self._distinct = False
         self._correlated = []       # extra sources allowed in predicates
+        self._ctes = []             # CTEs forced in via with_(); see that method
         # Compiled SQL is cached per (kind, dialect/placeholder). A hot endpoint
         # builds the same query shape on every request, and regenerating the
         # string each time is pure overhead — it measured as ~4% of throughput.
@@ -402,6 +405,32 @@ class Query(Generic[R]):
     def except_all(self, other: _Selectable[R]) -> CompoundSelect[R]:
         return self._compound("EXCEPT ALL", other)
 
+    # ---------------------------------------------------------------- CTEs
+
+    def cte(self, alias: str) -> CTE:
+        """Wrap this query as a common table expression.
+
+        The CTE is used as a source like a table; whichever query references it
+        hoists the definition into its own WITH clause automatically, so there is
+        nothing to register.
+        """
+        return CTE(self, alias)
+
+    def with_(self, *ctes: CTE) -> Self:
+        """Force a CTE into this query's WITH clause.
+
+        Rarely needed: references are found wherever they appear, including inside
+        a subquery, an EXISTS or another CTE. This exists for the case where the
+        CTE is not referenced by anything sqlom can see — raw SQL via
+        `sql_function`, say — and would otherwise be left undefined.
+        """
+        for entry in ctes:
+            if not isinstance(entry, CTE):
+                raise TypeError(f"with_() takes CTEs, got {type(entry).__name__}")
+            self._ctes.append(entry)
+        self._invalidate()
+        return self
+
     def subquery(self, alias: str) -> Subquery:
         """Wrap this query as a derived table usable in FROM and joins."""
         return Subquery(self, alias)
@@ -565,9 +594,15 @@ class Query(Generic[R]):
                 params += entity_params
         return parts, params
 
-    def _render(self, nxt=None, resolve=None):
+    def _render(self, nxt=None, resolve=None, with_clause=False):
         """Build the whole statement. `nxt` is the shared placeholder generator, so
-        a subquery's parameters number in sequence with the outer query's."""
+        a subquery's parameters number in sequence with the outer query's.
+
+        `with_clause` defaults to False because only the outermost render of a
+        statement emits `WITH`, and it emits every CTE in the graph. A nested
+        render — a derived table, a scalar subquery, an EXISTS, a compound operand,
+        a CTE body — must not emit one, or the same CTE gets defined twice.
+        """
         params = []
         if nxt is None:
             def nxt():
@@ -579,10 +614,13 @@ class Query(Generic[R]):
             placeholder = nxt()
             return placeholder
 
+        # WITH comes first in the statement, so its parameters must number first.
+        with_sql = _with_clause(self, advance, params) if with_clause else ""
+
         select_parts, select_params = self._select_list(advance, resolve)
         params.extend(select_params)
         prefix = "SELECT DISTINCT " if self._distinct else "SELECT "
-        sql = prefix + ", ".join(select_parts)
+        sql = with_sql + prefix + ", ".join(select_parts)
 
         from_sql_text, from_params = from_sql(self.source, advance)
         params.extend(from_params)
@@ -645,7 +683,7 @@ class Query(Generic[R]):
         cached = self._sql_cache.get(("select", placeholder))
         if cached is not None:
             return cached
-        sql, params = self._render(_placeholders(placeholder))
+        sql, params = self._render(_placeholders(placeholder), with_clause=True)
         result = (sql, tuple(params))
         self._sql_cache[("select", placeholder)] = result
         return result
@@ -679,7 +717,13 @@ class Query(Generic[R]):
             for name, column in columns.items()
         )
 
-        inner, params = self._render(_placeholders(spec["placeholder"]))
+        # The WITH clause stays *inside* the derived table rather than being
+        # hoisted in front of the outer SELECT. Both dialects allow that, and it
+        # keeps the parameters in textual order, which is what positional
+        # placeholders require.
+        inner, params = self._render(
+            _placeholders(spec["placeholder"]), with_clause=True
+        )
 
         agg = f"{spec['agg']}({spec['object']}({object_args}))"
         if spec["coalesce"]:
@@ -696,6 +740,26 @@ class Query(Generic[R]):
             source_name(e) if k == "model" else repr(e) for k, e in self._entities
         )
         return f"<Query {entities}{' +joins' if self._joins else ''}>"
+
+
+def _with_clause(node, advance, params):
+    """Render the `WITH ...` prefix for a statement, appending its parameters.
+
+    Returns `""` when nothing references a CTE, so a query that uses none is
+    byte-identical to what it rendered before CTEs existed.
+    """
+    ctes = _collect_ctes(node)
+    if not ctes:
+        return ""
+    entries = []
+    for cte in ctes:
+        definition, cte_params = cte.definition_sql(advance)
+        params.extend(cte_params)
+        entries.append(definition)
+    # RECURSIVE is a property of the WITH clause, not of one entry, so a single
+    # recursive CTE marks the whole clause. Non-recursive entries are unaffected.
+    recursive = "RECURSIVE " if any(cte.recursive for cte in ctes) else ""
+    return f"WITH {recursive}" + ", ".join(entries) + " "
 
 
 def _and_join(predicates, advance, resolve, params):
@@ -722,8 +786,13 @@ def _links_sources(predicate, joined, existing):
         node = stack.pop()
         left = getattr(node, "left", None)
         right = getattr(node, "right", None)
-        if isinstance(left, ColumnExpr) and isinstance(right, ColumnExpr):
-            pair = {id(left.source), id(right.source)}
+        if isinstance(left, Expression) and isinstance(right, Expression):
+            # Either side may be an expression rather than a bare column —
+            # `Node.id == tree.parent_id + 1` links the two tables just as much as
+            # `Node.id == tree.parent_id` does — so this compares the *sets* of
+            # sources each side reaches.
+            pair = {id(column.source) for column in _columns_in(left)}
+            pair |= {id(column.source) for column in _columns_in(right)}
             if id(joined) in pair and any(id(s) in pair for s in existing):
                 return True
         for child in (left, right, getattr(node, "part", None)):
@@ -896,16 +965,21 @@ class CompoundSelect(Generic[R]):
 
     # --- rendering ---------------------------------------------------------
 
-    def _render(self, nxt=None, resolve=None):
+    def _render(self, nxt=None, resolve=None, with_clause=False):
         if nxt is None:
             def nxt():
                 return "?"
         parts, params = [], []
+        # One WITH clause in front of the whole compound, covering every operand.
+        # An operand cannot carry its own: `SELECT ... UNION WITH x AS (...)` is
+        # not valid SQL, and even in the first position it would scope a CTE the
+        # later operands also reference.
+        with_sql = _with_clause(self, nxt, params) if with_clause else ""
         for operand in self.operands:
             sql, operand_params = operand._render(nxt)
             params.extend(operand_params)
             parts.append(sql)
-        sql = f" {self.operator} ".join(parts)
+        sql = with_sql + f" {self.operator} ".join(parts)
         if self._order_by:
             terms = ", ".join(
                 f"{name} DESC" if descending else name
@@ -924,7 +998,7 @@ class CompoundSelect(Generic[R]):
         cached = self._sql_cache.get(placeholder)
         if cached is not None:
             return cached
-        sql, params = self._render(_placeholders(placeholder))
+        sql, params = self._render(_placeholders(placeholder), with_clause=True)
         result = (sql, tuple(params))
         self._sql_cache[placeholder] = result
         return result

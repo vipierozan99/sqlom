@@ -21,9 +21,11 @@ from sqlom import (
     and_,
     case,
     count,
+    excluded,
     exists,
     not_,
     or_,
+    recursive_cte,
 )
 
 
@@ -194,3 +196,41 @@ async def execute_only_takes_statements(engine: DatabaseEngine) -> None:
 # argument to constrain by the column's type; expressing "only numeric columns"
 # would need per-type descriptor classes rather than one generic ColumnExpr.
 #     -Author.name
+
+
+# --------------------------------------------------------------------------
+# CTEs
+# --------------------------------------------------------------------------
+
+Query(Author).cte(5)  # type: ignore[arg-type]  # pyright: ignore
+Query(Author).with_(Query(Author))  # type: ignore[arg-type]  # pyright: ignore
+Query(Author).with_("c")  # type: ignore[arg-type]  # pyright: ignore
+recursive_cte("t", "SELECT 1", lambda cte: Query(Author))  # type: ignore[arg-type]  # pyright: ignore
+
+
+# --------------------------------------------------------------------------
+# ON CONFLICT
+# --------------------------------------------------------------------------
+
+# set_ is required: on_conflict_do_update() without it is do_nothing() spelled wrong.
+Insert(Author).values(name="a").on_conflict_do_update(Author.id)  # type: ignore[call-arg]  # pyright: ignore
+# A predicate, not a string.
+Insert(Author).values(name="a").on_conflict_do_update(Author.id, set_={"name": "x"}, where="active")  # type: ignore[arg-type]  # pyright: ignore
+# An index element is a column or a name, not a model.
+Insert(Author).values(name="a").on_conflict_do_nothing(Author)  # type: ignore[arg-type]  # pyright: ignore
+# constraint= is a name, not a column.
+Insert(Author).values(name="a").on_conflict_do_nothing(constraint=Author.id)  # type: ignore[arg-type]  # pyright: ignore
+# excluded() takes a column, not a name.
+excluded("name")  # type: ignore[arg-type]  # pyright: ignore
+# And it keeps the column's type, so a wrong-typed comparison is still caught.
+excluded(Author.id) > "abc"  # type: ignore[operator]  # pyright: ignore
+
+
+# --------------------------------------------------------------------------
+# UPDATE ... FROM and DELETE ... USING
+# --------------------------------------------------------------------------
+
+Update(Author).set(name="z").from_("books")  # type: ignore[arg-type]  # pyright: ignore
+Update(Author).set(name="z").from_(Author.id)  # type: ignore[arg-type]  # pyright: ignore
+Delete(Author).using("books")  # type: ignore[arg-type]  # pyright: ignore
+Delete(Author).using(Author.id)  # type: ignore[arg-type]  # pyright: ignore
