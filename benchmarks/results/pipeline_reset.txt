@@ -1,0 +1,32 @@
+cores: [0]   psycopg 3.3.4
+
+Per-request cost (100 rows, sequential, median of 5)
+
+  variant                                       RT  stmt    us/req
+  ----------------------------------------------------------------
+  query only, no pipeline                        1     1     289.5
+  EMPTY pipeline (fixed cost, no statements)     0     0     221.1
+  multi-stmt reset + query, sequential           2     2     465.6
+  RESET ALL + query, PIPELINED                   1     2    1042.4
+  split reset + query, PIPELINED                 1     5    1704.3
+
+  the reset itself, as a second round trip :   176.2 us
+  entering/leaving pipeline mode           :   221.1 us
+  -> pipeline overhead is 1.3x the cost it is meant to remove
+
+Amortisation: 100 INSERTs (median of 5)
+
+  variant                                       us/batch   us/stmt
+  ----------------------------------------------------------------
+  execute() one at a time                       113676.5   1136.76
+  executemany() (pipelined internally)           22870.7    228.71
+
+  -> 5.0x faster, because ONE pipeline setup is amortised over 100 statements
+
+Throughput, async single-thread c=8 (median of 5)
+
+  variant                                           rps  cpu ms/req
+  ----------------------------------------------------------------
+  query only, no reset                             5923      0.1661
+  multi-stmt reset + query, sequential             3309      0.3021
+  split reset + query, PIPELINED                    771      1.2875

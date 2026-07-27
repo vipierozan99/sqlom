@@ -1,0 +1,122 @@
+### CORRECTION. Every published "vs SQLAlchemy Core" ratio was inflated by the
+### harness's choice of Core API, not by row shaping. Measured in all five
+### configurations plus the new join benchmark. The ORM ratios are unaffected.
+
+WHAT WAS WRONG
+--------------
+Every Core contender in this repo shaped rows like this:
+
+    payload = [{str(k): v for k, v in m.items()} for m in result.mappings()]
+
+`.mappings()` yields `RowMapping`s whose keys are `quoted_name`, a `str` subclass
+that orjson refuses to serialize, so each key of each row gets an explicit `str()`
+cast. That cast is not row shaping. It is the price of one particular Core API,
+and sqlom's path never pays anything like it.
+
+The equally idiomatic alternative captures the names once and zips:
+
+    names = [str(c.name) for c in users_table.columns]        # once, at setup
+    payload = [dict(zip(names, row)) for row in result]       # per request
+
+Byte-identical output (verified: 77535 bytes on sqlite at 1000 rows; 7701 bytes on
+Postgres at 100 rows; md5-identical across all seven FastAPI endpoints).
+
+HOW IT WAS FOUND
+----------------
+Not by reading the code. The new two-model join benchmark *cannot* use
+`.mappings()` — both tables have an `id`, so the keys collide — so its Core
+contender had to slice the flat row positionally. Core then came out far closer to
+sqlom on the join (1.17x) than on the single table (3.87x), which is the wrong
+direction: a join is more work, not less. The only way a join could *close* Core's
+gap is if the single-table measurement had been charging Core for something else.
+
+Direct A/B, one process, interleaved, sqlite, 1000 rows/response:
+
+    Core idiom                          median ms   trials
+    ---------------------------------------------------------------
+    mappings() + str(key)  [published]      4.882   5.011 4.882 4.854
+    positional dict(zip(...))               1.861   1.867 1.859 1.861
+
+    the cast was 62% of Core's entire time here (2.62x)
+
+EFFECT ON EVERY PUBLISHED RATIO
+-------------------------------
+Each row re-measured now, one contender per process where the harness supports it,
+median of 3 trials. "was published" is the figure in docs/BENCHMARKS.md before this
+correction; "re-run" is the same idiom measured today, so the two columns separate
+box drift from the correction itself.
+
+  sqlom vs SQLAlchemy CORE
+  configuration                        was published   re-run   positional
+  ---------------------------------------------------------------------------
+  sqlite single table, 1000 rows               3.87x    3.91x        1.49x
+  asyncpg both tuned, data layer               4.00x    4.50x        2.51x
+  asyncpg both tuned, via FastAPI              2.73x    2.66x        1.79x
+  psycopg both default, data layer             2.67x    2.86x        2.01x
+  psycopg both default, via FastAPI            2.07x    2.22x        1.57x
+  sqlite two-model join, 1000 rows                 -        -        1.17x
+
+  sqlom vs SQLAlchemy ORM  (unaffected - the ORM path uses getattr, not .mappings())
+  configuration                        was published   re-run
+  ------------------------------------------------------------
+  sqlite single table, 1000 rows               5.22x    5.57x
+  asyncpg both tuned, data layer               7.18x    7.23x
+  asyncpg both tuned, via FastAPI              4.80x    4.98x
+  psycopg both default, data layer             4.28x    4.54x
+  psycopg both default, via FastAPI            3.33x    3.23x
+  sqlite two-model join, 1000 rows                 -    4.05x
+
+RAW NUMBERS BEHIND THE POSITIONAL COLUMN
+----------------------------------------
+sqlite single table, isolated processes, 1000 rows, median ms:
+    sqlom compiled (batch)        1.260
+    Core (positional)             1.876
+    Core (mappings)               4.923
+    SQLAlchemy ORM                7.013
+
+asyncpg, both tuned, data layer, core 0, c=8, uvloop, rps:
+    sqlom (all optimizations)      4823
+    Core positional (tuned)        1922
+    Core (tuned)                   1072
+    ORM (tuned)                     667
+
+psycopg3 both sides, default pools, data layer, core 0, c=8, uvloop, rps:
+    sqlom                          2228
+    Core positional                1110
+    Core                            778
+    ORM                             491
+
+FastAPI end-to-end, both drivers, 5 trials x 4s, rps:
+    /sqlom          2430      /psy-sqlom       1293
+    /core-fast      1359      /psy-core-fast    825
+    /core            914      /psy-core         582
+
+WHAT TO QUOTE NOW
+-----------------
+The positional column. A benchmark should compare each contender at its best, and
+`dict(zip(names, row))` is not a trick — it is what the join benchmark had to use
+anyway, and it needs no knowledge of SQLAlchemy internals.
+
+So: sqlom is **1.5-2.5x SQLAlchemy Core**, depending on driver and whether the web
+layer is included, and **1.2x on a two-model join**. Not 2.1-4.0x. The ORM figures
+stand: 3.2-7.2x, and 4.1x on the join.
+
+Both idioms are kept in the harnesses rather than the slow one being deleted, so the
+size of the mistake stays checkable.
+
+WHAT THIS DOES NOT CHANGE
+-------------------------
+* The ORM comparison, which is the headline. The ORM contender builds dicts with
+  `getattr` and never touches `.mappings()`.
+* sqlom's own absolute numbers, which are unchanged in every configuration.
+* The direction of the conclusion. Core is still slower than sqlom everywhere
+  measured; it is 1.2-2.5x slower rather than 2-4x slower.
+
+WHY IT TOOK THIS LONG
+---------------------
+The cast was introduced deliberately, with a comment explaining that orjson needs
+real `str` keys — a correct observation that made the line look finished. Nothing
+about it reads as a benchmark bug, and it produced correct output. It took a
+*second shape* (the join) whose constraints forced a different idiom before the
+comparison became visible. Generalizes: when a contender needs a workaround the
+others do not, price the workaround before assuming it is incidental.

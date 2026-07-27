@@ -1,0 +1,43 @@
+########## isolated: async Core ##########
+  rows_per_request: 100
+  pool_size: 10
+  duration_s_per_cell: 4.0
+  concurrency_levels: [1, 8]
+
+  SQLAlchemy async Core            c=1    t0       730 rps  p50    1.31 ms  p99    2.29 ms  cpu  0.975 ms/req
+  SQLAlchemy async Core            c=1    t1       740 rps  p50    1.27 ms  p99    2.39 ms  cpu  0.982 ms/req
+  SQLAlchemy async Core            c=1    t2       642 rps  p50    1.46 ms  p99    2.77 ms  cpu  1.066 ms/req
+  SQLAlchemy async Core            c=8    t0      1112 rps  p50    6.48 ms  p99   13.68 ms  cpu  0.898 ms/req
+  SQLAlchemy async Core            c=8    t1      1243 rps  p50    6.01 ms  p99    9.83 ms  cpu  0.804 ms/req
+  SQLAlchemy async Core            c=8    t2      1112 rps  p50    6.51 ms  p99   16.41 ms  cpu  0.889 ms/req
+
+==============================================================================
+throughput (req/s) [median]             c=1        c=8
+------------------------------------------------------------------------------
+SQLAlchemy async Core                   730       1112
+
+client CPU ms per request               c=1        c=8
+------------------------------------------------------------------------------
+SQLAlchemy async Core                 0.982      0.889
+########## isolated: async ORM ##########
+
+  SQLAlchemy async ORM             c=1    t0       461 rps  p50    1.96 ms  p99    4.27 ms  cpu  1.619 ms/req
+  SQLAlchemy async ORM             c=1    t1       472 rps  p50    1.93 ms  p99    3.94 ms  cpu  1.593 ms/req
+  SQLAlchemy async ORM             c=1    t2       513 rps  p50    1.81 ms  p99    3.18 ms  cpu  1.489 ms/req
+  SQLAlchemy async ORM             c=8    t0       750 rps  p50    9.05 ms  p99   27.97 ms  cpu  1.332 ms/req
+  SQLAlchemy async ORM             c=8    t1       759 rps  p50    8.82 ms  p99   28.30 ms  cpu  1.310 ms/req
+  SQLAlchemy async ORM             c=8    t2       765 rps  p50    8.92 ms  p99   27.06 ms  cpu  1.304 ms/req
+
+==============================================================================
+throughput (req/s) [median]             c=1        c=8
+------------------------------------------------------------------------------
+SQLAlchemy async ORM                    472        759
+
+speedup vs SQLAlchemy async ORM         c=1        c=8
+------------------------------------------------------------------------------
+SQLAlchemy async ORM                  1.00x      1.00x
+
+client CPU ms per request               c=1        c=8
+------------------------------------------------------------------------------
+SQLAlchemy async ORM                  1.593      1.310
+ALLDONE

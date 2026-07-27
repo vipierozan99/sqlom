@@ -1,0 +1,23 @@
+cores: [0]  100 rows/request, pool 10, async single-thread c=8, median of 3
+
+variant                                        rps  cpu ms/req  resets/req
+(resets/req counts ONLY the engine's conditional hook. n/a = NOT INSTRUMENTED,
+ which is not the same as zero: asyncpg's own built-in reset is invisible to
+ that counter. So of the n/a rows, "asyncpg default" and "conditional=False"
+ reset on EVERY release via asyncpg, while "reset=no-op" genuinely does not
+ reset at all -- that is the behavioural tradeoff being measured.)
+--------------------------------------------------------------------------
+asyncpg default (always RESET)                3584      0.2773         n/a
+reset=no-op (LEAKS session state)             4433      0.2255         n/a
+conditional, pure sqlom traffic               4393      0.2275        0.00
+conditional, 1 in 10 uses acquire()           4151      0.2404        0.10
+conditional, 1 in 2 uses acquire()            3504      0.2841        0.50
+conditional=False (engine, always RESET)      3644      0.2742         n/a
+
+vs. asyncpg's default (3584 rps):
+  asyncpg default (always RESET)               1.00x
+  reset=no-op (LEAKS session state)            1.24x
+  conditional, pure sqlom traffic              1.23x
+  conditional, 1 in 10 uses acquire()          1.16x
+  conditional, 1 in 2 uses acquire()           0.98x
+  conditional=False (engine, always RESET)     1.02x

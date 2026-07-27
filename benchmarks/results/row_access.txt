@@ -1,0 +1,126 @@
+### Positional vs key access, on the row type each driver actually returns.
+### Reading 4 fields from 1000 rows into a 4-tuple. Core 0, median of 300, 30 warmup.
+### Run: the script in this file's "Reproducing" section.
+
+WHY THIS EXISTS
+---------------
+correction 8 measured key-based row access at 2.6x positional on one path, but that
+number bundled three separate costs: the key lookup, the `str()` cast that
+`quoted_name` keys force, and building a dict per row. This separates them, and does
+it per driver — an asyncpg `Record` is a C-level object with its own lookup and has no
+obligation to behave like a Python dict.
+
+RESULTS
+-------
+Two runs were taken. The figures below are the first; the second reproduced every
+row within 3% except the asyncpg unpack/index pair, which is discussed under
+nuances. Second run, same order: 54.4 / 64.8 / 119.2 / 253.3 / 400.0, then
+104.8 / 99.5 / 211.7 / 527.0, then 54.7 / 392.5, then 123.6.
+
+sqlite3, rows are plain tuples:
+  unpack   for a,b,c,d in rows                       54.4 ns/row     1.00x
+  index    row[0], row[1], ...                       64.9 ns/row     1.19x
+  sqlite3.Row positional r[0], ...                  124.4 ns/row     2.29x
+  sqlite3.Row by key r['id'], ...                   259.1 ns/row     4.76x
+  dict(zip(names, row))                             413.2 ns/row     7.60x
+
+asyncpg, rows are C-level Record objects:
+  index    rec[0], rec[1], ...                      100.6 ns/row     1.00x
+  unpack   for a,b,c,d in records                   110.9 ns/row     1.10x
+  by key   rec['id'], rec['name'], ...              198.2 ns/row     1.97x
+  dict(rec)                                         525.0 ns/row     5.22x
+
+psycopg3, default row factory (plain tuples):
+  unpack   for a,b,c,d in rows                       55.2 ns/row     1.00x
+  dict(zip(names, row))                             406.7 ns/row     7.37x
+
+psycopg3, row_factory=dict_row:
+  by key   row['id'], row['name'], ...              125.8 ns/row     2.28x
+
+ANSWERS
+-------
+**Positional is faster, everywhere, by 1.97x to 4.76x.** The gap is narrowest on
+asyncpg — a `Record`'s key lookup is C code against a shared field map, not a Python
+dict lookup — and widest on `sqlite3.Row`, which resolves names in Python.
+
+**Building a dict per row costs 5-7x, and dwarfs the access question.** If the
+destination is a dict, that allocation is the dominant term, not how the fields were
+read. Which is why sqlom hydrates into `__slots__` objects and hands them to orjson
+through a compiled `default=` hook: no intermediate dict is ever built.
+
+**If you do want dicts, let the driver build them.** psycopg's `dict_row` is 125.8
+ns/row against 406.7 for `dict(zip(...))` in Python — 3.2x cheaper, because the dict is
+assembled in C. This is worth knowing before "just use dicts" is dismissed on
+performance grounds.
+
+TWO NUANCES WORTH NOT ROUNDING AWAY
+-----------------------------------
+1. **On asyncpg, indexing may beat unpacking** — the reverse of the plain-tuple case
+   (where unpack wins 54.4 to 64.9). Two runs disagree on the size: 110.9 vs 100.6
+   ns/row (10%) and 104.8 vs 99.5 (5%). Direction consistent, magnitude not, and 5 ns
+   is close enough to this measurement's floor that it should be treated as "possibly
+   ~5%" rather than a number. The mechanism is plausible: tuple unpacking is a bytecode
+   fast path (`UNPACK_SEQUENCE`), while unpacking a `Record` goes through its iterator
+   protocol.
+
+   Not acted on, deliberately. Even at the larger figure, 10 ns/row on a 100-row
+   request is ~1 µs of ~430 µs — 0.23% — and collecting it would mean a
+   driver-specific hydrator variant: a second code path, and a second thing that can
+   silently disagree with the SELECT list. Recorded rather than fixed, so the trade is
+   visible instead of forgotten, and so nobody "optimizes" it later on the strength of
+   one run.
+
+2. **These micro-numbers do not add up to the end-to-end ratios, and should not be
+   expected to.** Even the *fair* Core idiom pays 407 ns/row against sqlom's 54, yet
+   sqlom is only ~1.5x Core overall — because for both of them the dominant cost is the
+   driver materializing Python values from the wire, which this measurement excludes
+   entirely (the rows are already fetched before timing starts). Per the profiles, that
+   is 64% of the sqlite request. Quoting 7.6x from this file as a library ratio would be
+   the bottom-up/top-down error of correction 7.
+
+WHY SQLOM CAN ALWAYS BE POSITIONAL
+----------------------------------
+It is structural, not a tuning choice. `Query._select_list()` enumerates columns
+explicitly for every entity — there is no `SELECT *` anywhere in the builder — so at
+codegen time sqlom knows the exact ordinal of every output column, and the hydrator is
+pure tuple unpacking with no names in it at all:
+
+    def _hydrate_all(rows):
+        out = []
+        append = out.append
+        for f0, f1, f2, f3, in rows:
+            obj = _new(_cls)
+            obj._id = f0
+            obj._name = f1
+            obj._email = f2
+            obj._is_active = _conv_3(f3)
+            append(obj)
+        return out
+
+This is also exactly why the two-model join was unproblematic for sqlom and fatal for
+Core's `.mappings()`: two `id` columns collide *by name*, and ordinals do not collide.
+The join hydrator slices one flat tuple into two objects by position:
+
+    for f0, f1, f2, f3, f4, f5, f6, in rows:
+        o0 = _new(_cls0); o0._id = f0; ...      # users.id
+        o1 = _new(_cls1); o1._id = f4; ...      # posts.id
+
+Owning the SELECT list is what buys this. A library handed arbitrary SQL cannot assume
+ordinals, which is the real reason `.mappings()` exists.
+
+WHAT WOULD BREAK IT
+-------------------
+* **`SELECT *`.** Ordinals would shift the moment a column was added to the table, and
+  every field after it would be silently assigned the wrong value — a data-corruption
+  bug with no error. sqlom cannot emit `SELECT *`; the absence of that feature is what
+  makes positional safe rather than reckless.
+* **A select list and hydrator spec built from different sources.** Both derive from the
+  same ordered `__columns__` mapping, and `tests/test_joins_sqlite.py` executes real SQL
+  through the real hydrator precisely so a disagreement fails a test rather than
+  returning plausible wrong data.
+* **Raw SQL** via `tx.execute("SELECT ...")`, which returns driver rows and never
+  reaches the hydrator. Nothing is claimed about it.
+
+REPRODUCING
+-----------
+    python3 benchmarks/bench_row_access.py

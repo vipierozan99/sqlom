@@ -1,0 +1,36 @@
+[tool.mypy]
+python_version = "3.11"
+# The point of the typing tests: an ignore that stops being necessary becomes an
+# error, which is what makes tests/typing/negative.py a test rather than a comment.
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+strict_equality = true
+no_implicit_reexport = false
+
+[[tool.mypy.overrides]]
+module = ["asyncpg.*", "psycopg.*", "psycopg_pool.*", "uvloop.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The library body is not annotated end to end yet; the public surface is. These
+# keep mypy from demanding annotations on internals while still checking the calls
+# that tests/typing/ makes against them.
+module = "sqlom.*"
+disallow_untyped_defs = false
+check_untyped_defs = false
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+# The other half of the negative tests: a `# pyright: ignore` that suppresses
+# nothing becomes an error, so an expected error that stops happening fails.
+reportUnnecessaryTypeIgnoreComment = "error"
+# mypy's `# type: ignore` comments are for mypy. Left enabled, pyright would judge
+# them by its own diagnostics and report every one as unnecessary.
+enableTypeIgnoreComments = false
+# tests/typing/negative.py is deliberately a list of bare expressions.
+reportUnusedExpression = "none"
+# sqlom's own internals are unannotated; report on the typing tests only.
+include = ["tests/typing"]
+extraPaths = ["."]

@@ -1,0 +1,17 @@
+Output equivalence: all 6 contenders emit identical JSON (7701 bytes)
+
+cores: [0]   100 rows/request   pool 10   async single-thread c=8   median of 3
+loop: uvloop
+
+contender                             rps  cpu ms/req   util
+------------------------------------------------------------
+sqlom (all optimizations)            4175      0.2395   1.00
+sqlom (unoptimized engine)           3633      0.2736   0.99
+SQLAlchemy Core (tuned)              1043      0.9547   1.00
+SQLAlchemy Core (default)             952      1.0446   1.00
+SQLAlchemy ORM (tuned)                581      1.7080   1.00
+SQLAlchemy ORM (default)              504      1.9201   0.99
+
+  sqlom vs SQLAlchemy ORM (tuned)        7.18x
+  sqlom vs SQLAlchemy ORM (default)      8.28x
+  sqlom vs SQLAlchemy Core (tuned)       4.00x

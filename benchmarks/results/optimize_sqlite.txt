@@ -1,0 +1,16 @@
+Output equivalence: all JSON-producing variants emit identical JSON (7701 bytes)
+(the "FLOOR: fetch only, no JSON" row below produces no JSON and is excluded)
+
+100 rows/request, median of 5 x 3000 requests, single-threaded
+
+variant                                    ms/req    req/s  vs base
+-------------------------------------------------------------------
+baseline (objects, N orjson callbacks)     0.1021     9795    1.00x
++ tuple-index bool (no bool() call)        0.0991    10088    1.03x
++ reuse one cursor                         0.1002     9983    1.02x
++ dicts in one pass (0 callbacks)          0.0984    10165    1.04x
+no-slots dataclass, orjson native          0.0944    10588    1.08x
+row_factory (C-driven per-row loop)        0.1032     9688    0.99x
+STACKED objects (cursor+tuple+1pass)       0.0984    10165    1.04x
+no objects at all (rows -> dicts)          0.0854    11713    1.20x
+FLOOR: fetch only, no JSON                 0.0654    15286    1.56x
