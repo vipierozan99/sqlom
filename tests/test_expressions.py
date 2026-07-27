@@ -249,6 +249,88 @@ class TestWindows:
         )
         assert "PARTITION BY t_authors.id ORDER BY t_books.id" in clause
 
+    def test_explicit_none_is_normalised_like_the_defaults(self):
+        # partition_by=() and order_by=() (the defaults) already exercise the
+        # non-None branch of _as_sequence()/_as_order_sequence(); passing None
+        # explicitly is the other input those helpers accept.
+        window = count().over(partition_by=None, order_by=None)
+        assert window.partition_by == ()
+        assert window.order_by == ()
+        assert select_of(Query(Book.id, window))[0] == "id, count(*) OVER ()"
+
+
+class TestReprAndHash:
+    """Every node type is hashable (used as dict/set keys while walking a
+    query, e.g. de-duplicating CTEs) and reprs without crashing (the only way
+    most of these are ever seen — in a traceback or a debugger)."""
+
+    def test_aggregate(self):
+        node = count(Book.id)
+        assert repr(node) == "<Aggregate count(<ColumnExpr t_books.id>)>"
+        assert hash(node) == id(node)
+
+    def test_labelled(self):
+        node = count().label("n")
+        assert repr(node) == "<Labelled <Aggregate count(*)> AS n>"
+        assert hash(node) == id(node)
+
+    def test_binary_op(self):
+        node = Book.id + 1
+        assert repr(node) == "<BinaryOp <ColumnExpr t_books.id> + 1>"
+        assert hash(node) == id(node)
+        assert node.output_name() == "expr"
+
+    def test_unary_op(self):
+        node = -Book.id
+        assert repr(node) == "<UnaryOp -<ColumnExpr t_books.id>>"
+        assert hash(node) == id(node)
+        assert node.output_name() == "expr"
+
+    def test_function_call(self):
+        node = func.lower(Book.title)
+        assert repr(node) == "<FunctionCall lower(1 args)>"
+        assert hash(node) == id(node)
+
+    def test_case(self):
+        node = case((Book.id > 1, "a"))
+        assert repr(node) == "<Case 1 when(s)>"
+        assert hash(node) == id(node)
+        assert node.output_name() == "case"
+
+    def test_over(self):
+        node = count().over()
+        assert repr(node) == "<Over <Aggregate count(*)>>"
+        assert hash(node) == id(node)
+
+    def test_condition_falls_back_to_the_base_output_name(self):
+        # Condition has no output_name() of its own — nothing selects a bare
+        # comparison, but the base Expression default still has to hold.
+        assert (Author.id == 1).output_name() == "expr"
+
+    def test_condition_is_hashable(self):
+        # Predicate.__hash__ itself, rather than a subclass override —
+        # Condition/BooleanClause/Not/InClause/ExistsClause all share it.
+        node = Author.id == 1
+        assert hash(node) == id(node)
+
+    def test_aggregate_with_an_operand_names_itself_after_it(self):
+        assert sum_(Book.id).output_name() == "sum_id"
+
+    def test_function_call_names_itself_after_the_function(self):
+        assert func.lower(Book.title).output_name() == "lower"
+
+    def test_over_names_itself_after_the_wrapped_function(self):
+        assert count().over().output_name() == "count_all"
+
+    def test_scalar_subquery_as_an_arithmetic_operand(self):
+        # Condition's own scalar-subquery branch is covered by
+        # TestScalarSubquery in test_predicates.py; BinaryOp/FunctionCall/Case
+        # route through the separate _operand_sql() helper instead. Not using
+        # select_of() here: the subquery's own FROM would confuse its naive split.
+        sql, params = Query(Book.id + Query(count(Book.id))).to_sql()
+        assert sql == "SELECT (id + (SELECT count(id) FROM t_books)) FROM t_books"
+        assert params == ()
+
 
 class TestEndToEnd:
     def test_arithmetic(self, run_query):

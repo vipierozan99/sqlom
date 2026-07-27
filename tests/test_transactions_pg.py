@@ -225,6 +225,28 @@ class TestIsolation:
                 await tx.execute(f"DELETE FROM {PROBE} WHERE id = -1")
         assert await count(engine) == 0
 
+    async def test_deferrable_is_accepted(self, engine):
+        # Only meaningful for SERIALIZABLE READ ONLY, but both engines accept
+        # the kwarg regardless — it is a no-op outside that combination.
+        async with engine.transaction(
+            isolation="serializable", readonly=True, deferrable=True
+        ) as tx:
+            await tx.fetch_all(Query(Author).limit(1))
+
+    async def test_deferrable_does_not_leak_to_the_next_borrower(self, engine):
+        # Same leak psycopg_pool has for readonly/isolation (see
+        # test_readonly_does_not_leak_to_the_next_borrower): deferrable lives on
+        # the connection, not the BEGIN, so it has to be restored on release too.
+        async with engine.transaction(
+            isolation="serializable", readonly=True, deferrable=True
+        ) as tx:
+            await tx.fetch_all(Query(Author).limit(1))
+
+        for _ in range(8):
+            async with engine.transaction() as tx:
+                await tx.execute(f"DELETE FROM {PROBE} WHERE id = -1")
+        assert await count(engine) == 0
+
     async def test_isolation_level_does_not_leak_either(self, engine):
         async with engine.transaction(isolation="serializable") as tx:
             await tx.fetch_all(Query(Author).limit(1))

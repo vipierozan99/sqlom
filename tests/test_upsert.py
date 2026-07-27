@@ -229,6 +229,18 @@ class TestValidation:
         with pytest.raises(TypeError, match="takes a model column"):
             excluded("hits")
 
+    def test_excluded_of_an_unknown_column_is_refused(self):
+        from sqlom import ColumnExpr
+
+        # Same source (Counter), but a name that table does not have. Passes
+        # the source-identity check in test_excluded_from_another_table_is_refused,
+        # then fails the deeper has-no-column check.
+        ghost = ColumnExpr(Counter, "nope", int)
+        with pytest.raises(ValueError, match="has no column 'nope'"):
+            (Insert(Counter).values(key="a")
+             .on_conflict_do_update(Counter.key, set_={"hits": excluded(ghost)})
+             .to_sql())
+
 
 class TestExcluded:
     def test_renders_qualified_by_excluded(self):
@@ -249,6 +261,12 @@ class TestExcluded:
     def test_composes_into_arithmetic(self):
         expression = Counter.hits + excluded(Counter.hits) * 2
         assert expression.to_sql(lambda: "?")[0] == "(hits + (excluded.hits * ?))"
+
+    def test_is_hashable(self):
+        # Excluded has no __hash__ override of its own; this exercises the
+        # base Expression.__hash__ that most other node types override.
+        node = excluded(Counter.hits)
+        assert hash(node) == id(node)
 
 
 @pytest.fixture

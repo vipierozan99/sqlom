@@ -90,11 +90,6 @@ def source_name(source):
     return f"{source.model.__name__} AS {alias}"
 
 
-def source_model(source):
-    """The model class behind a source, or None for a subquery."""
-    return getattr(source, "model", source) if hasattr(source, "alias") else source
-
-
 class Alias(Generic[M]):
     """An aliased reference to a model, which is what makes a self-join possible.
 

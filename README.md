@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It has a pytest suite (698 tests) covering SQL generation, codegen, joins, predicates, grouping, expressions, set operations, CTEs, writes, upserts, transactions and static types, but it is not packaged, not on PyPI, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It has a pytest suite (770 tests) covering SQL generation, codegen, joins, predicates, grouping, expressions, set operations, CTEs, writes, upserts, transactions and static types, but it is not packaged, not on PyPI, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -26,7 +26,7 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 
 ```bash
 uv sync --all-extras          # installs dev tools plus asyncpg/psycopg/orjson
-uv run pytest                 # 698 tests, including two type checkers
+uv run pytest                 # 770 tests, including two type checkers
 ```
 
 Without `uv`, `pip install pytest pytest-asyncio` and `python3 -m pytest tests/` still work; the Postgres-backed and typing tests just skip until their extras (`asyncpg`/`psycopg[binary]`/`psycopg-pool`, `mypy`/`pyright`) are installed too.
@@ -61,6 +61,9 @@ a feature cannot end up quietly asyncpg-only — `PsycopgEngine` began life with
 | `test_joins_sqlite.py` | joins end to end — real SQL *and* real hydrator, so a select list and hydrator that disagree get caught |
 | `test_engines_pg.py` | lifecycle, `fetch_all`, `fetch_json`, every query feature against a real server |
 | `test_transactions_pg.py` | commit, rollback, savepoints, isolation, the in-transaction guard, the session-reset invariant |
+| `test_transaction_base.py` | the shared `Transaction` base's abstract contract and `__repr__`, with no database |
+| `test_engine_helpers.py` | pure-function engine internals (the deprecated `$`-placeholder shim) that need no database |
+| `test_dataclass_model.py` | the `@model` decorator's validation, its metaclass descriptor, and orjson's dataclass-passthrough serialization |
 | `test_typing.py` + `typing/` | mypy and pyright over `assert_type` positives and expected-error negatives |
 
 The suite keeps earning its keep. Bugs it found, none of which were visible by

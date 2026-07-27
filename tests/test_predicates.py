@@ -66,6 +66,12 @@ class TestOrAnd:
         with pytest.raises(TypeError, match="takes predicates"):
             or_(Author.id, 5)
 
+    def test_repr(self):
+        assert repr(or_(Author.id == 1, Author.id == 2)) == (
+            "<OR [<Condition <ColumnExpr t_authors.id> = 1>, "
+            "<Condition <ColumnExpr t_authors.id> = 2>]>"
+        )
+
 
 class TestNot:
     def test_not_wraps_and_parenthesises(self):
@@ -86,6 +92,9 @@ class TestNot:
     def test_not_refuses_a_non_predicate(self):
         with pytest.raises(TypeError, match="takes a predicate"):
             not_(Author.id)
+
+    def test_repr(self):
+        assert repr(not_(Author.id == 1)) == "<NOT <Condition <ColumnExpr t_authors.id> = 1>>"
 
 
 class TestIn:
@@ -130,6 +139,10 @@ class TestIn:
         assert (where_of(Query(Author).where(Author.name.is_not_null()))[0]
                 == "name IS NOT NULL")
 
+    def test_repr(self):
+        assert repr(Author.id.in_([1, 2])) == "<IN <ColumnExpr t_authors.id>>"
+        assert repr(Author.id.not_in([1])) == "<NOT IN <ColumnExpr t_authors.id>>"
+
 
 class TestExists:
     def test_correlated_exists(self):
@@ -163,6 +176,10 @@ class TestExists:
     def test_exists_refuses_a_non_query(self):
         with pytest.raises(TypeError, match="takes a Query"):
             exists(Author.id == 1)
+
+    def test_repr(self):
+        assert repr(exists(Query(Book.id))) == "<EXISTS>"
+        assert repr(~exists(Query(Book.id))) == "<NOT EXISTS>"
 
 
 class TestScalarSubquery:

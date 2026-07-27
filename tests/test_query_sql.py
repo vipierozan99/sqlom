@@ -102,6 +102,24 @@ class TestValidation:
     def test_limit_zero_is_allowed(self):
         assert Query(Author).limit(0).to_sql()[1] == (0,)
 
+    def test_group_by_rejects_something_that_is_not_a_column_or_aggregate(self):
+        with pytest.raises(TypeError, match="takes a column or aggregate"):
+            Query(Author).group_by(5)
+
+    def test_group_by_rejects_an_unknown_column_reached_by_expression(self):
+        from sqlom import ColumnExpr
+
+        # Same trick as test_where_rejects_an_unknown_column above, but through
+        # _check_expression()/_as_expression() rather than _check(): group_by
+        # and order_by take a column expression directly, not only a predicate.
+        ghost = ColumnExpr(Author, "nope", int)
+        with pytest.raises(ValueError, match="has no column 'nope'"):
+            Query(Author).group_by(ghost)
+
+    def test_correlate_rejects_a_non_source(self):
+        with pytest.raises(TypeError, match="correlate\\(\\) takes models or aliases"):
+            Query(Author).correlate("t_books")
+
 
 class TestJoins:
     def test_inner_join_qualifies_every_column(self):
@@ -258,3 +276,64 @@ class TestHydrationKey:
         query = Query(Author).join(Book, Book.author_id == Author.id)
         assert query.is_multi_entity is False
         assert query._hydration_key is Author
+
+
+class TestRepr:
+    def test_single_model(self):
+        assert repr(Query(Author)) == "<Query Author>"
+
+    def test_joins_are_flagged(self):
+        query = Query(Author, Book).join(Book, Book.author_id == Author.id)
+        assert repr(query) == "<Query Author, Book +joins>"
+
+
+class TestRenderDefaults:
+    """`_render()` is normally reached through to_sql(), which always supplies
+    a placeholder generator. Called directly with none — as a nested render
+    might reasonably do — it falls back to a bare "?" per parameter."""
+
+    def test_no_placeholder_generator_falls_back_to_bare_question_marks(self):
+        sql, params = Query(Author).where(Author.id > 1).limit(2)._render()
+        assert sql == "SELECT id, name, active FROM t_authors WHERE id > ? LIMIT ?"
+        assert params == [1, 2]
+
+
+class TestJsonSqlCaching:
+    def test_cached_by_identity_like_to_sql(self):
+        query = Query(Author).where(Author.id > 1)
+        assert query.to_json_sql() is query.to_json_sql()
+
+    def test_different_dialects_are_cached_separately(self):
+        query = Query(Author)
+        assert query.to_json_sql(dialect="postgres") != query.to_json_sql(dialect="sqlite")
+
+
+class TestJsonBytesHelper:
+    """`json_bytes()` normalises whatever fetch_json's driver handed back. Only
+    the bytes case is exercised end to end against a real server (psycopg casts
+    to text and returns bytes on the wire); the others are unit-tested directly
+    since they depend on driver behaviour that is awkward to force from here."""
+
+    def test_bytes_pass_through_unchanged(self):
+        from sqlom import json_bytes
+
+        payload = b'[{"id": 1}]'
+        assert json_bytes(payload) is payload
+
+    def test_str_is_encoded(self):
+        from sqlom import json_bytes
+
+        assert json_bytes('[{"id": 1}]') == b'[{"id": 1}]'
+
+    def test_none_becomes_an_empty_json_array(self):
+        from sqlom import json_bytes
+
+        assert json_bytes(None) == b"[]"
+
+    def test_anything_else_is_refused_with_a_pointer_to_the_fix(self):
+        from sqlom import json_bytes
+
+        # A driver that decoded json/jsonb into a Python object would land here;
+        # failing loudly beats silently returning the wrong type.
+        with pytest.raises(TypeError, match="decoding json/jsonb into Python objects"):
+            json_bytes([{"id": 1}])

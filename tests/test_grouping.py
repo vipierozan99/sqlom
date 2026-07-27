@@ -109,6 +109,16 @@ class TestHaving:
         with pytest.raises(TypeError, match="takes a predicate"):
             Query(Book).having(count())
 
+    def test_having_on_a_labelled_aggregate(self):
+        # .label() wraps the aggregate in a Labelled node; the column-reference
+        # walk that validates having() has to see through that wrapper too.
+        sql, params = (Query(Book.author_id, count().label("n"))
+                       .group_by(Book.author_id)
+                       .having(count().label("n") > 1)
+                       .to_sql(placeholder="$"))
+        assert sql.endswith("HAVING count(*) > $1")
+        assert params == (1,)
+
 
 class TestDistinctAndOffset:
     def test_distinct(self):
@@ -153,6 +163,17 @@ class TestDerivedTables:
         sub = Query(Book.author_id).subquery("s")
         with pytest.raises(TypeError, match="cannot be selected as a whole"):
             Query(sub)
+
+    def test_subquery_needs_a_non_empty_alias(self):
+        with pytest.raises(TypeError, match="non-empty string alias"):
+            Query(Book.author_id).subquery("")
+
+    def test_referencing_an_unjoined_subquery_names_it_in_the_error(self):
+        # source_name() has a dedicated branch for a Subquery (as for CTE) so
+        # the error reads "subquery s" rather than a raw repr.
+        sub = Query(Book.author_id, count().label("n")).group_by(Book.author_id).subquery("s")
+        with pytest.raises(ValueError, match="references subquery s, which is not part"):
+            Query(Author).where(sub.n > 1)
 
     def test_subquery_parameters_number_before_the_outer_ones(self):
         sub = (Query(Book.author_id, count().label("n"))

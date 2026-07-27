@@ -66,6 +66,13 @@ class TestConstruction:
         with pytest.raises(AttributeError, match="exposes author_id, n"):
             counts.total
 
+    def test_referencing_an_unjoined_cte_names_it_in_the_error(self):
+        # source_name() has a dedicated branch for a CTE (as for Subquery)
+        # so the error reads "CTE c" rather than a raw repr.
+        counts = book_counts("c")
+        with pytest.raises(ValueError, match="references CTE c, which is not part"):
+            Query(Author).where(counts.n > 1)
+
     def test_repr(self):
         assert repr(book_counts()) == "<CTE counts>"
         tree = recursive_cte(

@@ -64,6 +64,22 @@ class TestSingleModelHydrators:
         with pytest.raises(ValueError, match="declares no columns"):
             compile_batch_hydrator(Empty)
 
+    def test_per_row_hydrator_applies_converters_too(self):
+        # test_converters_are_applied above only exercises the batch hydrator;
+        # the singular one builds its converter call the same way but from a
+        # separate code path (compile_hydrator vs compile_batch_hydrator).
+        raw = compile_hydrator(Author)((1, "ada", 1))
+        converted = compile_hydrator(Author, SQLITE_CONVERTERS)((1, "ada", 1))
+        assert raw.active == 1 and raw.active is not True
+        assert converted.active is True
+
+    def test_setting_a_column_through_the_descriptor(self):
+        # hydrate()/the compiled hydrators write the storage slot directly and
+        # never go through Column.__set__; this is the only path that does.
+        obj = compile_hydrator(Author)((1, "ada", True))
+        obj.name = "beatrice"
+        assert obj.name == "beatrice"
+
 
 class TestReflectiveHydrate:
     def test_round_trip(self):
@@ -182,6 +198,14 @@ class TestJoinHydrator:
     def test_empty_entity_list_is_refused(self):
         with pytest.raises(ValueError, match="at least one entity"):
             compile_join_hydrator([])
+
+    def test_a_model_entity_with_no_columns_is_refused(self):
+        class Empty:
+            __tablename__ = "empty"
+            __columns__ = {}
+
+        with pytest.raises(ValueError, match="declares no columns"):
+            compile_join_hydrator([("model", Empty, False)])
 
     def test_source_is_attached(self):
         source = compile_join_hydrator([("model", Author, False)]).__source__
