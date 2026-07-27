@@ -11,12 +11,28 @@ predicate tree binds an unknown number of parameters and numbering has to stay i
 step across the whole render. `resolve(source, name)` renders a column reference,
 qualified or bare depending on whether the query has more than one source.
 
+**Typing.** `Expression` is generic in the Python type it produces, so
+`ColumnExpr[int]` compares against ints and `Query(User, Post.title)` resolves to
+`list[tuple[User, str]]`. The comparison operators deliberately narrow their
+right-hand side to that type, which is what makes `User.id > "abc"` an error rather
+than a runtime surprise. See tests/typing/.
+
 **"Source" rather than "model"** is the load-bearing idea. A column belongs to a
 model class, an `Alias` of one, or a `Subquery` — and once aliases exist, the model
 class alone cannot identify which table a column came from, because a self-join has
 the same model twice. Every place that used to compare model classes now compares
 sources by identity.
 """
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Generic, Iterable, TypeVar, overload
+
+if TYPE_CHECKING:
+    from .query import Query
+
+T = TypeVar("T")
+M = TypeVar("M")
 
 # `x = NULL` is never true in SQL — comparison against NULL yields unknown, so a
 # row is neither matched nor excluded. Equality against None becomes IS / IS NOT,
@@ -58,7 +74,7 @@ def source_model(source):
     return getattr(source, "model", source) if hasattr(source, "alias") else source
 
 
-class Alias:
+class Alias(Generic[M]):
     """An aliased reference to a model, which is what makes a self-join possible.
 
         mgr = Alias(Employee, "mgr")
@@ -71,17 +87,30 @@ class Alias:
 
     __slots__ = ("model", "alias", "__columns__", "__tablename__")
 
-    def __init__(self, model, alias):
+    if TYPE_CHECKING:
+        model: type[M]
+        alias: str
+        __columns__: dict[str, Any]
+        __tablename__: str
+
+    def __init__(self, model: type[M], alias: str) -> None:
         if not hasattr(model, "__columns__"):
             raise TypeError(f"Alias() takes a model, got {model!r}")
         if not alias or not isinstance(alias, str):
             raise TypeError("Alias() needs a non-empty string alias")
         self.model = model
         self.alias = alias
-        self.__columns__ = model.__columns__
-        self.__tablename__ = model.__tablename__
+        # `type[M]` carries no declaration of these; they come from ModelMeta or
+        # the @model decorator at runtime, checked by the hasattr above.
+        self.__columns__ = model.__columns__  # type: ignore[attr-defined]
+        self.__tablename__ = model.__tablename__  # type: ignore[attr-defined]
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> ColumnExpr[Any]:
+        # Statically this is ColumnExpr[Any]: an alias resolves columns from the
+        # model's runtime column map, and a type checker has no way to know which
+        # names exist or what they hold. Reaching a column off the model instead
+        # (`Employee.id`) keeps the precise type; off an alias you trade that for
+        # the self-join.
         columns = self.__columns__
         if name in columns:
             return ColumnExpr(self, name, columns[name].py_type)
@@ -118,7 +147,7 @@ class Subquery:
 
     __slots__ = ("query", "alias", "__columns__", "__tablename__")
 
-    def __init__(self, query, alias):
+    def __init__(self, query: Query[Any], alias: str) -> None:
         if not alias or not isinstance(alias, str):
             raise TypeError("subquery() needs a non-empty string alias")
         self.query = query
@@ -129,7 +158,9 @@ class Subquery:
             for name, py_type in query.output_columns()
         }
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> ColumnExpr[Any]:
+        # ColumnExpr[Any]: a derived table's output names come from the inner
+        # query's entity list at runtime, which a checker cannot enumerate.
         columns = self.__columns__
         if name in columns:
             return ColumnExpr(self, name, columns[name].py_type)
@@ -160,8 +191,13 @@ def from_sql(source, nxt):
 # --------------------------------------------------------------------------
 
 
-class Expression:
-    """Anything that renders to a value-producing SQL fragment."""
+class Expression(Generic[T]):
+    """Anything that renders to a value-producing SQL fragment.
+
+    Generic in the Python type the fragment produces: `ColumnExpr[int]`,
+    `Aggregate[int]`. That parameter is what lets the comparison operators reject a
+    wrong-typed right-hand side, and what lets `Query` work out its row type.
+    """
 
     __slots__ = ()
 
@@ -171,50 +207,57 @@ class Expression:
     def sources(self):
         return ()
 
-    # Comparisons build predicates rather than booleans.
-    def __eq__(self, other):
+    # Comparisons build predicates rather than booleans. The right-hand side is
+    # narrowed to this expression's own type (or None, or another expression of
+    # the same type), so `User.id > "abc"` is a type error.
+    #
+    # `__eq__`/`__ne__` returning something other than bool is an incompatible
+    # override of `object`, and unavoidable for a query builder — SQLAlchemy has
+    # the same ignore for the same reason. `__hash__` is redefined below so these
+    # objects stay usable as dict keys.
+    def __eq__(self, other: T | Expression[T] | None) -> Condition:  # type: ignore[override]
         return Condition(self, "=", other)
 
-    def __ne__(self, other):
+    def __ne__(self, other: T | Expression[T] | None) -> Condition:  # type: ignore[override]
         return Condition(self, "!=", other)
 
-    def __gt__(self, other):
+    def __gt__(self, other: T | Expression[T]) -> Condition:
         return Condition(self, ">", other)
 
-    def __ge__(self, other):
+    def __ge__(self, other: T | Expression[T]) -> Condition:
         return Condition(self, ">=", other)
 
-    def __lt__(self, other):
+    def __lt__(self, other: T | Expression[T]) -> Condition:
         return Condition(self, "<", other)
 
-    def __le__(self, other):
+    def __le__(self, other: T | Expression[T]) -> Condition:
         return Condition(self, "<=", other)
 
-    def in_(self, values):
+    def in_(self, values: Iterable[T] | Query[Any]) -> InClause:
         """`IN (...)`. Takes a sequence of values or a `Query` subquery."""
         return InClause(self, values, negated=False)
 
-    def not_in(self, values):
+    def not_in(self, values: Iterable[T] | Query[Any]) -> InClause:
         return InClause(self, values, negated=True)
 
-    def like(self, pattern):
+    def like(self, pattern: str) -> Condition:
         return Condition(self, "LIKE", pattern)
 
-    def is_null(self):
+    def is_null(self) -> Condition:
         return Condition(self, "=", None)
 
-    def is_not_null(self):
+    def is_not_null(self) -> Condition:
         return Condition(self, "!=", None)
 
-    def label(self, name):
+    def label(self, name: str) -> Labelled[T]:
         """Name this expression in the select list (`AS name`)."""
         return Labelled(self, name)
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return id(self)
 
 
-class ColumnExpr(Expression):
+class ColumnExpr(Expression[T]):
     """A column reference, produced by class-level attribute access.
 
     `source` is the model class, `Alias` or `Subquery` the column belongs to.
@@ -224,7 +267,12 @@ class ColumnExpr(Expression):
 
     __slots__ = ("source", "name", "py_type")
 
-    def __init__(self, source, name, py_type):
+    if TYPE_CHECKING:
+        source: Any
+        name: str
+        py_type: type[T]
+
+    def __init__(self, source: Any, name: str, py_type: type[T]) -> None:
         self.source = source
         self.name = name
         self.py_type = py_type
@@ -249,12 +297,12 @@ class ColumnExpr(Expression):
         return f"<ColumnExpr {source_prefix(self.source)}.{self.name}>"
 
 
-class Labelled(Expression):
+class Labelled(Expression[T]):
     """`expr AS name` in a select list."""
 
     __slots__ = ("expr", "name")
 
-    def __init__(self, expr, name):
+    def __init__(self, expr: Expression[T], name: str) -> None:
         self.expr = expr
         self.name = name
 
@@ -282,12 +330,13 @@ class Labelled(Expression):
         return f"<Labelled {self.expr!r} AS {self.name}>"
 
 
-class Aggregate(Expression):
+class Aggregate(Expression[T]):
     """`count(x)`, `sum(x)`, and friends. Usable in a select list and in HAVING."""
 
     __slots__ = ("func", "operand", "distinct")
 
-    def __init__(self, func, operand=None, distinct=False):
+    def __init__(self, func: str, operand: Expression[Any] | None = None,
+                 distinct: bool = False) -> None:
         self.func = func
         self.operand = operand
         self.distinct = distinct
@@ -324,24 +373,32 @@ class Aggregate(Expression):
         return f"<Aggregate {self.func}({inner})>"
 
 
-def count(column=None, distinct=False):
+def count(column: Expression[Any] | None = None,
+          distinct: bool = False) -> Aggregate[int]:
     """`count(*)` with no argument, `count(col)` with one."""
     return Aggregate("count", column, distinct)
 
 
-def sum_(column, distinct=False):
+def sum_(column: Expression[Any], distinct: bool = False) -> Aggregate[Any]:
+    """`sum(col)`. Typed `Any` rather than the column's type: Postgres widens
+    `sum(int)` to bigint and `sum(numeric)` to numeric, and psycopg/asyncpg may
+    hand back `Decimal`. Claiming `int` here would be a lie the checker enforces."""
     return Aggregate("sum", column, distinct)
 
 
-def avg(column, distinct=False):
+def avg(column: Expression[Any], distinct: bool = False) -> Aggregate[Any]:
+    """`avg(col)`. `Any` for the same reason as `sum_`, more so — the average of
+    an integer column is `numeric` in Postgres and arrives as `Decimal`."""
     return Aggregate("avg", column, distinct)
 
 
-def min_(column):
+def min_(column: Expression[T]) -> Aggregate[T]:
+    """`min(col)`. Keeps the column's type: a minimum is one of the values."""
     return Aggregate("min", column)
 
 
-def max_(column):
+def max_(column: Expression[T]) -> Aggregate[T]:
+    """`max(col)`. Keeps the column's type, as `min_` does."""
     return Aggregate("max", column)
 
 
@@ -350,7 +407,7 @@ def max_(column):
 # --------------------------------------------------------------------------
 
 
-class Predicate(Expression):
+class Predicate(Expression[bool]):
     """Anything that renders to a boolean SQL fragment.
 
     `&`, `|` and `~` compose them. **Parenthesise the operands**: Python binds `&`
@@ -361,16 +418,16 @@ class Predicate(Expression):
 
     __slots__ = ()
 
-    def __and__(self, other):
+    def __and__(self, other: Predicate) -> Predicate:
         return and_(self, other)
 
-    def __or__(self, other):
+    def __or__(self, other: Predicate) -> Predicate:
         return or_(self, other)
 
-    def __invert__(self):
+    def __invert__(self) -> Predicate:
         return Not(self)
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return id(self)
 
 
@@ -384,7 +441,7 @@ class Condition(Predicate):
 
     __slots__ = ("left", "op", "right")
 
-    def __init__(self, left, op, right):
+    def __init__(self, left: Expression[Any], op: str, right: Any) -> None:
         self.left = left
         self.op = op
         self.right = right
@@ -454,7 +511,7 @@ class BooleanClause(Predicate):
 
     __slots__ = ("op", "parts")
 
-    def __init__(self, op, parts):
+    def __init__(self, op: str, parts: Iterable[Predicate]) -> None:
         self.op = op
         self.parts = list(parts)
 
@@ -481,7 +538,7 @@ class BooleanClause(Predicate):
 class Not(Predicate):
     __slots__ = ("part",)
 
-    def __init__(self, part):
+    def __init__(self, part: Predicate) -> None:
         self.part = part
 
     def to_sql(self, nxt, resolve=_bare):
@@ -501,7 +558,8 @@ class InClause(Predicate):
 
     __slots__ = ("left", "values", "negated")
 
-    def __init__(self, left, values, negated=False):
+    def __init__(self, left: Expression[Any], values: Any,
+                 negated: bool = False) -> None:
         self.left = left
         self.values = values
         self.negated = negated
@@ -536,7 +594,7 @@ class ExistsClause(Predicate):
 
     __slots__ = ("query", "negated")
 
-    def __init__(self, query, negated=False):
+    def __init__(self, query: Query[Any], negated: bool = False) -> None:
         self.query = query
         self.negated = negated
 
@@ -549,24 +607,24 @@ class ExistsClause(Predicate):
     def sources(self):
         return ()
 
-    def __invert__(self):
+    def __invert__(self) -> Predicate:
         return ExistsClause(self.query, not self.negated)
 
     def __repr__(self):
         return f"<{'NOT EXISTS' if self.negated else 'EXISTS'}>"
 
 
-def and_(*predicates):
+def and_(*predicates: Predicate) -> Predicate:
     """Combine predicates with AND. One argument returns it unchanged."""
     return _combine("AND", predicates)
 
 
-def or_(*predicates):
+def or_(*predicates: Predicate) -> Predicate:
     """Combine predicates with OR. One argument returns it unchanged."""
     return _combine("OR", predicates)
 
 
-def _combine(op, predicates):
+def _combine(op: str, predicates: Iterable[Predicate]) -> Predicate:
     flat = []
     for predicate in predicates:
         if not isinstance(predicate, Predicate):
@@ -587,7 +645,7 @@ def _combine(op, predicates):
     return BooleanClause(op, flat)
 
 
-def not_(predicate):
+def not_(predicate: Predicate) -> Predicate:
     if not isinstance(predicate, Predicate):
         raise TypeError(
             f"not_() takes a predicate, got {type(predicate).__name__}"
@@ -595,7 +653,7 @@ def not_(predicate):
     return ~predicate
 
 
-def exists(query):
+def exists(query: Query[Any]) -> Predicate:
     """`EXISTS (query)`. Negate with `~exists(query)`."""
     if not hasattr(query, "_render"):
         raise TypeError(f"exists() takes a Query, got {type(query).__name__}")

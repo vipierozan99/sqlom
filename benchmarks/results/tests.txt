@@ -1,24 +1,29 @@
 Test suite output. Run: python3 -m pytest tests/
 
 Tiers: tests needing no server (SQL generation, codegen, predicates,
-aliases, join kinds, grouping, and joins end-to-end on sqlite) always run.
-Engine and transaction tests need PostgreSQL and skip with a reason
-otherwise; --pg-required turns that skip into a failure for CI.
+aliases, join kinds, grouping, joins end-to-end on sqlite, and the type
+checks) always run. Engine and transaction tests need PostgreSQL and skip
+with a reason otherwise; --pg-required turns that skip into a failure.
 
 Both PostgreSQL engines are parameterised, so a feature cannot be quietly
-asyncpg-only -- PsycopgEngine started out with no acquire() at all.
+asyncpg-only. Likewise both type checkers are run, because they disagree.
 
 --- per file ---
 tests/test_aliases.py            16 passed in 0.05s 
 tests/test_conditions.py         19 passed in 0.03s 
-tests/test_engines_pg.py         65 passed in 1.23s 
-tests/test_grouping.py           43 passed in 0.08s 
+tests/test_engines_pg.py         65 passed in 1.40s 
+tests/test_grouping.py           43 passed in 0.07s 
 tests/test_hydrators.py          29 passed in 0.03s 
-tests/test_join_kinds.py         16 passed in 0.12s 
+tests/test_join_kinds.py         16 passed in 0.06s 
 tests/test_joins_sqlite.py       18 passed in 0.07s 
-tests/test_predicates.py         35 passed in 0.07s 
+tests/test_predicates.py         35 passed in 0.08s 
 tests/test_query_sql.py          46 passed in 0.04s 
-tests/test_transactions_pg.py    50 passed in 1.58s 
+tests/test_transactions_pg.py    50 passed in 1.60s 
+tests/test_typing.py             3 passed in 1.27s 
 
 --- total ---
-============================= 337 passed in 2.83s ==============================
+============================= 340 passed in 4.29s ==============================
+
+--- type checkers, directly ---
+mypy    Success: no issues found in 2 source files
+pyright 0 errors, 0 warnings, 0 informations

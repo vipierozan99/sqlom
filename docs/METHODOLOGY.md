@@ -338,7 +338,7 @@ came from a standard tool" is not by itself a correctness argument.
 ```bash
 pip install sqlalchemy orjson asyncpg psycopg[binary] psycopg-pool attrs
 pip install fastapi uvicorn httptools uvloop locust   # end-to-end + generator audit
-pip install pytest pytest-asyncio                     # test suite
+pip install pytest pytest-asyncio mypy pyright        # test suite + type checks
 
 # correctness first: the benchmarks measure whatever the library does, so a wrong
 # library is a fast wrong answer. Postgres tests skip if no server is reachable.

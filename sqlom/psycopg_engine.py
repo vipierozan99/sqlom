@@ -15,15 +15,22 @@ mapper rather than two different transaction policies.
 psycopg3, which suits the positional hydrator directly.
 """
 
-from contextlib import asynccontextmanager
+from __future__ import annotations
+
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+
+from typing import Any, AsyncIterator, Callable, TypeVar
 
 from .compile import (
     PSYCOPG_CONVERTERS,
     compile_batch_hydrator,
     compile_join_hydrator,
 )
+from .query import Query
 from .query import json_bytes as _json_bytes
 from .transaction import _ACTIVE, Transaction
+
+R = TypeVar("R")
 
 
 class PsycopgTransaction(Transaction):
@@ -51,7 +58,9 @@ class PsycopgTransaction(Transaction):
         # protocol and reject multi-statement strings.
         return await self.connection.execute(sql, args or None)
 
-    def transaction(self, **kwargs):
+    def transaction(
+        self, **kwargs: Any
+    ) -> AbstractAsyncContextManager[Transaction]:
         """Nested block — psycopg issues a SAVEPOINT."""
         return _psycopg_block(self._engine, self.connection, self._depth + 1, kwargs)
 
@@ -72,7 +81,7 @@ class PsycopgEngine:
         self.conninfo = conninfo
         self.pool = None
         self._pool_kwargs = pool_kwargs
-        self._hydrators = {}
+        self._hydrators: dict[Any, Callable[[Any], Any]] = {}
 
     async def connect(self):
         """Open the pool. Idempotent — a second call would otherwise leak the
@@ -125,7 +134,7 @@ class PsycopgEngine:
         return hydrator
 
     @asynccontextmanager
-    async def acquire(self):
+    async def acquire(self) -> AsyncIterator[Any]:
         """Raw connection access, for anything that is not a `Query`.
 
         Unlike the asyncpg engine there is no dirty-tracking to do: this engine
@@ -136,7 +145,10 @@ class PsycopgEngine:
             yield conn
 
     @asynccontextmanager
-    async def transaction(self, *, isolation=None, readonly=None, deferrable=None):
+    async def transaction(
+        self, *, isolation: str | None = None, readonly: bool | None = None,
+        deferrable: bool | None = None,
+    ) -> AsyncIterator[PsycopgTransaction]:
         """Several statements on one connection, committed together.
 
         `isolation` accepts the same names as the asyncpg engine
@@ -198,7 +210,7 @@ class PsycopgEngine:
                 f"uncommitted state. Use tx.{method}() instead."
             )
 
-    async def fetch_all(self, query):
+    async def fetch_all(self, query: Query[R]) -> list[R]:
         self._reject_if_in_transaction("fetch_all")
         sql, params = query.to_sql(placeholder="%s")
         async with self._require_pool().connection() as conn:
@@ -206,7 +218,7 @@ class PsycopgEngine:
             rows = await cur.fetchall()
         return self._hydrator_for(query)(rows)
 
-    async def fetch_json(self, query):
+    async def fetch_json(self, query: Query[Any]) -> bytes:
         """Result set as JSON bytes built by Postgres, no per-row Python objects.
 
         The `psycopg` dialect casts the aggregate to text precisely so this stays

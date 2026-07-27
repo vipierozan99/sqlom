@@ -1,15 +1,22 @@
+from __future__ import annotations
+
 import itertools
 import re
 import weakref
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+
+from typing import Any, AsyncIterator, Callable, TypeVar
 
 from .compile import (
     ASYNCPG_CONVERTERS,
     compile_batch_hydrator,
     compile_join_hydrator,
 )
+from .query import Query
 from .query import json_bytes as _json_bytes
 from .transaction import _ACTIVE, Transaction
+
+R = TypeVar("R")
 
 
 class AsyncpgTransaction(Transaction):
@@ -28,7 +35,9 @@ class AsyncpgTransaction(Transaction):
     async def execute(self, sql, *args):
         return await self.connection.execute(sql, *args)
 
-    def transaction(self, **kwargs):
+    def transaction(
+        self, **kwargs: Any
+    ) -> AbstractAsyncContextManager[Transaction]:
         """Nested block. asyncpg turns a nested `transaction()` into a SAVEPOINT."""
         return _asyncpg_block(self._engine, self.connection, self._depth + 1, kwargs)
 
@@ -91,12 +100,12 @@ class DatabaseEngine:
         self.pool = None
         self.conditional_reset = conditional_reset
         self._pool_kwargs = pool_kwargs
-        self._hydrators = {}
+        self._hydrators: dict[Any, Callable[[Any], Any]] = {}
         # Connections needing a SQL reset on release. A WeakSet of the real
         # Connection objects: they are hashable by identity and weakref-able, so
         # this neither keeps closed connections alive nor risks the id() reuse a
         # set of integers would.
-        self._dirty = weakref.WeakSet()
+        self._dirty: weakref.WeakSet[Any] = weakref.WeakSet()
         self.reset_count = 0
 
     async def connect(self):
@@ -157,7 +166,7 @@ class DatabaseEngine:
         self._dirty.add(self._real(conn))
 
     @asynccontextmanager
-    async def acquire(self):
+    async def acquire(self) -> AsyncIterator[Any]:
         """Raw connection access. Marks the connection dirty, so it gets the
         full session reset on release — use this for anything that is not a
         `Query`, including transactions, `SET`, `LISTEN` and DDL."""
@@ -166,7 +175,10 @@ class DatabaseEngine:
             yield conn
 
     @asynccontextmanager
-    async def transaction(self, *, isolation=None, readonly=False, deferrable=False):
+    async def transaction(
+        self, *, isolation: str | None = None, readonly: bool = False,
+        deferrable: bool = False,
+    ) -> AsyncIterator[AsyncpgTransaction]:
         """Several statements on one connection, committed together.
 
         Commits on clean exit, rolls back on any exception. Yields a
@@ -182,7 +194,7 @@ class DatabaseEngine:
         state behind, which is exactly what the conditional-reset invariant
         assumes `fetch_all` never does. See sqlom/transaction.py.
         """
-        kwargs = {"readonly": readonly, "deferrable": deferrable}
+        kwargs: dict[str, Any] = {"readonly": readonly, "deferrable": deferrable}
         if isolation is not None:
             kwargs["isolation"] = isolation
         async with self.acquire() as conn:
@@ -235,14 +247,14 @@ class DatabaseEngine:
                 f"uncommitted state. Use tx.{method}() instead."
             )
 
-    async def fetch_all(self, query):
+    async def fetch_all(self, query: Query[R]) -> list[R]:
         self._reject_if_in_transaction("fetch_all")
         sql, params = query.to_sql(placeholder="$")
         async with self._require_pool().acquire() as conn:
             rows = await conn.fetch(sql, *params)
         return self._hydrator_for(query)(rows)
 
-    async def fetch_json(self, query):
+    async def fetch_json(self, query: Query[Any]) -> bytes:
         """Return the result set as JSON bytes built by Postgres itself.
 
         No per-row Python objects are created — the database does the row

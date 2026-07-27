@@ -43,7 +43,16 @@ The check is scoped to the same engine, so a second engine remains usable inside
 block.
 """
 
+from __future__ import annotations
+
 import contextvars
+from contextlib import AbstractAsyncContextManager
+from typing import TYPE_CHECKING, Any, TypeVar
+
+if TYPE_CHECKING:
+    from .query import Query
+
+R = TypeVar("R")
 
 # Holds the innermost active Transaction for the current task. contextvars, not an
 # instance attribute: one engine serves many concurrent tasks, and each needs its
@@ -52,7 +61,7 @@ import contextvars
 _ACTIVE = contextvars.ContextVar("sqlom_active_transaction", default=None)
 
 
-def active_transaction():
+def active_transaction() -> Transaction | None:
     """The innermost `Transaction` running in this task, or None."""
     return _ACTIVE.get()
 
@@ -62,6 +71,11 @@ class Transaction:
     supply the three primitives; everything else is shared."""
 
     __slots__ = ("_engine", "connection", "_token", "_depth")
+
+    # Supplied by the driver-specific subclasses; declared here because the shared
+    # read methods below use them.
+    _placeholder: str
+    _dialect: str
 
     def __init__(self, engine, connection, depth=0):
         self._engine = engine
@@ -97,19 +111,21 @@ class Transaction:
         """
         raise NotImplementedError
 
-    def transaction(self, **kwargs):
+    def transaction(
+        self, **kwargs: Any
+    ) -> AbstractAsyncContextManager[Transaction]:
         """A nested block, implemented as a savepoint."""
         raise NotImplementedError
 
     # --- the read API, shared -----------------------------------------------
 
-    async def fetch_all(self, query):
+    async def fetch_all(self, query: Query[R]) -> list[R]:
         """Hydrated model instances, read inside this transaction."""
         sql, params = query.to_sql(placeholder=self._placeholder)
         rows = await self._fetch_rows(sql, params)
         return self._engine._hydrator_for(query)(rows)
 
-    async def fetch_json(self, query):
+    async def fetch_json(self, query: Query[Any]) -> bytes:
         """JSON bytes built by the database, read inside this transaction."""
         from .query import json_bytes
 
@@ -117,7 +133,7 @@ class Transaction:
         return json_bytes(await self._fetch_value(sql, params))
 
     @property
-    def depth(self):
+    def depth(self) -> int:
         """0 for the outermost transaction, 1+ for savepoints."""
         return self._depth
 

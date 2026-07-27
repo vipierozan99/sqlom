@@ -4,14 +4,14 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It has a pytest suite (337 tests) covering SQL generation, codegen, joins, predicates, grouping and transactions, but it is not packaged, not on PyPI, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It has a pytest suite (340 tests) covering SQL generation, codegen, joins, predicates, grouping, transactions and static types, but it is not packaged, not on PyPI, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
 ## 🎯 Key Features (proposed)
 
 * **Compiled hydration:** A per-model `row -> object` function is code-generated once, so field stores are plain `STORE_ATTR` bytecode against a fixed slot rather than a `setattr()` loop. ~4.9x faster than a reflective loop in isolation.
-* **Query builder:** A SQLAlchemy-Core-like builder (`User.id > 10`) built on descriptors.
+* **Query builder:** A SQLAlchemy-Core-like builder (`User.id > 10`) built on descriptors, **statically typed** — `User.id` is `ColumnExpr[int]`, `user.id` is `int`, and `fetch_all(Query(User, Post))` is `list[tuple[User, Post]]`. Verified against mypy *and* pyright in `tests/typing/`.
 * **Two schema styles:** a custom-metaclass model, or real stdlib `@dataclass(slots=True)` models that still support `User.id > 100`.
 * **Slotted objects:** 73 B/instance vs 113 B for a `__dict__`-backed equivalent.
 * **Async-first:** Native `asyncpg` pool integration — ~6x SQLAlchemy's async ORM under concurrent load, i.e. ~1 core to serve what the ORM needs ~6 cores for. Costs ~10-25% more CPU than doing no object mapping at all.
@@ -25,7 +25,7 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 
 ```bash
 pip install pytest pytest-asyncio
-python3 -m pytest tests/            # 337 tests
+python3 -m pytest tests/            # 340 tests, including two type checkers
 ```
 
 Two tiers. Everything testable without a server is — SQL generation, code
@@ -51,6 +51,7 @@ a feature cannot end up quietly asyncpg-only — `PsycopgEngine` began life with
 | `test_joins_sqlite.py` | joins end to end — real SQL *and* real hydrator, so a select list and hydrator that disagree get caught |
 | `test_engines_pg.py` | lifecycle, `fetch_all`, `fetch_json`, every query feature against a real server |
 | `test_transactions_pg.py` | commit, rollback, savepoints, isolation, the in-transaction guard, the session-reset invariant |
+| `test_typing.py` + `typing/` | mypy and pyright over `assert_type` positives and expected-error negatives |
 
 The suite keeps earning its keep. Bugs it found, none of which were visible by
 reading the code: a filtering join returned 1-tuples instead of instances; a
@@ -60,6 +61,47 @@ rather than unpacking it, so any single-column select (and any single-column mod
 came back nested; and a RIGHT-joined single-entity query took the fast hydrator and
 built an object whose every field was `None`, because dispatch and the cache key
 were deciding nullability two different ways.
+
+---
+
+## 🔬 Type-level tests
+
+Types are only as good as the evidence that they hold, and type errors are invisible to `pytest` by default. **Yes, you can test types in Python** — three techniques, all used in [`tests/typing/`](tests/typing/):
+
+**1. `typing.assert_type` for positive assertions.** Stdlib since 3.11; a checker verifies the inferred type matches *exactly*, and at runtime it does nothing.
+
+```python
+assert_type(Author.id, ColumnExpr[int])                       # passes
+assert_type(Query(Author, Book), Query[tuple[Author, Book]])  # passes
+assert_type(Author.id, ColumnExpr[str])                       # checker error
+```
+
+Exactness is the point: `assert_type(x, object)` fails even though everything is an object, so a type that has silently decayed to `Any` is caught. That is the failure mode that matters, because `Any` makes every other assertion pass.
+
+**2. Expected errors for negative assertions.** A checker reporting nothing does not prove mistakes get caught. Both checkers can be told a line must fail:
+
+```python
+Author.id > "abc"   # type: ignore[operator]  # pyright: ignore[reportOperatorIssue]
+```
+
+With mypy's `warn_unused_ignores` and pyright's `reportUnnecessaryTypeIgnoreComment`, a suppression that stops being needed becomes an error. That is what turns a comment into a test.
+
+**3. Run the checkers from the suite.** `tests/test_typing.py` shells out to both and asserts they are clean. Both, because they disagree — pyright is stricter about descriptor overloads, and the two use different diagnostic codes for the same mistake. A third test *guards the guard*: it strips every suppression and requires mypy to then report an error on each of those lines, so the negative file cannot quietly stop proving anything.
+
+Verified by breaking things on purpose: loosening `__gt__` to accept `Any`, and letting `Column.__get__` return `ColumnExpr[Any]`, each fail the suite.
+
+### What is deliberately untyped
+
+- **`@model` dataclass models.** Their descriptors live on the *metaclass*, and no checker models a metaclass data descriptor shadowing a class attribute. `ModelMeta` models are fully typed; that is the trade for real `dataclasses` interop.
+- **Columns off an `Alias` or `Subquery`** — `ColumnExpr[Any]`, since both resolve names from a runtime map via `__getattr__`. Reach the column off the model for the precise type.
+- **`sum_` and `avg`** — `Aggregate[Any]`. Postgres widens `sum(int)` to bigint and `avg(int)` to numeric, which arrives as `Decimal`; claiming `int` would be a lie the checker would then enforce. `count` is `int`, `min_`/`max_` keep the column's type.
+- **`column == wrong_type`.** Not catchable, by anyone: Python falls back to `object.__eq__`, which accepts anything. `>` and `<` have no such fallback and *are* caught. SQLAlchemy has the same hole for the same reason.
+- **Six or more selected entities** degrade to `tuple[Any, ...]`, and **outer-join nullability** is not tracked — `outer_join` is called after the row type is fixed, so the second slot is typed `Post` where at runtime it is `Post | None`.
+
+```bash
+pip install mypy pyright
+python3 -m pytest tests/test_typing.py
+```
 
 ---
 
@@ -135,7 +177,25 @@ class ModelMeta(type):
         return super().__new__(mcs, name, bases, namespace)
 ```
 
-**Static typing caveat:** because `User.id` returns a `ColumnExpr` (not an `int`) at the class level, pyright/mypy will not natively infer `User.id > 100` as a valid, typed comparison without a plugin or `.pyi` stub that teaches the type checker about the descriptor's dual return type. This is the same category of problem as building first-class typing for a field-name descriptor pattern — don't advertise "full IDE autocomplete + static type inference" until that stub/plugin actually exists and is verified against `mypy --strict` and `pyright` in CI.
+**Static typing works, and is tested.** An earlier version of this README said it couldn't without a plugin or a stub. That was wrong: an overloaded descriptor `__get__` expresses the dual return type directly.
+
+```python
+User.id                 # ColumnExpr[int]   — class access
+user.id                 # int               — instance access
+User.id > 100           # Condition
+User.id > "abc"         # type error, in both mypy and pyright
+User.typo               # type error
+```
+
+The overload is the whole trick — `__get__(self, obj: None, ...) -> ColumnExpr[T]` for class access, `__get__(self, obj: object, ...) -> T` for instance access — and `Column(int)` is a `Column[int]`, so `T` follows from the declaration. `Query` is generic in its row type, so this holds end to end:
+
+```python
+authors = await db.fetch_all(Query(User))                    # list[User]
+pairs   = await db.fetch_all(Query(User, Post).join(...))     # list[tuple[User, Post]]
+counts  = await db.fetch_all(Query(Post.user_id, count()))    # list[tuple[int, int]]
+```
+
+Verified against **both mypy and pyright** in `tests/typing/`, run from `pytest`. See [§Type-level tests](#-type-level-tests) for how that is done and what is deliberately left untyped.
 
 ### 1b. Or use real stdlib dataclasses
 

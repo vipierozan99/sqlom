@@ -11,14 +11,18 @@ Both factories attach the generated source to the returned function as
 `__source__` so the codegen stays inspectable rather than being magic.
 """
 
+from typing import Any, Callable, Dict
+
 # Converters applied per column *type* during hydration. Drivers differ in
 # what they hand back: sqlite3 returns 0/1 for booleans, whereas asyncpg
 # returns real Python bools. Passing the right map keeps output identical
 # across backends instead of silently leaking driver-native types into JSON.
-SQLITE_CONVERTERS = {bool: bool}
-ASYNCPG_CONVERTERS = {}
+Converters = Dict[type, Callable[[Any], Any]]
+
+SQLITE_CONVERTERS: Converters = {bool: bool}
+ASYNCPG_CONVERTERS: Converters = {}
 # psycopg3 decodes Postgres booleans to real Python bools, like asyncpg.
-PSYCOPG_CONVERTERS = {}
+PSYCOPG_CONVERTERS: Converters = {}
 
 
 def compile_hydrator(model_cls, converters=None):

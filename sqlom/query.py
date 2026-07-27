@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any, Generic, Iterable, Self, TypeVar, Union, overload
+
 from .expr import (
     Aggregate,
     Alias,
@@ -16,7 +20,7 @@ from .expr import (
 # How each backend spells "aggregate these rows into one JSON array", plus
 # how it renders a boolean. sqlite has no bool type (columns come back as
 # 0/1), so booleans need an explicit cast to get real JSON true/false.
-DIALECTS = {
+DIALECTS: dict[str, dict[str, Any]] = {
     "sqlite": {
         "placeholder": "?",
         "agg": "json_group_array",
@@ -56,7 +60,22 @@ JOIN_KINDS = {
 }
 
 
-def json_bytes(payload):
+R = TypeVar("R")
+T = TypeVar("T")
+T2 = TypeVar("T2")
+T3 = TypeVar("T3")
+T4 = TypeVar("T4")
+M = TypeVar("M")
+
+# What may be selected, and the Python type it contributes to the row. Writing it
+# as one union rather than a family of overloads per model/column combination is
+# what keeps Query.__init__ to seven overloads instead of 2**n of them: a checker
+# solves T independently for each argument, so `Query(User, Post.title)` gives
+# `tuple[User, str]` without anyone enumerating that pairing.
+_Sel = Union[type[T], "Alias[T]", "Expression[T]"]
+
+
+def json_bytes(payload: Any) -> bytes:
     """Normalise a DB-side JSON result to bytes, or say why it can't be.
 
     `fetch_json` promises response-ready bytes — that is its whole reason to
@@ -77,7 +96,7 @@ def json_bytes(payload):
     )
 
 
-class Query:
+class Query(Generic[R]):
     """A SELECT over one or more sources.
 
         Query(User)                                        -> [User]
@@ -90,6 +109,36 @@ class Query:
     `select(User, Post)`. An entity that an outer join can leave unmatched arrives
     as `None`.
     """
+
+    # Row type per arity. A lone model yields instances, so `Query(User)` is
+    # `Query[User]`; a lone expression yields one-tuples, matching runtime and
+    # SQLAlchemy's `select(col)`. Past five entities the row degrades to
+    # `tuple[Any, ...]` rather than growing the list without end.
+    @overload
+    def __init__(self: Query[M], entity: type[M], /) -> None: ...
+
+    @overload
+    def __init__(self: Query[M], entity: Alias[M], /) -> None: ...
+
+    @overload
+    def __init__(self: Query[tuple[T]], entity: Expression[T], /) -> None: ...
+
+    @overload
+    def __init__(self: Query[tuple[T, T2]],
+                 e1: _Sel[T], e2: _Sel[T2], /) -> None: ...
+
+    @overload
+    def __init__(self: Query[tuple[T, T2, T3]],
+                 e1: _Sel[T], e2: _Sel[T2], e3: _Sel[T3], /) -> None: ...
+
+    @overload
+    def __init__(self: Query[tuple[T, T2, T3, T4]],
+                 e1: _Sel[T], e2: _Sel[T2], e3: _Sel[T3], e4: _Sel[T4],
+                 /) -> None: ...
+
+    @overload
+    def __init__(self: Query[tuple[Any, ...]],
+                 *entities: _Sel[Any]) -> None: ...
 
     def __init__(self, *entities):
         if not entities:
@@ -203,10 +252,10 @@ class Query:
                 parts.append(("expr", id(entity), getattr(entity, "py_type", None)))
         self._hydration_key = tuple(parts)
 
-    def hydration_spec(self):
+    def hydration_spec(self) -> list[tuple[Any, ...]]:
         """The entity specs `compile_join_hydrator` needs, in select order."""
         nullable = self._nullable_sources()
-        specs = []
+        specs: list[tuple[Any, ...]] = []
         for kind, entity in self._entities:
             if kind == "model":
                 specs.append(("model", getattr(entity, "model", entity),
@@ -215,9 +264,9 @@ class Query:
                 specs.append(("column", getattr(entity, "py_type", None)))
         return specs
 
-    def output_columns(self):
+    def output_columns(self) -> list[tuple[str, Any]]:
         """`(name, py_type)` per selected column — what a subquery exposes."""
-        columns = []
+        columns: list[tuple[str, Any]] = []
         for kind, entity in self._entities:
             if kind == "model":
                 columns.extend(
@@ -278,28 +327,28 @@ class Query:
         self._invalidate()
         return self
 
-    def join(self, source, on):
+    def join(self, source: Any, on: Predicate) -> Self:
         """INNER JOIN."""
         return self._add_join(source, on, "inner")
 
-    def outer_join(self, source, on):
+    def outer_join(self, source: Any, on: Predicate) -> Self:
         """LEFT OUTER JOIN. A selected right-hand entity hydrates as `None` when
         there is no match."""
         return self._add_join(source, on, "left")
 
     left_join = outer_join
 
-    def right_join(self, source, on):
+    def right_join(self, source: Any, on: Predicate) -> Self:
         """RIGHT OUTER JOIN. Note this makes the *left* side nullable, including
         the primary entity — so `Query(User, Post).right_join(Post, ...)` can yield
         `(None, post)`."""
         return self._add_join(source, on, "right")
 
-    def full_join(self, source, on):
+    def full_join(self, source: Any, on: Predicate) -> Self:
         """FULL OUTER JOIN. Either side can be `None`."""
         return self._add_join(source, on, "full")
 
-    def correlate(self, *sources):
+    def correlate(self, *sources: Any) -> Self:
         """Declare outer sources this query may reference as a subquery.
 
         A correlated subquery mentions a table from the query that contains it,
@@ -319,11 +368,11 @@ class Query:
         self._invalidate()
         return self
 
-    def subquery(self, alias):
+    def subquery(self, alias: str) -> Subquery:
         """Wrap this query as a derived table usable in FROM and joins."""
         return Subquery(self, alias)
 
-    def scalar_subquery(self):
+    def scalar_subquery(self) -> Self:
         """Use this query as a single value in a comparison.
 
         Returns the query itself — `Condition` renders any object with `_render`
@@ -351,7 +400,7 @@ class Query:
                     f"{source_name(column.source)} has no column {column.name!r}"
                 )
 
-    def where(self, *predicates):
+    def where(self, *predicates: Predicate) -> Self:
         """AND-ed predicates. Use `or_()` / `and_()` / `~` for anything else.
 
         Several arguments are equivalent to several `where()` calls; both AND.
@@ -368,7 +417,7 @@ class Query:
         self._invalidate()
         return self
 
-    def having(self, *predicates):
+    def having(self, *predicates: Predicate) -> Self:
         """Predicates applied after grouping, where aggregates are allowed."""
         for predicate in predicates:
             if not isinstance(predicate, Predicate):
@@ -410,7 +459,7 @@ class Query:
                     f"{source_name(column.source)} has no column {column.name!r}"
                 )
 
-    def group_by(self, *columns):
+    def group_by(self, *columns: Expression[Any] | str) -> Self:
         """GROUP BY. Takes columns or bare column-name strings.
 
         No attempt is made to check that every non-aggregated selected column is
@@ -421,7 +470,8 @@ class Query:
         self._invalidate()
         return self
 
-    def order_by(self, *columns, descending=False):
+    def order_by(self, *columns: Expression[Any] | str,
+                 descending: bool = False) -> Self:
         """Order the result set. Accepts columns, aggregates, or bare names.
 
         Worth being explicit about why this exists: `LIMIT` without `ORDER BY`
@@ -438,12 +488,12 @@ class Query:
         self._invalidate()
         return self
 
-    def distinct(self, on=True):
+    def distinct(self, on: bool = True) -> Self:
         self._distinct = bool(on)
         self._invalidate()
         return self
 
-    def limit(self, n: int):
+    def limit(self, n: int) -> Self:
         # sqlite reads a negative LIMIT as "no limit" while Postgres raises, so
         # the same query would either silently return everything or blow up
         # depending on the backend. Neither is a useful thing to ship.
@@ -451,7 +501,7 @@ class Query:
         self._invalidate()
         return self
 
-    def offset(self, n: int):
+    def offset(self, n: int) -> Self:
         self._offset = _non_negative_int(n, "offset")
         self._invalidate()
         return self
@@ -548,7 +598,7 @@ class Query:
 
         return sql, params
 
-    def to_sql(self, placeholder="?"):
+    def to_sql(self, placeholder: str = "?") -> tuple[str, tuple[Any, ...]]:
         """Return `(sql, params)`. `params` is a **tuple**.
 
         Deliberately immutable: the result is cached and the same object is
@@ -566,7 +616,7 @@ class Query:
         self._sql_cache[("select", placeholder)] = result
         return result
 
-    def to_json_sql(self, dialect="postgres"):
+    def to_json_sql(self, dialect: str = "postgres") -> tuple[str, tuple[Any, ...]]:
         """Build SQL that returns the whole result set as a single JSON array.
 
         This pushes row shaping and JSON encoding into the database, so Python
