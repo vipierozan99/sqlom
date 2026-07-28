@@ -15,7 +15,10 @@ from .dml import (
     Delete,
     Insert,
     Update,
+    delete,
+    insert,
     max_rows_per_statement,
+    update,
 )
 from .engine import DatabaseEngine
 from .psycopg_engine import PsycopgEngine
@@ -62,7 +65,7 @@ from .expr import (
     sql_function,
     sum_,
 )
-from .query import CompoundSelect, Query, json_bytes
+from .query import CompoundSelect, Query, json_bytes, select
 from .transaction import Transaction, active_transaction
 
 __all__ = [
@@ -124,10 +127,14 @@ __all__ = [
     "DatabaseEngine",
     "PsycopgEngine",
     "Query",
+    "select",
     "CompoundSelect",
     "Insert",
     "Update",
     "Delete",
+    "insert",
+    "update",
+    "delete",
     "max_rows_per_statement",
     "MAX_PARAMETERS",
     "json_bytes",

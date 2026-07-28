@@ -13,6 +13,7 @@ from .expr import (
     Subquery,
     _bare,
     _collect_ctes,
+    _OrderingExpr,
     and_,
     from_sql,
     source_name,
@@ -336,15 +337,20 @@ class Query(Generic[R]):
         self._invalidate()
         return self
 
-    def join(self, source: Any, on: Predicate) -> Self:
-        """INNER JOIN."""
-        return self._add_join(source, on, "inner")
+    def join(self, source: Any, on: Predicate,
+             isouter: bool = False, full: bool = False) -> Self:
+        """INNER JOIN, or LEFT/FULL OUTER JOIN via `isouter=`/`full=`
+        (SQLAlchemy's `Select.join()` keywords)."""
+        kind = "full" if full else ("left" if isouter else "inner")
+        return self._add_join(source, on, kind)
 
     def outer_join(self, source: Any, on: Predicate) -> Self:
         """LEFT OUTER JOIN. A selected right-hand entity hydrates as `None` when
         there is no match."""
         return self._add_join(source, on, "left")
 
+    # SQLAlchemy spells LEFT OUTER JOIN without the underscore.
+    outerjoin = outer_join
     left_join = outer_join
 
     def right_join(self, source: Any, on: Predicate) -> Self:
@@ -540,6 +546,10 @@ class Query(Generic[R]):
                  descending: bool = False) -> Self:
         """Order the result set. Accepts columns, aggregates, or bare names.
 
+        A column may also carry its own direction via `.desc()`/`.asc()`
+        (SQLAlchemy's spelling), e.g. `order_by(Post.created_at.desc())` — that
+        per-column direction wins over the `descending=` keyword.
+
         Worth being explicit about why this exists: `LIMIT` without `ORDER BY`
         returns an arbitrary subset. Postgres is free to pick a different plan
         for a differently-spelled but equivalent query and hand back different
@@ -548,8 +558,12 @@ class Query(Generic[R]):
         byte, needs a total order.
         """
         for column in columns:
+            if isinstance(column, _OrderingExpr):
+                column, direction = column.expression, column.descending
+            else:
+                direction = descending
             self._order_by.append(
-                (self._as_expression(column, "order_by"), descending)
+                (self._as_expression(column, "order_by"), direction)
             )
         self._invalidate()
         return self
@@ -897,6 +911,7 @@ class CompoundSelect(Generic[R]):
         self._order_by: list[tuple[Any, bool]] = []
         self._limit: int | None = None
         self._offset: int | None = None
+        self._ctes: list[CTE] = []
         self._sql_cache: dict[Any, Any] = {}
 
     # --- the interface the engines rely on ---------------------------------
@@ -940,8 +955,38 @@ class CompoundSelect(Generic[R]):
     def except_(self, other: _Selectable[R]) -> CompoundSelect[R]:
         return self._combine("EXCEPT", other)
 
+    def intersect_all(self, other: _Selectable[R]) -> CompoundSelect[R]:
+        return self._combine("INTERSECT ALL", other)
+
+    def except_all(self, other: _Selectable[R]) -> CompoundSelect[R]:
+        return self._combine("EXCEPT ALL", other)
+
+    def cte(self, alias: str) -> CTE:
+        """Wrap this compound select as a common table expression. See
+        `Query.cte()` — the same rule applies: output column names come from the
+        first operand."""
+        return CTE(self, alias)
+
+    def subquery(self, alias: str) -> Subquery:
+        """Wrap this compound select as a derived table, usable in FROM and
+        joins. See `Query.subquery()`."""
+        return Subquery(self, alias)
+
+    def with_(self, *ctes: CTE) -> Self:
+        """Force a CTE into this compound's WITH clause. See `Query.with_()`."""
+        for entry in ctes:
+            if not isinstance(entry, CTE):
+                raise TypeError(f"with_() takes CTEs, got {type(entry).__name__}")
+            self._ctes.append(entry)
+        self._sql_cache.clear()
+        return self
+
     def order_by(self, *columns: Any, descending: bool = False) -> Self:
         for column in columns:
+            if isinstance(column, _OrderingExpr):
+                column, direction = column.expression, column.descending
+            else:
+                direction = descending
             name = column if isinstance(column, str) else getattr(column, "name", None)
             if name is None:
                 raise TypeError(
@@ -953,7 +998,7 @@ class CompoundSelect(Generic[R]):
                     f"{name!r} is not an output column of this compound "
                     f"({', '.join(sorted(known))})"
                 )
-            self._order_by.append((name, descending))
+            self._order_by.append((name, direction))
         self._sql_cache.clear()
         return self
 
@@ -1010,3 +1055,10 @@ class CompoundSelect(Generic[R]):
 
     def __repr__(self) -> str:
         return f"<CompoundSelect {self.operator} x{len(self.operands)}>"
+
+
+def select(*entities: Any) -> Query[Any]:
+    """SQLAlchemy-style constructor for `Query` — `select(User, Post.title)` is
+    exactly `Query(User, Post.title)`. The class stays the public name too, since
+    subquery/CTE/type annotations read better as `Query[...]`."""
+    return Query(*entities)

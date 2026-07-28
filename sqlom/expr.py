@@ -159,8 +159,15 @@ def _named_output_columns(query: Any, kind: str, alias: str) -> Any:
     `count(id)` "count" and sqlite calls it "count(id)" — so exposing a guessed
     name would render a reference to a column that does not exist. Requiring
     `.label()` is the only honest option.
+
+    `query` may be a compound select (`UNION`/`INTERSECT`/`EXCEPT`) rather than a
+    plain `Query` — a compound's output names come from its *first* operand only,
+    same rule SQL itself uses, so the entity check walks down to that leaf.
     """
-    for entity_kind, entity in query._entities:
+    base = query
+    while not hasattr(base, "_entities"):
+        base = base.operands[0]
+    for entity_kind, entity in base._entities:
         if entity_kind == "model":
             continue
         if isinstance(entity, (ColumnExpr, Labelled)):
@@ -530,9 +537,37 @@ class Expression(Generic[T]):
     def is_not_null(self) -> Condition:
         return Condition(self, "!=", None)
 
+    def is_(self, other: None) -> Condition:
+        """SQLAlchemy-style spelling of `is_null()`.
+
+        Only `None` is accepted — SQL `IS` otherwise takes a literal
+        (`TRUE`/`FALSE`), not a bound parameter, so a value comparison belongs to
+        `==` instead, which already renders correctly either way.
+        """
+        if other is not None:
+            raise TypeError("is_() only supports None; use == for a value comparison")
+        return self.is_null()
+
+    def is_not(self, other: None) -> Condition:
+        """SQLAlchemy-style spelling of `is_not_null()`. Only `None` is accepted;
+        see `is_()`."""
+        if other is not None:
+            raise TypeError(
+                "is_not() only supports None; use != for a value comparison"
+            )
+        return self.is_not_null()
+
     def label(self, name: str) -> Labelled[T]:
         """Name this expression in the select list (`AS name`)."""
         return Labelled(self, name)
+
+    def desc(self) -> "_OrderingExpr[T]":
+        """Mark this expression as descending, for `order_by()`."""
+        return _OrderingExpr(self, True)
+
+    def asc(self) -> "_OrderingExpr[T]":
+        """Mark this expression as ascending, for `order_by()`."""
+        return _OrderingExpr(self, False)
 
     # --- arithmetic, as values rather than predicates ----------------------
     # These keep the operand's own type, so `Post.score * 2` is an
@@ -595,6 +630,23 @@ class Expression(Generic[T]):
 
     def __hash__(self) -> int:
         return id(self)
+
+
+class _OrderingExpr(Generic[T]):
+    """Wraps an expression with an explicit direction, from `.desc()`/`.asc()`.
+
+    Exists only to be unwrapped by `Query.order_by()` / `CompoundSelect.order_by()`
+    — it carries no `to_sql()` of its own.
+    """
+
+    __slots__ = ("expression", "descending")
+
+    def __init__(self, expression: Expression[T], descending: bool) -> None:
+        self.expression = expression
+        self.descending = descending
+
+    def __repr__(self) -> str:
+        return f"<{'DESC' if self.descending else 'ASC'} {self.expression!r}>"
 
 
 class ColumnExpr(Expression[T]):
@@ -937,7 +989,10 @@ class InClause(Predicate):
     def __init__(self, left: Expression[Any], values: Any,
                  negated: bool = False) -> None:
         self.left = left
-        self.values = values
+        # Materialise eagerly (unless it's a subquery) so a one-shot iterator
+        # (a generator, say) isn't exhausted by `sources()` before `to_sql()`
+        # gets to it — both now read the same concrete list.
+        self.values = values if hasattr(values, "_render") else list(values)
         self.negated = negated
 
     def to_sql(self, nxt, resolve=_bare):
@@ -955,11 +1010,28 @@ class InClause(Predicate):
             # perfectly reasonable thing for calling code to end up with, so
             # render the constant it is equivalent to.
             return ("FALSE" if not self.negated else "TRUE"), params
-        placeholders = ", ".join(str(advance()) for _ in values)
-        return f"{left} {keyword} ({placeholders})", params + tuple(values)
+        fragments: list[str] = []
+        bound: list[Any] = []
+        for value in values:
+            if isinstance(value, Expression):
+                # A column (or any expression) belongs in the IN list as a SQL
+                # reference, not bound as a parameter — `col.in_([other_col])`
+                # renders `col IN (other_col)`.
+                fragment, value_params = value.to_sql(advance, resolve)
+                fragments.append(fragment)
+                bound.extend(value_params)
+            else:
+                fragments.append(str(advance()))
+                bound.append(value)
+        return f"{left} {keyword} ({', '.join(fragments)})", params + tuple(bound)
 
     def sources(self):
-        return self.left.sources()
+        sources = self.left.sources()
+        if not hasattr(self.values, "_render"):
+            for value in self.values:
+                if isinstance(value, Expression):
+                    sources += value.sources()
+        return sources
 
     def __repr__(self):
         return f"<{'NOT IN' if self.negated else 'IN'} {self.left!r}>"

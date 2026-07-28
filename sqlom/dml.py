@@ -615,6 +615,9 @@ class Update(_Statement):
         self._invalidate()
         return self
 
+    # SQLAlchemy's Update spells this .values(), the same name Insert uses.
+    values = set
+
     def _reference_nodes(self) -> list[Any]:
         return (super()._reference_nodes()
                 + [value for _, value in self._assignments
@@ -776,4 +779,25 @@ class Delete(_Statement):
         return f"<Delete {source_name(self.source)}>"
 
 
-__all__ = ["Insert", "Update", "Delete", "MAX_PARAMETERS", "max_rows_per_statement"]
+def insert(target: type[Any] | Alias[Any]) -> Insert:
+    """SQLAlchemy-style constructor for `Insert` — `insert(User)` is exactly
+    `Insert(User)`."""
+    return Insert(target)
+
+
+def update(target: type[Any] | Alias[Any]) -> Update:
+    """SQLAlchemy-style constructor for `Update` — `update(User)` is exactly
+    `Update(User)`."""
+    return Update(target)
+
+
+def delete(target: type[Any] | Alias[Any]) -> Delete:
+    """SQLAlchemy-style constructor for `Delete` — `delete(User)` is exactly
+    `Delete(User)`."""
+    return Delete(target)
+
+
+__all__ = [
+    "Insert", "Update", "Delete", "insert", "update", "delete",
+    "MAX_PARAMETERS", "max_rows_per_statement",
+]

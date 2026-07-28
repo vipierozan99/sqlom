@@ -1,0 +1,577 @@
+"""Ported from SQLAlchemy's test/sql/test_compiler.py (SQL-generation subset
+relevant to query building), adapted to sqlom.
+
+SQLAlchemy's `test_compiler.py` is ~8200 lines and covers far more than SELECT
+generation: DDL/CREATE TABLE, custom type compilation, per-dialect quoting for a
+dozen backends, sequences and column defaults, ORM-flavoured label styles, and
+the raw bind-parameter machinery behind all of it. sqlom has none of that surface
+— no Table/MetaData/DDL, no reflection, no custom types, and only sqlite +
+postgres to worry about — so most of the file does not apply.
+
+What follows targets the same *ideas* `SelectTest` in that file exercises
+(`test_table_select`, `test_where_multiple`, `test_conjunctions`,
+`test_nested_conjunctions_short_circuit`, `test_joins`, `test_full_outer_join`,
+`test_from_subquery`, `test_where_subquery`, `test_exists`, `test_scalar_select`,
+`test_alias`, `test_distinct`, `test_limit_offset`, `test_calculated_columns`,
+`test_compound_selects`, `test_orderby_groupby`), re-expressed against sqlom's
+`Query`/`Alias`/`Subquery`/predicate API and asserted against exact `.to_sql()`
+output, sqlom house style.
+
+Skipped entirely, and why:
+  * DDLTest, SchemaTest — CREATE TABLE / constraint / index DDL. sqlom has no
+    schema management at all.
+  * CoercionTest, ResultMapTest — SQLAlchemy's internal type-coercion and
+    result-column-name mapping machinery; there is no equivalent layer here.
+  * test_cast*, custom-type sections — Numeric/Enum/etc. type compilation.
+    sqlom columns carry a plain `py_type`, not a compiled SQL type.
+  * Dialect-specific quoting of reserved identifiers, Oracle/MSSQL/Firebird
+    spellings, `test_paramstyles`, `test_anon_param_name_on_keys` — sqlom only
+    ever renders sqlite `?`, psycopg `%s`, or asyncpg `$n`, with no identifier
+    quoting or anonymous-label generation.
+  * LABEL_STYLE_* / `test_use_labels*` / `test_dupe_columns*` /
+    `test_overlapping_labels*` — SQLAlchemy's auto-disambiguating label styles
+    for ORM row mapping. sqlom has no such mode; a caller names collisions away
+    with `.label()`.
+  * `test_for_update`, `test_hints`, `test_statement_hints`, `prefix_with` —
+    locking clauses, optimizer hints and statement prefixes: no equivalent API.
+  * BindParameterTest, CrudParamOverlapTest — SQLAlchemy's named/expanding
+    bindparam mechanics and INSERT/UPDATE param-overlap handling; sqlom binds
+    everything positionally and DML is out of scope for this file (see
+    test_dml.py).
+  * KwargPropagationTest, ExecutionOptionsTest, StringifySpecialTest,
+    UnsupportedTest, OmitFromStatementsTest — compiler-internals plumbing with
+    no user-facing sqlom equivalent.
+  * `test_over_framespec`/`test_over_invalid_framespecs`/`test_over_within_group`
+    and most window-function detail — already covered thoroughly in
+    tests/test_expressions.py, not re-ported here.
+  * CTE-specific compilation — already covered in tests/test_ctes.py.
+  * `select(table1, table2)` with no join (an implicit cross join via a comma
+    in FROM) — sqlom's `join()` always requires an explicit ON clause linking
+    the new source to one already in the query; there is no way to express an
+    unconditional cross join, so that shape of test_table_select has no port.
+"""
+
+import pytest
+
+from sqlom import Alias, Query, and_, case, count, exists, not_, or_
+from tests.conftest import Author, Book, Tag
+
+
+# --------------------------------------------------------------------------
+# Basic SELECT rendering — test_table_select
+# --------------------------------------------------------------------------
+
+
+class TestBasicSelect:
+    def test_select_all_columns_of_one_model(self):
+        sql, params = Query(Book).to_sql()
+        assert sql == "SELECT id, author_id, title FROM t_books"
+        assert params == ()
+
+    def test_select_specific_columns(self):
+        sql, params = Query(Book.id, Book.title).to_sql()
+        assert sql == "SELECT id, title FROM t_books"
+        assert params == ()
+
+    def test_select_mixes_model_and_column_across_a_join(self):
+        sql, _ = (Query(Book, Author.name)
+                  .join(Author, Book.author_id == Author.id)
+                  .to_sql())
+        assert sql == (
+            "SELECT t_books.id, t_books.author_id, t_books.title, t_authors.name "
+            "FROM t_books JOIN t_authors ON t_books.author_id = t_authors.id"
+        )
+
+
+# --------------------------------------------------------------------------
+# WHERE clause composition — test_where_multiple, plus operator/IN/LIKE/NULL
+# rendering that test_compiler.py spreads across several sections
+# --------------------------------------------------------------------------
+
+
+class TestWhereClause:
+    def test_single_condition(self):
+        sql, params = Query(Book).where(Book.title == "compilers").to_sql()
+        assert sql == "SELECT id, author_id, title FROM t_books WHERE title = ?"
+        assert params == ("compilers",)
+
+    def test_multiple_where_calls_and_without_extra_parens(self):
+        sql, params = (Query(Book).where(Book.id > 1).where(Book.author_id == 2)
+                       .to_sql(placeholder="$"))
+        assert sql.endswith("WHERE id > $1 AND author_id = $2")
+        assert params == (1, 2)
+
+    def test_comparison_operators_render_in_where(self):
+        cases = [
+            (Book.id == 5, "="),
+            (Book.id != 5, "!="),
+            (Book.id > 5, ">"),
+            (Book.id >= 5, ">="),
+            (Book.id < 5, "<"),
+            (Book.id <= 5, "<="),
+        ]
+        for condition, op in cases:
+            sql, params = Query(Book).where(condition).to_sql()
+            assert sql == f"SELECT id, author_id, title FROM t_books WHERE id {op} ?"
+            assert params == (5,)
+
+    def test_null_equality_renders_is_null(self):
+        sql, params = Query(Book).where(Book.title == None).to_sql()  # noqa: E711
+        assert sql.endswith("WHERE title IS NULL")
+        assert params == ()
+
+    def test_null_inequality_renders_is_not_null(self):
+        sql, params = Query(Book).where(Book.title != None).to_sql()  # noqa: E711
+        assert sql.endswith("WHERE title IS NOT NULL")
+        assert params == ()
+
+    def test_like_pattern(self):
+        sql, params = Query(Book).where(Book.title.like("comp%")).to_sql()
+        assert sql.endswith("WHERE title LIKE ?")
+        assert params == ("comp%",)
+
+    def test_in_list_of_values(self):
+        sql, params = Query(Book).where(Book.id.in_([10, 11, 12])).to_sql(placeholder="$")
+        assert sql.endswith("WHERE id IN ($1, $2, $3)")
+        assert params == (10, 11, 12)
+
+    def test_in_empty_list_renders_false_rather_than_invalid_sql(self):
+        sql, params = Query(Book).where(Book.id.in_([])).to_sql()
+        assert sql.endswith("WHERE FALSE")
+        assert params == ()
+
+    def test_between_equivalent_using_and_of_two_comparisons(self):
+        # sqlom has no dedicated BETWEEN operator; the equivalent is spelled with
+        # and_() over two range comparisons.
+        sql, params = (Query(Book).where(and_(Book.id >= 10, Book.id <= 12))
+                       .to_sql(placeholder="$"))
+        assert sql.endswith("WHERE (id >= $1 AND id <= $2)")
+        assert params == (10, 12)
+
+
+# --------------------------------------------------------------------------
+# Boolean composition and its parenthesisation — test_conjunctions,
+# test_nested_conjunctions_short_circuit
+# --------------------------------------------------------------------------
+
+
+class TestBooleanComposition:
+    def test_and_of_conditions(self):
+        sql, params = (Query(Book).where(and_(Book.id > 1, Book.author_id == 2))
+                       .to_sql(placeholder="$"))
+        assert sql.endswith("WHERE (id > $1 AND author_id = $2)")
+        assert params == (1, 2)
+
+    def test_or_of_conditions(self):
+        sql, params = (Query(Book).where(or_(Book.id == 1, Book.id == 2))
+                       .to_sql(placeholder="$"))
+        assert sql.endswith("WHERE (id = $1 OR id = $2)")
+        assert params == (1, 2)
+
+    def test_and_or_nesting_is_parenthesised(self):
+        sql, params = (
+            Query(Book)
+            .where(and_(Book.author_id == 1, or_(Book.title == "a", Book.title == "b")))
+            .to_sql(placeholder="$")
+        )
+        assert sql.endswith("WHERE (author_id = $1 AND (title = $2 OR title = $3))")
+        assert params == (1, "a", "b")
+
+    def test_same_operator_nesting_is_flattened(self):
+        sql, params = (
+            Query(Book).where(or_(Book.id == 1, or_(Book.id == 2, Book.id == 3)))
+            .to_sql(placeholder="$")
+        )
+        assert sql.endswith("WHERE (id = $1 OR id = $2 OR id = $3)")
+        assert params == (1, 2, 3)
+
+    def test_not_negation(self):
+        sql, params = Query(Book).where(not_(Book.id == 1)).to_sql(placeholder="$")
+        assert sql.endswith("WHERE NOT (id = $1)")
+        assert params == (1,)
+
+    def test_operator_overloads_and_or_invert(self):
+        sql, _ = Query(Book).where((Book.id == 1) | (Book.id == 2)).to_sql(placeholder="$")
+        assert sql.endswith("WHERE (id = $1 OR id = $2)")
+
+        sql, _ = Query(Book).where(~(Book.id == 1)).to_sql(placeholder="$")
+        assert sql.endswith("WHERE NOT (id = $1)")
+
+    def test_python_bitwise_precedence_trap_without_parens(self):
+        # `&`/`|` bind tighter than the comparison operators in Python, so an
+        # un-parenthesised `Book.id > 1 & Book.id < 9` does not compare and then
+        # AND — it tries `1 & Book.id` first. ColumnExpr has no __and__/__rand__
+        # (only Predicate does), so this fails loudly rather than silently
+        # producing the wrong SQL. This is the same trap SQLAlchemy has and for
+        # the same reason; the fix is always to parenthesise each comparison.
+        with pytest.raises(TypeError):
+            Book.id > 1 & Book.id < 9
+
+
+# --------------------------------------------------------------------------
+# JOIN / LEFT / FULL OUTER JOIN rendering — test_joins, test_full_outer_join
+# --------------------------------------------------------------------------
+
+
+class TestJoins:
+    def test_inner_join(self):
+        sql, _ = Query(Book, Tag).join(Tag, Tag.book_id == Book.id).to_sql()
+        assert sql == (
+            "SELECT t_books.id, t_books.author_id, t_books.title, "
+            "t_tags.id, t_tags.book_id, t_tags.label "
+            "FROM t_books JOIN t_tags ON t_tags.book_id = t_books.id"
+        )
+
+    def test_left_outer_join(self):
+        sql, _ = Query(Book, Tag).outer_join(Tag, Tag.book_id == Book.id).to_sql()
+        assert "LEFT OUTER JOIN t_tags ON t_tags.book_id = t_books.id" in sql
+
+    def test_full_outer_join(self):
+        sql, _ = Query(Author, Book).full_join(Book, Book.author_id == Author.id).to_sql()
+        assert "FULL OUTER JOIN t_books ON t_books.author_id = t_authors.id" in sql
+
+    def test_three_way_join_chain(self):
+        sql, _ = (
+            Query(Author, Book, Tag)
+            .join(Book, Book.author_id == Author.id)
+            .join(Tag, Tag.book_id == Book.id)
+            .to_sql()
+        )
+        assert sql == (
+            "SELECT t_authors.id, t_authors.name, t_authors.active, "
+            "t_books.id, t_books.author_id, t_books.title, "
+            "t_tags.id, t_tags.book_id, t_tags.label "
+            "FROM t_authors "
+            "JOIN t_books ON t_books.author_id = t_authors.id "
+            "JOIN t_tags ON t_tags.book_id = t_books.id"
+        )
+
+    def test_join_combined_with_or_where(self):
+        sql, params = (
+            Query(Author, Book)
+            .join(Book, Book.author_id == Author.id)
+            .where(or_(Author.name == "ada", Book.title == "compilers"))
+            .to_sql(placeholder="$")
+        )
+        assert sql.endswith(
+            "WHERE (t_authors.name = $1 OR t_books.title = $2)"
+        )
+        assert params == ("ada", "compilers")
+
+    def test_self_join_distinguishes_both_sides_in_where(self):
+        mgr = Alias(Author, "mgr")
+        sql, params = (
+            Query(Author, mgr)
+            .join(mgr, Author.id == mgr.id)
+            .where(and_(Author.active == True, mgr.name == "ada"))  # noqa: E712
+            .to_sql(placeholder="$")
+        )
+        assert sql == (
+            "SELECT t_authors.id, t_authors.name, t_authors.active, "
+            "mgr.id, mgr.name, mgr.active "
+            "FROM t_authors JOIN t_authors AS mgr ON t_authors.id = mgr.id "
+            "WHERE (t_authors.active = $1 AND mgr.name = $2)"
+        )
+        assert params == (True, "ada")
+
+
+# --------------------------------------------------------------------------
+# Subqueries in FROM, IN, EXISTS and scalar comparisons — test_from_subquery,
+# test_where_subquery, test_exists, test_scalar_select
+# --------------------------------------------------------------------------
+
+
+class TestSubqueries:
+    def test_subquery_in_from(self):
+        sub = (Query(Book.author_id, count().label("n"))
+               .group_by(Book.author_id)
+               .subquery("counts"))
+        sql, params = Query(sub.author_id, sub.n).to_sql()
+        assert sql == (
+            "SELECT author_id, n FROM "
+            "(SELECT author_id, count(*) AS n FROM t_books GROUP BY author_id) "
+            "AS counts"
+        )
+        assert params == ()
+
+    def test_subquery_column_referenced_in_where(self):
+        sub = (Query(Book.author_id, count().label("n"))
+               .group_by(Book.author_id)
+               .subquery("counts"))
+        sql, params = Query(sub.author_id, sub.n).where(sub.n > 1).to_sql(placeholder="$")
+        assert sql == (
+            "SELECT author_id, n FROM "
+            "(SELECT author_id, count(*) AS n FROM t_books GROUP BY author_id) "
+            "AS counts WHERE n > $1"
+        )
+        assert params == (1,)
+
+    def test_in_subquery(self):
+        sql, params = (
+            Query(Book)
+            .where(Book.id.in_(Query(Tag.book_id).where(Tag.label == "classic")))
+            .to_sql(placeholder="$")
+        )
+        assert sql.endswith("WHERE id IN (SELECT book_id FROM t_tags WHERE label = $1)")
+        assert params == ("classic",)
+
+    def test_exists_subquery(self):
+        sql, _ = (
+            Query(Book)
+            .where(exists(Query(Tag.id).correlate(Book).where(Tag.book_id == Book.id)))
+            .to_sql()
+        )
+        assert sql == (
+            "SELECT id, author_id, title FROM t_books WHERE EXISTS "
+            "(SELECT t_tags.id FROM t_tags WHERE t_tags.book_id = t_books.id)"
+        )
+
+    def test_not_exists_subquery(self):
+        sql, _ = (
+            Query(Book)
+            .where(~exists(Query(Tag.id).correlate(Book).where(Tag.book_id == Book.id)))
+            .to_sql()
+        )
+        assert "NOT EXISTS (SELECT t_tags.id FROM t_tags WHERE t_tags.book_id = t_books.id)" in sql
+
+    def test_scalar_subquery_in_comparison(self):
+        sql, _ = (
+            Query(Book).where(Book.id > Query(count(Tag.id)).scalar_subquery())
+            .to_sql()
+        )
+        assert sql == (
+            "SELECT id, author_id, title FROM t_books "
+            "WHERE id > (SELECT count(id) FROM t_tags)"
+        )
+
+
+# --------------------------------------------------------------------------
+# CASE expressions — no direct test_compiler.py section covers CASE (its
+# grammar is exercised via ORM/type tests there); ported against sqlom's own
+# `case()` since it is squarely SQL-generation.
+# --------------------------------------------------------------------------
+
+
+class TestCaseExpression:
+    def test_case_when_then_else(self):
+        sql, params = (
+            Query(Book.id, case((Book.author_id == 1, "ada"), else_="other"))
+            .to_sql(placeholder="$")
+        )
+        assert sql == (
+            "SELECT id, CASE WHEN author_id = $1 THEN $2 ELSE $3 END FROM t_books"
+        )
+        assert params == (1, "ada", "other")
+
+    def test_case_multiple_whens_no_else(self):
+        sql, params = (
+            Query(Book.id, case((Book.author_id == 1, "a"), (Book.author_id == 2, "b")))
+            .to_sql(placeholder="$")
+        )
+        assert sql == (
+            "SELECT id, CASE WHEN author_id = $1 THEN $2 "
+            "WHEN author_id = $3 THEN $4 END FROM t_books"
+        )
+        assert params == (1, "a", 2, "b")
+
+    def test_case_with_column_values(self):
+        sql, params = (
+            Query(Book.id, case((Book.author_id == 1, Book.title), else_=Book.id))
+            .to_sql()
+        )
+        assert sql == (
+            "SELECT id, CASE WHEN author_id = ? THEN title ELSE id END FROM t_books"
+        )
+        assert params == (1,)
+
+
+# --------------------------------------------------------------------------
+# Label and alias rendering — test_alias, test_label_comparison
+# --------------------------------------------------------------------------
+
+
+class TestLabelsAndAlias:
+    def test_label_renders_as_alias_in_the_select_list(self):
+        sql, _ = Query(Book.title.label("book_title")).to_sql()
+        assert sql == "SELECT title AS book_title FROM t_books"
+
+    def test_table_alias_renames_the_from_clause(self):
+        au = Alias(Author, "au")
+        sql, _ = Query(au).to_sql()
+        assert sql == "SELECT id, name, active FROM t_authors AS au"
+
+    def test_alias_join_where_order_limit_together(self):
+        mgr = Alias(Author, "mgr")
+        sql, params = (
+            Query(Author.name, mgr.name.label("manager_name"))
+            .join(mgr, Author.id == mgr.id)
+            .where(mgr.active == True)  # noqa: E712
+            .order_by(Author.name)
+            .limit(5)
+            .to_sql(placeholder="$")
+        )
+        assert sql == (
+            "SELECT t_authors.name, mgr.name AS manager_name "
+            "FROM t_authors JOIN t_authors AS mgr ON t_authors.id = mgr.id "
+            "WHERE mgr.active = $1 ORDER BY t_authors.name LIMIT $2"
+        )
+        assert params == (True, 5)
+
+    def test_subquery_alias_exposes_labelled_output_columns(self):
+        sub = Query(Book.id, Book.title.label("book_title")).subquery("bt")
+        sql, _ = Query(sub.id, sub.book_title).to_sql()
+        assert sql == (
+            "SELECT id, book_title FROM "
+            "(SELECT id, title AS book_title FROM t_books) AS bt"
+        )
+
+
+# --------------------------------------------------------------------------
+# DISTINCT / LIMIT / OFFSET — test_distinct, test_limit_offset
+# --------------------------------------------------------------------------
+
+
+class TestDistinctLimitOffset:
+    def test_distinct_alone(self):
+        sql, _ = Query(Book.author_id).distinct().to_sql()
+        assert sql == "SELECT DISTINCT author_id FROM t_books"
+
+    def test_distinct_with_where(self):
+        sql, params = (
+            Query(Book.author_id).distinct().where(Book.title.like("c%"))
+            .to_sql(placeholder="$")
+        )
+        assert sql == "SELECT DISTINCT author_id FROM t_books WHERE title LIKE $1"
+        assert params == ("c%",)
+
+    def test_limit_only(self):
+        sql, params = Query(Book).limit(3).to_sql(placeholder="$")
+        assert sql.endswith("LIMIT $1")
+        assert params == (3,)
+
+    def test_offset_only(self):
+        sql, params = Query(Book).offset(2).to_sql(placeholder="$")
+        assert sql.endswith("OFFSET $1")
+        assert params == (2,)
+
+    def test_limit_and_offset_together(self):
+        sql, params = (
+            Query(Book).order_by(Book.id).limit(2).offset(1).to_sql(placeholder="$")
+        )
+        assert sql == "SELECT id, author_id, title FROM t_books ORDER BY id LIMIT $1 OFFSET $2"
+        assert params == (2, 1)
+
+    def test_limit_zero_is_allowed(self):
+        assert Query(Book).limit(0).to_sql()[1] == (0,)
+
+
+# --------------------------------------------------------------------------
+# Arithmetic expression rendering — test_calculated_columns
+# --------------------------------------------------------------------------
+
+
+class TestArithmeticExpressions:
+    def test_addition_and_multiplication_combo(self):
+        sql, params = Query((Book.id + 1) * 2).to_sql(placeholder="$")
+        assert sql == "SELECT ((id + $1) * $2) FROM t_books"
+        assert params == (1, 2)
+
+    def test_string_concat_in_select(self):
+        sql, params = Query(Book.title.concat(" (book)")).to_sql(placeholder="$")
+        assert sql == "SELECT (title || $1) FROM t_books"
+        assert params == (" (book)",)
+
+    def test_arithmetic_expression_in_where(self):
+        sql, params = Query(Book).where(Book.id % 2 == 0).to_sql(placeholder="$")
+        assert sql.endswith("WHERE (id % $1) = $2")
+        assert params == (2, 0)
+
+
+# --------------------------------------------------------------------------
+# GROUP BY / HAVING / ORDER BY combinations — test_orderby_groupby
+# --------------------------------------------------------------------------
+
+
+class TestGroupByHavingOrderBy:
+    def test_group_by_then_order_by(self):
+        sql, _ = (
+            Query(Book.author_id, count().label("n"))
+            .group_by(Book.author_id)
+            .order_by(Book.author_id)
+            .to_sql()
+        )
+        assert sql == (
+            "SELECT author_id, count(*) AS n FROM t_books "
+            "GROUP BY author_id ORDER BY author_id"
+        )
+
+    def test_having_after_group_by(self):
+        sql, params = (
+            Query(Book.author_id, count().label("n"))
+            .group_by(Book.author_id)
+            .having(count() > 1)
+            .to_sql(placeholder="$")
+        )
+        assert sql == (
+            "SELECT author_id, count(*) AS n FROM t_books "
+            "GROUP BY author_id HAVING count(*) > $1"
+        )
+        assert params == (1,)
+
+    def test_order_by_calls_accumulate_rather_than_replace(self):
+        sql, _ = (
+            Query(Book).order_by(Book.author_id).order_by(Book.id, descending=True)
+            .to_sql()
+        )
+        assert sql.endswith("ORDER BY author_id, id DESC")
+
+
+# --------------------------------------------------------------------------
+# UNION / INTERSECT / EXCEPT — test_compound_selects
+# --------------------------------------------------------------------------
+
+
+class TestCompoundSelects:
+    def test_union_of_two_selects(self):
+        sql, params = (
+            Query(Author.name).where(Author.active == True)  # noqa: E712
+            .union(Query(Author.name).where(Author.active == False))  # noqa: E712
+            .to_sql(placeholder="$")
+        )
+        assert sql == (
+            "SELECT name FROM t_authors WHERE active = $1 "
+            "UNION "
+            "SELECT name FROM t_authors WHERE active = $2"
+        )
+        assert params == (True, False)
+
+    def test_union_all_keeps_duplicates(self):
+        sql, _ = Query(Author.name).union_all(Query(Author.name)).to_sql()
+        assert "UNION ALL" in sql
+
+    def test_except_removes_matching_rows(self):
+        sql, params = (
+            Query(Author.name)
+            .except_(Query(Author.name).where(Author.active == False))  # noqa: E712
+            .to_sql(placeholder="$")
+        )
+        assert sql == (
+            "SELECT name FROM t_authors "
+            "EXCEPT "
+            "SELECT name FROM t_authors WHERE active = $1"
+        )
+        assert params == (False,)
+
+    def test_compound_with_order_by_limit_offset(self):
+        sql, params = (
+            Query(Author.name).union(Query(Author.name))
+            .order_by("name").limit(3).offset(1)
+            .to_sql(placeholder="$")
+        )
+        assert sql == (
+            "SELECT name FROM t_authors "
+            "UNION "
+            "SELECT name FROM t_authors "
+            "ORDER BY name LIMIT $1 OFFSET $2"
+        )
+        assert params == (3, 1)
