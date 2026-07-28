@@ -28,6 +28,7 @@ from .compile import (
 )
 from .dialects import POSTGRES
 from .dml import _Statement
+from .expr import bind_params, has_deferred_params
 from .query import CompoundSelect, Query
 from .query import json_bytes as _json_bytes
 from .transaction import _ACTIVE, Transaction
@@ -226,25 +227,33 @@ class PsycopgEngine:
             )
 
     @overload
-    async def fetch_all(self, query: _Select[R]) -> list[R]: ...
+    async def fetch_all(self, query: _Select[R], **overrides: Any) -> list[R]: ...
 
     @overload
-    async def fetch_all(self, query: _Statement) -> list[Any]: ...
+    async def fetch_all(self, query: _Statement, **overrides: Any) -> list[Any]: ...
 
-    async def fetch_all(self, query: Any) -> Any:
+    async def fetch_all(self, query: Any, **overrides: Any) -> Any:
+        """`**overrides` supplies (or replaces) any `bindparam()` values the
+        query was built with — see `bind_params()`. Checked once via
+        `has_deferred_params()`, so a query with none pays nothing beyond
+        that."""
         self._reject_if_in_transaction("fetch_all")
         _require_rows(query)
         sql, params = query.to_sql(placeholder="%s", dialect=POSTGRES)
+        if has_deferred_params(params):
+            params = bind_params(params, **overrides)
         async with self._require_pool().connection() as conn:
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
         return self._hydrator_for(query)(rows)
 
-    async def execute(self, statement: _Statement) -> int:
+    async def execute(self, statement: _Statement, **overrides: Any) -> int:
         """Run an Insert/Update/Delete that has no RETURNING; returns the rowcount.
 
         psycopg reports an integer here where asyncpg reports a status string; both
         are the driver's own answer rather than a normalisation across them.
+
+        `**overrides` — see `fetch_all()`.
         """
         if getattr(statement, "returns_rows", False):
             raise ValueError(
@@ -252,6 +261,8 @@ class PsycopgEngine:
                 "fetch_all() to get them"
             )
         sql, params = statement.to_sql(placeholder="%s", dialect=POSTGRES)
+        if has_deferred_params(params):
+            params = bind_params(params, **overrides)
         async with self._require_pool().connection() as conn:
             cur = await conn.execute(sql, params)
             return cur.rowcount

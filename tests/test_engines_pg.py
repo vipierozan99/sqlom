@@ -334,3 +334,24 @@ class TestNewQueryFeaturesOnPostgres:
             .order_by(Author.id)
         )
         assert rows == [("dan", None)]
+
+    # sqlom-original test (no SQLAlchemy equivalent) — proves bindparam()
+    # reuse works through a real driver, on both engine.fetch_all() and
+    # tx.fetch_all() inside engine.transaction() (the gap a review pass
+    # flagged: Transaction.fetch_all() needed the same **overrides
+    # threading as the two bare engine classes, or bindparam() would
+    # silently stop working inside a transaction block).
+    async def test_bindparam_reuse_through_the_engine(self, engine):
+        from sqlom import bindparam
+
+        query = Query(Author.name).where(Author.id == bindparam("id"))
+        assert await engine.fetch_all(query, id=1) == [("ada",)]
+        assert await engine.fetch_all(query, id=2) == [("brian",)]
+
+    async def test_bindparam_reuse_through_a_transaction(self, engine):
+        from sqlom import bindparam
+
+        query = Query(Author.name).where(Author.id == bindparam("id"))
+        async with engine.transaction() as tx:
+            assert await tx.fetch_all(query, id=1) == [("ada",)]
+            assert await tx.fetch_all(query, id=3) == [("carol",)]

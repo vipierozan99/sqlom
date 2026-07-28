@@ -50,6 +50,7 @@ from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any, TypeVar, Union, overload
 
 from .dialects import POSTGRES
+from .expr import bind_params, has_deferred_params
 
 if TYPE_CHECKING:
     from .dml import _Statement
@@ -126,14 +127,22 @@ class Transaction:
     # --- the read API, shared -----------------------------------------------
 
     @overload
-    async def fetch_all(self, query: _Select[R]) -> list[R]: ...
+    async def fetch_all(self, query: _Select[R], **overrides: Any) -> list[R]: ...
 
     @overload
-    async def fetch_all(self, query: _Statement) -> list[Any]: ...
+    async def fetch_all(self, query: _Statement, **overrides: Any) -> list[Any]: ...
 
-    async def fetch_all(self, query: Any) -> Any:
-        """Hydrated model instances, read inside this transaction."""
+    async def fetch_all(self, query: Any, **overrides: Any) -> Any:
+        """Hydrated model instances, read inside this transaction.
+
+        `**overrides` supplies (or replaces) any `bindparam()` values the
+        query was built with — see `bind_params()` — the same as
+        `engine.fetch_all()`, so a query using one still works unchanged
+        inside a transaction block.
+        """
         sql, params = query.to_sql(placeholder=self._placeholder, dialect=POSTGRES)
+        if has_deferred_params(params):
+            params = bind_params(params, **overrides)
         rows = await self._fetch_rows(sql, params)
         return self._engine._hydrator_for(query)(rows)
 

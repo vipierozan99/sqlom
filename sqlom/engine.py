@@ -14,6 +14,7 @@ from .compile import (
 )
 from .dialects import POSTGRES
 from .dml import _Statement
+from .expr import bind_params, has_deferred_params
 from .query import CompoundSelect, Query
 from .query import json_bytes as _json_bytes
 from .transaction import _ACTIVE, Transaction
@@ -263,20 +264,26 @@ class DatabaseEngine:
             )
 
     @overload
-    async def fetch_all(self, query: _Select[R]) -> list[R]: ...
+    async def fetch_all(self, query: _Select[R], **overrides: Any) -> list[R]: ...
 
     @overload
-    async def fetch_all(self, query: _Statement) -> list[Any]: ...
+    async def fetch_all(self, query: _Statement, **overrides: Any) -> list[Any]: ...
 
-    async def fetch_all(self, query: Any) -> Any:
+    async def fetch_all(self, query: Any, **overrides: Any) -> Any:
+        """`**overrides` supplies (or replaces) any `bindparam()` values the
+        query was built with — see `bind_params()`. Checked once via
+        `has_deferred_params()`, so a query with none pays nothing beyond
+        that."""
         self._reject_if_in_transaction("fetch_all")
         _require_rows(query)
         sql, params = query.to_sql(placeholder="$", dialect=POSTGRES)
+        if has_deferred_params(params):
+            params = bind_params(params, **overrides)
         async with self._require_pool().acquire() as conn:
             rows = await conn.fetch(sql, *params)
         return self._hydrator_for(query)(rows)
 
-    async def execute(self, statement: _Statement) -> str:
+    async def execute(self, statement: _Statement, **overrides: Any) -> str:
         """Run an Insert/Update/Delete that has no RETURNING.
 
         Returns asyncpg's status tag, e.g. "INSERT 0 3" — the driver's own report of
@@ -287,6 +294,8 @@ class DatabaseEngine:
         mark the connection dirty and the conditional reset still applies. It does
         commit on its own, though: a lone statement runs in autocommit. Use
         transaction() to group writes.
+
+        `**overrides` — see `fetch_all()`.
         """
         if getattr(statement, "returns_rows", False):
             raise ValueError(
@@ -294,6 +303,8 @@ class DatabaseEngine:
                 "fetch_all() to get them"
             )
         sql, params = statement.to_sql(placeholder="$", dialect=POSTGRES)
+        if has_deferred_params(params):
+            params = bind_params(params, **overrides)
         async with self._require_pool().acquire() as conn:
             return await conn.execute(sql, *params)
 
