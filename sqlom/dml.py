@@ -531,8 +531,9 @@ class Insert(_Statement):
             raise ValueError("Insert has no rows; call values() first")
         self._check_references()
         if nxt is None:
-            def nxt():
+            def _nxt():
                 return "?"
+            nxt = _nxt
         params: list[Any] = []
         with_sql = _with_clause(self, nxt, params)
         groups = []
@@ -655,8 +656,9 @@ class Update(_Statement):
             raise ValueError("Update has no assignments; call set() first")
         self._check_references()
         if nxt is None:
-            def nxt():
+            def _nxt():
                 return "?"
+            nxt = _nxt
         if self._extra_sources and not self._conditions:
             raise ValueError(
                 "Update has from_() but no where(): with no join condition that "
@@ -757,8 +759,9 @@ class Delete(_Statement):
             )
         self._check_references()
         if nxt is None:
-            def nxt():
+            def _nxt():
                 return "?"
+            nxt = _nxt
         resolve = self._resolver()
         params: list[Any] = []
         with_sql = _with_clause(self, nxt, params)

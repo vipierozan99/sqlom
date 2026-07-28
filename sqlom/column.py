@@ -41,6 +41,7 @@ from .expr import (  # noqa: F401
     Not,
     Predicate,
     Subquery,
+    _TableSource,
     _bare,
     and_,
     avg,
@@ -56,7 +57,7 @@ from .expr import (  # noqa: F401
 )
 
 T = TypeVar("T")
-M = TypeVar("M")
+M = TypeVar("M", bound=_TableSource)
 
 
 class Column(Generic[T]):
@@ -86,7 +87,9 @@ class Column(Generic[T]):
 
     def __get__(self, obj, owner=None):
         if obj is None:
+            assert self.name is not None  # __set_name__ runs before class-level access
             return ColumnExpr(owner, self.name, self.py_type)
+        assert self._storage_name is not None  # ditto for instance access
         return getattr(obj, self._storage_name)
 
     def __set__(self, obj: object, value: T) -> None:
@@ -141,7 +144,7 @@ def hydrate(model_cls: type[M], row: Sequence[Any]) -> M:
     compiled hydrators get this for free from tuple unpacking; this reflective
     path has to ask.
     """
-    columns = model_cls.__columns__  # type: ignore[attr-defined]
+    columns = model_cls.__columns__
     if len(row) != len(columns):
         raise ValueError(
             f"{model_cls.__name__} has {len(columns)} columns "

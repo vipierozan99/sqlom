@@ -607,8 +607,12 @@ psycopg = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "asyncpg" },
     { name = "coverage" },
     { name = "mypy" },
+    { name = "orjson" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "psycopg-pool" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -626,8 +630,12 @@ provides-extras = ["asyncpg", "psycopg", "orjson"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "asyncpg", specifier = ">=0.29" },
     { name = "coverage", specifier = ">=7.15.2" },
     { name = "mypy", specifier = ">=2.3.0" },
+    { name = "orjson", specifier = ">=3.9" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.1" },
+    { name = "psycopg-pool", specifier = ">=3.2" },
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },

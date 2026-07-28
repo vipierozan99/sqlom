@@ -55,14 +55,17 @@ reportUnnecessaryTypeIgnoreComment = "error"
 enableTypeIgnoreComments = false
 # tests/typing/negative.py is deliberately a list of bare expressions.
 reportUnusedExpression = "none"
-# sqlom's own internals are unannotated; report on the typing tests only.
-include = ["tests/typing"]
+include = ["sqlom", "tests/typing"]
 extraPaths = ["."]
 
 [dependency-groups]
 dev = [
+    "asyncpg>=0.29",
     "coverage>=7.15.2",
     "mypy>=2.3.0",
+    "orjson>=3.9",
+    "psycopg-pool>=3.2",
+    "psycopg[binary]>=3.1",
     "pyright>=1.1.411",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",

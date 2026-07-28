@@ -29,6 +29,7 @@ pass `orjson.OPT_PASSTHROUGH_DATACLASS` to route slotted models back to
 
 import typing
 from dataclasses import dataclass, fields
+from typing import Any, cast
 
 from .column import ColumnExpr
 
@@ -103,7 +104,8 @@ def model(cls=None, *, tablename=None, slots=True):
         # 3. Expose the metadata the query builder and compilers expect.
         dc.__tablename__ = tablename or getattr(cls, "__tablename__", None) or cls.__name__.lower()
         dc.__columns__ = {
-            f.name: _FieldColumn(f.name, hints.get(f.name, f.type)) for f in fields(dc)
+            f.name: _FieldColumn(f.name, hints.get(f.name, f.type))
+            for f in fields(cast(Any, dc))
         }
 
         # 4. Install the query-expression descriptors on the metaclass.
