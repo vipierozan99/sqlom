@@ -78,16 +78,19 @@ from tests.conftest import Author, Book, Tag
 
 
 class TestBasicSelect:
+    # Ported from test/sql/test_compiler.py::SelectTest.test_table_select (SQLAlchemy 2.0.51)
     def test_select_all_columns_of_one_model(self):
         sql, params = Query(Book).to_sql()
         assert sql == "SELECT id, author_id, title FROM t_books"
         assert params == ()
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_table_select (SQLAlchemy 2.0.51)
     def test_select_specific_columns(self):
         sql, params = Query(Book.id, Book.title).to_sql()
         assert sql == "SELECT id, title FROM t_books"
         assert params == ()
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_joins (SQLAlchemy 2.0.51)
     def test_select_mixes_model_and_column_across_a_join(self):
         sql, _ = (Query(Book, Author.name)
                   .join(Author, Book.author_id == Author.id)
@@ -105,17 +108,20 @@ class TestBasicSelect:
 
 
 class TestWhereClause:
+    # Ported from test/sql/test_compiler.py::SelectTest.test_where_multiple (SQLAlchemy 2.0.51)
     def test_single_condition(self):
         sql, params = Query(Book).where(Book.title == "compilers").to_sql()
         assert sql == "SELECT id, author_id, title FROM t_books WHERE title = ?"
         assert params == ("compilers",)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_where_multiple (SQLAlchemy 2.0.51)
     def test_multiple_where_calls_and_without_extra_parens(self):
         sql, params = (Query(Book).where(Book.id > 1).where(Book.author_id == 2)
                        .to_sql(placeholder="$"))
         assert sql.endswith("WHERE id > $1 AND author_id = $2")
         assert params == (1, 2)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_where_multiple (SQLAlchemy 2.0.51)
     def test_comparison_operators_render_in_where(self):
         cases = [
             (Book.id == 5, "="),
@@ -130,31 +136,37 @@ class TestWhereClause:
             assert sql == f"SELECT id, author_id, title FROM t_books WHERE id {op} ?"
             assert params == (5,)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_where_multiple (SQLAlchemy 2.0.51)
     def test_null_equality_renders_is_null(self):
         sql, params = Query(Book).where(Book.title == None).to_sql()  # noqa: E711
         assert sql.endswith("WHERE title IS NULL")
         assert params == ()
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_where_multiple (SQLAlchemy 2.0.51)
     def test_null_inequality_renders_is_not_null(self):
         sql, params = Query(Book).where(Book.title != None).to_sql()  # noqa: E711
         assert sql.endswith("WHERE title IS NOT NULL")
         assert params == ()
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_where_multiple (SQLAlchemy 2.0.51)
     def test_like_pattern(self):
         sql, params = Query(Book).where(Book.title.like("comp%")).to_sql()
         assert sql.endswith("WHERE title LIKE ?")
         assert params == ("comp%",)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_where_multiple (SQLAlchemy 2.0.51)
     def test_in_list_of_values(self):
         sql, params = Query(Book).where(Book.id.in_([10, 11, 12])).to_sql(placeholder="$")
         assert sql.endswith("WHERE id IN ($1, $2, $3)")
         assert params == (10, 11, 12)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_in_empty_list_renders_false_rather_than_invalid_sql(self):
         sql, params = Query(Book).where(Book.id.in_([])).to_sql()
         assert sql.endswith("WHERE FALSE")
         assert params == ()
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_between_equivalent_using_and_of_two_comparisons(self):
         # sqlom has no dedicated BETWEEN operator; the equivalent is spelled with
         # and_() over two range comparisons.
@@ -171,18 +183,21 @@ class TestWhereClause:
 
 
 class TestBooleanComposition:
+    # Ported from test/sql/test_compiler.py::SelectTest.test_conjunctions (SQLAlchemy 2.0.51)
     def test_and_of_conditions(self):
         sql, params = (Query(Book).where(and_(Book.id > 1, Book.author_id == 2))
                        .to_sql(placeholder="$"))
         assert sql.endswith("WHERE (id > $1 AND author_id = $2)")
         assert params == (1, 2)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_conjunctions (SQLAlchemy 2.0.51)
     def test_or_of_conditions(self):
         sql, params = (Query(Book).where(or_(Book.id == 1, Book.id == 2))
                        .to_sql(placeholder="$"))
         assert sql.endswith("WHERE (id = $1 OR id = $2)")
         assert params == (1, 2)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_conjunctions (SQLAlchemy 2.0.51)
     def test_and_or_nesting_is_parenthesised(self):
         sql, params = (
             Query(Book)
@@ -192,6 +207,7 @@ class TestBooleanComposition:
         assert sql.endswith("WHERE (author_id = $1 AND (title = $2 OR title = $3))")
         assert params == (1, "a", "b")
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_nested_conjunctions_short_circuit (SQLAlchemy 2.0.51)
     def test_same_operator_nesting_is_flattened(self):
         sql, params = (
             Query(Book).where(or_(Book.id == 1, or_(Book.id == 2, Book.id == 3)))
@@ -200,11 +216,13 @@ class TestBooleanComposition:
         assert sql.endswith("WHERE (id = $1 OR id = $2 OR id = $3)")
         assert params == (1, 2, 3)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_conjunctions (SQLAlchemy 2.0.51)
     def test_not_negation(self):
         sql, params = Query(Book).where(not_(Book.id == 1)).to_sql(placeholder="$")
         assert sql.endswith("WHERE NOT (id = $1)")
         assert params == (1,)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_conjunctions (SQLAlchemy 2.0.51)
     def test_operator_overloads_and_or_invert(self):
         sql, _ = Query(Book).where((Book.id == 1) | (Book.id == 2)).to_sql(placeholder="$")
         assert sql.endswith("WHERE (id = $1 OR id = $2)")
@@ -212,6 +230,7 @@ class TestBooleanComposition:
         sql, _ = Query(Book).where(~(Book.id == 1)).to_sql(placeholder="$")
         assert sql.endswith("WHERE NOT (id = $1)")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_python_bitwise_precedence_trap_without_parens(self):
         # `&`/`|` bind tighter than the comparison operators in Python, so an
         # un-parenthesised `Book.id > 1 & Book.id < 9` does not compare and then
@@ -229,6 +248,7 @@ class TestBooleanComposition:
 
 
 class TestJoins:
+    # Ported from test/sql/test_compiler.py::SelectTest.test_joins (SQLAlchemy 2.0.51)
     def test_inner_join(self):
         sql, _ = Query(Book, Tag).join(Tag, Tag.book_id == Book.id).to_sql()
         assert sql == (
@@ -237,14 +257,17 @@ class TestJoins:
             "FROM t_books JOIN t_tags ON t_tags.book_id = t_books.id"
         )
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_joins (SQLAlchemy 2.0.51)
     def test_left_outer_join(self):
         sql, _ = Query(Book, Tag).outer_join(Tag, Tag.book_id == Book.id).to_sql()
         assert "LEFT OUTER JOIN t_tags ON t_tags.book_id = t_books.id" in sql
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_full_outer_join (SQLAlchemy 2.0.51)
     def test_full_outer_join(self):
         sql, _ = Query(Author, Book).full_join(Book, Book.author_id == Author.id).to_sql()
         assert "FULL OUTER JOIN t_books ON t_books.author_id = t_authors.id" in sql
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_joins (SQLAlchemy 2.0.51)
     def test_three_way_join_chain(self):
         sql, _ = (
             Query(Author, Book, Tag)
@@ -261,6 +284,7 @@ class TestJoins:
             "JOIN t_tags ON t_tags.book_id = t_books.id"
         )
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_joins (SQLAlchemy 2.0.51)
     def test_join_combined_with_or_where(self):
         sql, params = (
             Query(Author, Book)
@@ -273,6 +297,7 @@ class TestJoins:
         )
         assert params == ("ada", "compilers")
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_joins (SQLAlchemy 2.0.51)
     def test_self_join_distinguishes_both_sides_in_where(self):
         mgr = Alias(Author, "mgr")
         sql, params = (
@@ -297,6 +322,7 @@ class TestJoins:
 
 
 class TestSubqueries:
+    # Ported from test/sql/test_compiler.py::SelectTest.test_from_subquery (SQLAlchemy 2.0.51)
     def test_subquery_in_from(self):
         sub = (Query(Book.author_id, count().label("n"))
                .group_by(Book.author_id)
@@ -309,6 +335,7 @@ class TestSubqueries:
         )
         assert params == ()
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_from_subquery (SQLAlchemy 2.0.51)
     def test_subquery_column_referenced_in_where(self):
         sub = (Query(Book.author_id, count().label("n"))
                .group_by(Book.author_id)
@@ -321,6 +348,7 @@ class TestSubqueries:
         )
         assert params == (1,)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_where_subquery (SQLAlchemy 2.0.51)
     def test_in_subquery(self):
         sql, params = (
             Query(Book)
@@ -330,6 +358,7 @@ class TestSubqueries:
         assert sql.endswith("WHERE id IN (SELECT book_id FROM t_tags WHERE label = $1)")
         assert params == ("classic",)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_exists (SQLAlchemy 2.0.51)
     def test_exists_subquery(self):
         sql, _ = (
             Query(Book)
@@ -341,6 +370,7 @@ class TestSubqueries:
             "(SELECT t_tags.id FROM t_tags WHERE t_tags.book_id = t_books.id)"
         )
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_exists (SQLAlchemy 2.0.51)
     def test_not_exists_subquery(self):
         sql, _ = (
             Query(Book)
@@ -349,6 +379,7 @@ class TestSubqueries:
         )
         assert "NOT EXISTS (SELECT t_tags.id FROM t_tags WHERE t_tags.book_id = t_books.id)" in sql
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_scalar_select (SQLAlchemy 2.0.51)
     def test_scalar_subquery_in_comparison(self):
         sql, _ = (
             Query(Book).where(Book.id > Query(count(Tag.id)).scalar_subquery())
@@ -368,6 +399,7 @@ class TestSubqueries:
 
 
 class TestCaseExpression:
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_case_when_then_else(self):
         sql, params = (
             Query(Book.id, case((Book.author_id == 1, "ada"), else_="other"))
@@ -378,6 +410,7 @@ class TestCaseExpression:
         )
         assert params == (1, "ada", "other")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_case_multiple_whens_no_else(self):
         sql, params = (
             Query(Book.id, case((Book.author_id == 1, "a"), (Book.author_id == 2, "b")))
@@ -389,6 +422,7 @@ class TestCaseExpression:
         )
         assert params == (1, "a", 2, "b")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_case_with_column_values(self):
         sql, params = (
             Query(Book.id, case((Book.author_id == 1, Book.title), else_=Book.id))
@@ -406,15 +440,18 @@ class TestCaseExpression:
 
 
 class TestLabelsAndAlias:
+    # Ported from test/sql/test_compiler.py::SelectTest.test_label_comparison_one (SQLAlchemy 2.0.51)
     def test_label_renders_as_alias_in_the_select_list(self):
         sql, _ = Query(Book.title.label("book_title")).to_sql()
         assert sql == "SELECT title AS book_title FROM t_books"
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_alias (SQLAlchemy 2.0.51)
     def test_table_alias_renames_the_from_clause(self):
         au = Alias(Author, "au")
         sql, _ = Query(au).to_sql()
         assert sql == "SELECT id, name, active FROM t_authors AS au"
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_alias (SQLAlchemy 2.0.51)
     def test_alias_join_where_order_limit_together(self):
         mgr = Alias(Author, "mgr")
         sql, params = (
@@ -432,6 +469,7 @@ class TestLabelsAndAlias:
         )
         assert params == (True, 5)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_alias_nesting_subquery (SQLAlchemy 2.0.51)
     def test_subquery_alias_exposes_labelled_output_columns(self):
         sub = Query(Book.id, Book.title.label("book_title")).subquery("bt")
         sql, _ = Query(sub.id, sub.book_title).to_sql()
@@ -447,10 +485,12 @@ class TestLabelsAndAlias:
 
 
 class TestDistinctLimitOffset:
+    # Ported from test/sql/test_compiler.py::SelectTest.test_distinct (SQLAlchemy 2.0.51)
     def test_distinct_alone(self):
         sql, _ = Query(Book.author_id).distinct().to_sql()
         assert sql == "SELECT DISTINCT author_id FROM t_books"
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_distinct (SQLAlchemy 2.0.51)
     def test_distinct_with_where(self):
         sql, params = (
             Query(Book.author_id).distinct().where(Book.title.like("c%"))
@@ -459,16 +499,19 @@ class TestDistinctLimitOffset:
         assert sql == "SELECT DISTINCT author_id FROM t_books WHERE title LIKE $1"
         assert params == ("c%",)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_limit_offset (SQLAlchemy 2.0.51)
     def test_limit_only(self):
         sql, params = Query(Book).limit(3).to_sql(placeholder="$")
         assert sql.endswith("LIMIT $1")
         assert params == (3,)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_limit_offset (SQLAlchemy 2.0.51)
     def test_offset_only(self):
         sql, params = Query(Book).offset(2).to_sql(placeholder="$")
         assert sql.endswith("OFFSET $1")
         assert params == (2,)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_limit_offset (SQLAlchemy 2.0.51)
     def test_limit_and_offset_together(self):
         sql, params = (
             Query(Book).order_by(Book.id).limit(2).offset(1).to_sql(placeholder="$")
@@ -476,6 +519,7 @@ class TestDistinctLimitOffset:
         assert sql == "SELECT id, author_id, title FROM t_books ORDER BY id LIMIT $1 OFFSET $2"
         assert params == (2, 1)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_limit_offset (SQLAlchemy 2.0.51)
     def test_limit_zero_is_allowed(self):
         assert Query(Book).limit(0).to_sql()[1] == (0,)
 
@@ -488,6 +532,7 @@ class TestDistinctLimitOffset:
 
 
 class TestForUpdate:
+    # Ported from test/dialect/postgresql/test_compiler.py::CompileTest.test_for_update (SQLAlchemy 2.0.51)
     def test_plain_for_update(self):
         sql, params = Query(Author).where(Author.id == 7).with_for_update().to_sql(
             placeholder="$"
@@ -495,26 +540,32 @@ class TestForUpdate:
         assert sql == "SELECT id, name, active FROM t_authors WHERE id = $1 FOR UPDATE"
         assert params == (7,)
 
+    # Ported from test/dialect/postgresql/test_compiler.py::CompileTest.test_for_update (SQLAlchemy 2.0.51)
     def test_nowait(self):
         sql, _ = Query(Author).with_for_update(nowait=True).to_sql()
         assert sql.endswith("FOR UPDATE NOWAIT")
 
+    # Ported from test/dialect/postgresql/test_compiler.py::CompileTest.test_for_update (SQLAlchemy 2.0.51)
     def test_skip_locked(self):
         sql, _ = Query(Author).with_for_update(skip_locked=True).to_sql()
         assert sql.endswith("FOR UPDATE SKIP LOCKED")
 
+    # Ported from test/dialect/postgresql/test_compiler.py::CompileTest.test_for_update (SQLAlchemy 2.0.51)
     def test_read_renders_for_share(self):
         sql, _ = Query(Author).with_for_update(read=True).to_sql()
         assert sql.endswith("FOR SHARE")
 
+    # Ported from test/dialect/postgresql/test_compiler.py::CompileTest.test_for_update (SQLAlchemy 2.0.51)
     def test_read_and_nowait(self):
         sql, _ = Query(Author).with_for_update(read=True, nowait=True).to_sql()
         assert sql.endswith("FOR SHARE NOWAIT")
 
+    # Ported from test/dialect/postgresql/test_compiler.py::CompileTest.test_for_update (SQLAlchemy 2.0.51)
     def test_key_share_and_nowait_renders_for_no_key_update(self):
         sql, _ = Query(Author).with_for_update(key_share=True, nowait=True).to_sql()
         assert sql.endswith("FOR NO KEY UPDATE NOWAIT")
 
+    # Ported from test/dialect/postgresql/test_compiler.py::CompileTest.test_for_update (SQLAlchemy 2.0.51)
     def test_key_share_and_read_and_nowait_renders_for_key_share(self):
         sql, _ = (
             Query(Author)
@@ -523,10 +574,12 @@ class TestForUpdate:
         )
         assert sql.endswith("FOR KEY SHARE NOWAIT")
 
+    # Ported from test/dialect/postgresql/test_compiler.py::CompileTest.test_for_update (SQLAlchemy 2.0.51)
     def test_of_a_single_source(self):
         sql, _ = Query(Author).with_for_update(of=Author).to_sql()
         assert sql.endswith("FOR UPDATE OF t_authors")
 
+    # Ported from test/dialect/postgresql/test_compiler.py::CompileTest.test_for_update (SQLAlchemy 2.0.51)
     def test_of_several_sources_with_nowait(self):
         sql, _ = (
             Query(Author, Book)
@@ -536,6 +589,7 @@ class TestForUpdate:
         )
         assert sql.endswith("FOR SHARE OF t_authors, t_books NOWAIT")
 
+    # Ported from test/dialect/postgresql/test_compiler.py::CompileTest.test_for_update (SQLAlchemy 2.0.51)
     def test_key_share_of_source_with_skip_locked(self):
         sql, _ = (
             Query(Author)
@@ -551,16 +605,19 @@ class TestForUpdate:
 
 
 class TestArithmeticExpressions:
+    # Ported from test/sql/test_compiler.py::SelectTest.test_calculated_columns (SQLAlchemy 2.0.51)
     def test_addition_and_multiplication_combo(self):
         sql, params = Query((Book.id + 1) * 2).to_sql(placeholder="$")
         assert sql == "SELECT ((id + $1) * $2) FROM t_books"
         assert params == (1, 2)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_calculated_columns (SQLAlchemy 2.0.51)
     def test_string_concat_in_select(self):
         sql, params = Query(Book.title.concat(" (book)")).to_sql(placeholder="$")
         assert sql == "SELECT (title || $1) FROM t_books"
         assert params == (" (book)",)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_calculated_columns (SQLAlchemy 2.0.51)
     def test_arithmetic_expression_in_where(self):
         sql, params = Query(Book).where(Book.id % 2 == 0).to_sql(placeholder="$")
         assert sql.endswith("WHERE (id % $1) = $2")
@@ -572,20 +629,24 @@ class TestCast:
     plain SQL type-name string rather than a type object (see cast()'s
     docstring), since sqlom has no type system to instantiate one from."""
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_cast (SQLAlchemy 2.0.51)
     def test_cast_function_form(self):
         sql, params = Query(cast(Book.id, "numeric")).to_sql(placeholder="$")
         assert sql == "SELECT CAST(id AS numeric) FROM t_books"
         assert params == ()
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_cast (SQLAlchemy 2.0.51)
     def test_cast_method_form_matches_the_function(self):
         function_form, _ = Query(cast(Book.id, "numeric")).to_sql()
         method_form, _ = Query(Book.id.cast("numeric")).to_sql()
         assert function_form == method_form
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_cast (SQLAlchemy 2.0.51)
     def test_cast_with_type_parameters(self):
         sql, _ = Query(cast(Book.id, "numeric(12, 9)")).to_sql()
         assert sql == "SELECT CAST(id AS numeric(12, 9)) FROM t_books"
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_cast (SQLAlchemy 2.0.51)
     def test_cast_a_literal_value(self):
         # Unlike SQLAlchemy's select(cast(1234, Text)), sqlom always needs a
         # real table in FROM (see Query()'s own "no table to select from"
@@ -594,6 +655,7 @@ class TestCast:
         assert sql == "SELECT id, CAST($1 AS text) FROM t_books"
         assert params == (1234,)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_cast (SQLAlchemy 2.0.51)
     def test_cast_used_in_a_comparison(self):
         sql, params = (
             Query(Book).where(Book.id.cast("text") == "7").to_sql(placeholder="$")
@@ -601,10 +663,12 @@ class TestCast:
         assert sql.endswith('WHERE CAST(id AS text) = $1')
         assert params == ("7",)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_cast_rejects_a_fragment_as_the_type_name(self):
         with pytest.raises(ValueError, match="not a valid SQL type name"):
             cast(Book.id, "text); DROP TABLE t_books; --")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_cast_end_to_end(self, run_query):
         rows = run_query(Query(cast(Book.id, "text")).where(Book.id == 10))
         assert rows == [("10",)]
@@ -615,25 +679,30 @@ class TestLiteralsAndKeywords:
     wrappers, needed only where a bare Python value isn't already accepted
     (as a whole SELECT-list entry on its own)."""
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_literal (SQLAlchemy 2.0.51)
     def test_literal_as_a_selected_value(self):
         sql, params = Query(Book.id, literal(1)).to_sql(placeholder="$")
         assert sql == "SELECT id, $1 FROM t_books"
         assert params == (1,)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_literal_declares_its_py_type_from_the_value_by_default(self):
         assert literal("x").py_type is str
         assert literal(1).py_type is int
         assert literal(1, py_type=float).py_type is float
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_true_false_null_render_as_bare_keywords(self):
         sql, params = Query(Book.id, true(), false(), null()).to_sql()
         assert sql == "SELECT id, TRUE, FALSE, NULL FROM t_books"
         assert params == ()
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_true_and_false_end_to_end(self, run_query):
         rows = run_query(Query(Book.id, true(), false()).where(Book.id == 10))
         assert rows == [(10, 1, 0)]  # sqlite has no bool type; 1/0 on the wire
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_null_used_in_a_case_arm(self):
         sql, params = Query(case((Book.id > 10, null()), else_="x")).to_sql(
             placeholder="$"
@@ -654,11 +723,13 @@ class TestLiteralColumn:
     everywhere else in that file instead.
     """
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_renders_verbatim_in_a_select_list(self):
         sql, params = Query(Book.id, literal_column("count(*) + 1")).to_sql()
         assert sql == "SELECT id, count(*) + 1 FROM t_books"
         assert params == ()
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_composes_with_ordinary_comparison_operators(self):
         sql, params = (
             Query(Book).where(literal_column("1") == Book.id).to_sql(placeholder="$")
@@ -666,6 +737,7 @@ class TestLiteralColumn:
         assert sql == "SELECT id, author_id, title FROM t_books WHERE 1 = id"
         assert params == ()
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_composes_with_arithmetic(self):
         # literal_column() alone selects nothing to name a FROM table from
         # (sources() is empty) — pair it with a real column, same as any
@@ -673,10 +745,12 @@ class TestLiteralColumn:
         sql, _ = Query(Book.id, literal_column("1") + literal_column("2")).to_sql()
         assert sql == "SELECT id, (1 + 2) FROM t_books"
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_py_type_is_declarable(self):
         assert literal_column("count(*)", py_type=int).py_type is int
         assert literal_column("count(*)").py_type is None
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_no_validation_at_all_unlike_cast_or_sql_function(self):
         # Deliberately accepts anything, including something that would be
         # rejected everywhere else in this library that takes a fragment.
@@ -684,6 +758,7 @@ class TestLiteralColumn:
         sql, _ = Query(Book.id, weird).to_sql()
         assert "DROP TABLE" in sql  # exactly the point: nothing stops this
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_an_unjoined_table_reference_is_not_caught(self):
         # The deliberate cost of the escape hatch: sources() returns nothing,
         # so unlike a real ColumnExpr this is never validated against the
@@ -702,6 +777,7 @@ class TestLiteralColumn:
 
 
 class TestGroupByHavingOrderBy:
+    # Ported from test/sql/test_compiler.py::SelectTest.test_orderby_groupby (SQLAlchemy 2.0.51)
     def test_group_by_then_order_by(self):
         sql, _ = (
             Query(Book.author_id, count().label("n"))
@@ -714,6 +790,7 @@ class TestGroupByHavingOrderBy:
             "GROUP BY author_id ORDER BY author_id"
         )
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_orderby_groupby (SQLAlchemy 2.0.51)
     def test_having_after_group_by(self):
         sql, params = (
             Query(Book.author_id, count().label("n"))
@@ -727,6 +804,7 @@ class TestGroupByHavingOrderBy:
         )
         assert params == (1,)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_orderby_groupby (SQLAlchemy 2.0.51)
     def test_order_by_calls_accumulate_rather_than_replace(self):
         sql, _ = (
             Query(Book).order_by(Book.author_id).order_by(Book.id, descending=True)
@@ -741,6 +819,7 @@ class TestGroupByHavingOrderBy:
 
 
 class TestCompoundSelects:
+    # Ported from test/sql/test_compiler.py::SelectTest.test_compound_selects (SQLAlchemy 2.0.51)
     def test_union_of_two_selects(self):
         sql, params = (
             Query(Author.name).where(Author.active == True)  # noqa: E712
@@ -754,10 +833,12 @@ class TestCompoundSelects:
         )
         assert params == (True, False)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_compound_selects (SQLAlchemy 2.0.51)
     def test_union_all_keeps_duplicates(self):
         sql, _ = Query(Author.name).union_all(Query(Author.name)).to_sql()
         assert "UNION ALL" in sql
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_compound_selects (SQLAlchemy 2.0.51)
     def test_except_removes_matching_rows(self):
         sql, params = (
             Query(Author.name)
@@ -771,6 +852,7 @@ class TestCompoundSelects:
         )
         assert params == (False,)
 
+    # Ported from test/sql/test_compiler.py::SelectTest.test_compound_selects (SQLAlchemy 2.0.51)
     def test_compound_with_order_by_limit_offset(self):
         sql, params = (
             Query(Author.name).union(Query(Author.name))

@@ -70,6 +70,7 @@ def where_of(query, placeholder="$"):
 
 
 class TestCaseMoreVariants:
+    # Ported from test/sql/test_case_statement.py::CaseTest.test_case (SQLAlchemy 2.0.51)
     def test_three_when_branches_with_else(self):
         clause, params = select_of(
             Query(case(
@@ -85,6 +86,7 @@ class TestCaseMoreVariants:
         )
         assert params == (12, "d", 11, "c", 10, "b", "a")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_case_without_else_end_to_end(self, run_query):
         # No ELSE means an unmatched row hydrates to None, not a database
         # error — this is the run-time counterpart of test_without_else in
@@ -97,6 +99,7 @@ class TestCaseMoreVariants:
             (10, "prolific"), (11, "prolific"), (12, None), (13, None),
         ]
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_case_value_used_in_where_clause(self):
         category = case((Book.author_id == 1, "prolific"), else_="other")
         clause, params = where_of(Query(Book.id).where(category == "prolific"))
@@ -105,6 +108,7 @@ class TestCaseMoreVariants:
         )
         assert params == (1, "prolific", "other", "prolific")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_case_value_used_in_where_clause_end_to_end(self, run_query):
         category = case((Book.author_id == 1, "prolific"), else_="other")
         rows = run_query(
@@ -112,6 +116,7 @@ class TestCaseMoreVariants:
         )
         assert rows == [(10,), (11,)]
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_case_value_used_in_order_by_end_to_end(self, run_query):
         # Sorting by a CASE puts rows in groups the schema itself has no
         # column for — here, "id under 12" before "id 12 and over" — with a
@@ -122,6 +127,7 @@ class TestCaseMoreVariants:
         )
         assert [book_id for book_id, in rows] == [12, 13, 10, 11]
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_case_used_in_arithmetic(self):
         clause, params = select_of(
             Query(case((Book.id > 10, 5), else_=0) + 1)
@@ -129,6 +135,7 @@ class TestCaseMoreVariants:
         assert clause == "(CASE WHEN id > $1 THEN $2 ELSE $3 END + $4)"
         assert params == (10, 5, 0, 1)
 
+    # Ported from test/sql/test_case_statement.py::CaseTest.test_case (SQLAlchemy 2.0.51)
     def test_case_condition_combining_and(self):
         clause, _ = select_of(
             Query(case(
@@ -140,6 +147,7 @@ class TestCaseMoreVariants:
             "CASE WHEN (id > $1 AND author_id = $2) THEN $3 ELSE $4 END"
         )
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_case_condition_combining_or(self):
         clause, _ = select_of(
             Query(case(
@@ -151,6 +159,7 @@ class TestCaseMoreVariants:
             "CASE WHEN (author_id = $1 OR author_id = $2) THEN $3 ELSE $4 END"
         )
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_nested_case_as_a_when_value(self):
         inner = case((Book.author_id == 1, "A"), else_="Z")
         outer = case((Book.id > 10, inner), else_="other")
@@ -161,6 +170,7 @@ class TestCaseMoreVariants:
         )
         assert params == (10, 1, "A", "Z", "other")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_case_group_by_case_expression_end_to_end(self, run_query):
         tier = case((Book.id < 12, "early"), else_="late")
         rows = run_query(
@@ -170,6 +180,7 @@ class TestCaseMoreVariants:
         )
         assert rows == [("early", 2), ("late", 2)]
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_case_else_none_is_the_same_as_no_else(self):
         # Case.to_sql() only emits ELSE when self.else_ is not None, so
         # else_=None is indistinguishable from omitting else_ altogether —
@@ -181,6 +192,7 @@ class TestCaseMoreVariants:
         assert with_none == without_else == "CASE WHEN id > $1 THEN $2 END"
         assert params == (10, 1)
 
+    # Ported from test/sql/test_case_statement.py::CaseTest.test_literal_interpretation_three (SQLAlchemy 2.0.51)
     def test_simple_case_form_with_value(self):
         # Fixed: case() now accepts value=, the "simple CASE" form —
         # CASE value WHEN match THEN result ... END — matching SQLAlchemy's
@@ -192,6 +204,7 @@ class TestCaseMoreVariants:
         assert clause == "CASE author_id WHEN $1 THEN $2 WHEN $3 THEN $4 ELSE $5 END"
         assert params == (1, "a", 2, "b", "c")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_simple_case_form_end_to_end(self, run_query):
         rows = run_query(
             Query(Book.id, case((1, "alpha"), (2, "beta"), value=Book.author_id,
@@ -209,6 +222,7 @@ class TestCaseMoreVariants:
 
 
 class TestWindowMorePatterns:
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_rank_with_partition_and_order(self):
         clause, _ = select_of(
             Query(rank().over(partition_by=Book.author_id,
@@ -216,6 +230,7 @@ class TestWindowMorePatterns:
         )
         assert clause == "rank() OVER (PARTITION BY author_id ORDER BY id DESC)"
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_dense_rank_with_partition_and_order(self):
         clause, _ = select_of(
             Query(dense_rank().over(partition_by=Book.author_id,
@@ -225,6 +240,7 @@ class TestWindowMorePatterns:
             "dense_rank() OVER (PARTITION BY author_id ORDER BY id DESC)"
         )
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_ntile_with_partition_by(self):
         clause, params = select_of(
             Query(ntile(2).over(partition_by=Book.author_id, order_by=Book.id))
@@ -232,6 +248,7 @@ class TestWindowMorePatterns:
         assert clause == "ntile($1) OVER (PARTITION BY author_id ORDER BY id)"
         assert params == (2,)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_first_value_over_partition_and_order(self):
         clause, _ = select_of(
             Query(first_value(Book.id).over(partition_by=Book.author_id,
@@ -241,6 +258,7 @@ class TestWindowMorePatterns:
             "first_value(id) OVER (PARTITION BY author_id ORDER BY id)"
         )
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_last_value_over_partition_and_order_with_frame(self):
         # last_value() needs the frame widened to the whole partition, or it
         # only sees rows up to the current one — the same portability wart
@@ -256,6 +274,7 @@ class TestWindowMorePatterns:
             "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)"
         )
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_lag_over_partition_and_order(self):
         clause, params = select_of(
             Query(lag(Book.id).over(partition_by=Book.author_id, order_by=Book.id))
@@ -263,6 +282,7 @@ class TestWindowMorePatterns:
         assert clause == "lag(id, $1) OVER (PARTITION BY author_id ORDER BY id)"
         assert params == (1,)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_lead_with_offset_over_partition_and_order(self):
         clause, params = select_of(
             Query(lead(Book.id, 2).over(partition_by=Book.author_id,
@@ -271,6 +291,7 @@ class TestWindowMorePatterns:
         assert clause == "lead(id, $1) OVER (PARTITION BY author_id ORDER BY id)"
         assert params == (2,)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_lag_and_lead_accept_a_default_value(self):
         # Matches SQLAlchemy's func.lag(col, offset, default): the row-out-of-
         # range fallback is a third positional argument to the function call.
@@ -286,12 +307,14 @@ class TestWindowMorePatterns:
         assert clause == "lead(id, $1, $2) OVER (ORDER BY id)"
         assert params == (2, -1)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_mixed_ascending_and_descending_order_columns(self):
         clause, _ = select_of(
             Query(rank().over(order_by=[Book.author_id, (Book.id, "DESC")]))
         )
         assert clause == "rank() OVER (ORDER BY author_id, id DESC)"
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_frame_combined_with_partition_and_order(self):
         clause, _ = select_of(
             Query(sum_(Book.id).over(
@@ -304,12 +327,14 @@ class TestWindowMorePatterns:
             "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
         )
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_window_labelled_alongside_a_plain_column(self):
         clause, _ = select_of(
             Query(Book.id, row_number().over(order_by=Book.id).label("rn"))
         )
         assert clause == "id, row_number() OVER (ORDER BY id) AS rn"
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_rank_vs_dense_rank_with_ties_end_to_end(self, run_query):
         # rank() leaves gaps after a tie, dense_rank() does not — the
         # distinguishing behaviour between the two, exercised over an
@@ -322,12 +347,14 @@ class TestWindowMorePatterns:
         )
         assert rows == [(10, 1, 1), (11, 1, 1), (12, 3, 2), (13, 3, 2)]
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_ntile_end_to_end(self, run_query):
         rows = run_query(
             Query(Book.id, ntile(2).over(order_by=Book.id)).order_by(Book.id)
         )
         assert rows == [(10, 1), (11, 1), (12, 2), (13, 2)]
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_lag_and_lead_end_to_end(self, run_query):
         rows = run_query(
             Query(Book.author_id, Book.id,
@@ -342,14 +369,17 @@ class TestWindowMorePatterns:
             (3, 13, None, None),
         ]
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_unlabelled_window_function_in_a_subquery_is_refused(self):
         with pytest.raises(ValueError, match="usable column name"):
             Query(Book.id, row_number().over(order_by=Book.id)).subquery("s")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_unlabelled_window_function_in_a_cte_is_refused(self):
         with pytest.raises(ValueError, match="usable column name"):
             Query(Book.id, row_number().over(order_by=Book.id)).cte("c")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_labelled_window_function_exposed_via_a_subquery_end_to_end(self, run_query):
         sub = (
             Query(Book.id, row_number().over(order_by=Book.id).label("rn"))
@@ -366,6 +396,7 @@ class TestWindowMorePatterns:
 
 
 class TestLabelEdgeCases:
+    # Ported from test/sql/test_labels.py::ColExprLabelTest.test_column_auto_label_dupes_label_style_none (SQLAlchemy 2.0.51)
     def test_label_collision_renders_both_labels_verbatim(self):
         # Unlike SQLAlchemy, which auto-disambiguates colliding labels
         # (LABEL_STYLE_DISAMBIGUATE_ONLY), sqlom does not invent names at
@@ -373,6 +404,7 @@ class TestLabelEdgeCases:
         sql, _ = Query(Book.id.label("n"), Book.author_id.label("n")).to_sql()
         assert sql == "SELECT id AS n, author_id AS n FROM t_books"
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_relabelling_a_labelled_expression_replaces_the_name(self):
         # Labelled inherits .label() from Expression, so this is legal; the
         # inner label is discarded rather than stacked into two AS clauses.
@@ -380,33 +412,40 @@ class TestLabelEdgeCases:
         clause, _ = select_of(Query(twice_labelled))
         assert clause == "sum(id) AS second"
 
+    # Ported from test/sql/test_labels.py::ColExprLabelTest.test_wraps_col_expr_label_propagate (SQLAlchemy 2.0.51)
     def test_labelling_a_subquery_exposed_column(self):
         sub = Query(Book.id, Book.title.label("book_title")).subquery("s")
         clause, _ = select_of(Query(sub.book_title.label("renamed")))
         assert clause == "book_title AS renamed"
 
+    # Ported from test/sql/test_labels.py::ColExprLabelTest.test_wraps_col_expr_label_propagate (SQLAlchemy 2.0.51)
     def test_labelling_a_subquery_exposed_column_keeps_its_type(self):
         sub = Query(Book.id, Book.title.label("book_title")).subquery("s")
         query = Query(sub.book_title.label("renamed"))
         assert query.output_columns() == [("renamed", str)]
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_unlabelled_case_in_a_subquery_is_refused(self):
         with pytest.raises(ValueError, match="usable column name"):
             Query(Book.id, case((Book.id > 10, "hi"), else_="lo")).subquery("s")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_unlabelled_arithmetic_in_a_cte_is_refused(self):
         with pytest.raises(ValueError, match="usable column name"):
             Query(Book.id, Book.id * 2).cte("c")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_labelled_binary_op_renders_as_alias(self):
         clause, params = select_of(Query((Book.id * 2).label("doubled")))
         assert clause == "(id * $1) AS doubled"
         assert params == (2,)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_labelled_function_call_renders_as_alias(self):
         clause, _ = select_of(Query(func.upper(Book.title).label("upper_title")))
         assert clause == "upper(title) AS upper_title"
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_output_name_prefers_the_label_over_the_expression(self):
         assert (Book.id * 2).label("doubled").output_name() == "doubled"
         assert func.upper(Book.title).label("up").output_name() == "up"

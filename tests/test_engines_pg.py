@@ -295,6 +295,7 @@ class TestNewQueryFeaturesOnPostgres:
         rows = await engine.fetch_all(Query(Author.name).order_by(Author.name).limit(2))
         assert rows == [("ada",), ("brian",)]
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     async def test_with_for_update_executes(self, engine):
         # FOR UPDATE/FOR SHARE are Postgres-only (sqlite has no locking
         # clause), so this can only be exercised here. A single fetch_all
@@ -305,6 +306,7 @@ class TestNewQueryFeaturesOnPostgres:
         )
         assert len(rows) == 1 and rows[0].name == "ada"
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     async def test_with_for_update_of_a_specific_table_across_a_join(self, engine):
         rows = await engine.fetch_all(
             Query(Author, Book)
@@ -348,6 +350,8 @@ class TestNewQueryFeaturesOnPostgres:
         assert await engine.fetch_all(query, id=1) == [("ada",)]
         assert await engine.fetch_all(query, id=2) == [("brian",)]
 
+    # sqlom-original test (no SQLAlchemy equivalent) — same premise as
+    # test_bindparam_reuse_through_the_engine, but through tx.fetch_all().
     async def test_bindparam_reuse_through_a_transaction(self, engine):
         from sqlom import bindparam
 

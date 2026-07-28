@@ -75,6 +75,7 @@ class TestReturningAccumulates:
     `.returning(t.c.x)` then `.returning(t.c.y)` on INSERT/UPDATE/DELETE and
     expects both to appear."""
 
+    # Ported from test/sql/test_returning.py::ReturnCombinationTests.test_return_combinations (SQLAlchemy 2.0.51)
     def test_insert_returning_called_twice_accumulates_columns(self):
         statement = Insert(Author).values(id=1).returning(Author.id)
         statement.returning(Author.name)
@@ -82,17 +83,20 @@ class TestReturningAccumulates:
         assert sql == "INSERT INTO t_authors (id) VALUES ($1) RETURNING id, name"
         assert params == (1,)
 
+    # Ported from test/sql/test_returning.py::ReturnCombinationTests.test_return_combinations (SQLAlchemy 2.0.51)
     def test_update_returning_called_twice_accumulates_columns(self):
         statement = (Update(Author).set(name="z").where(Author.id == 1)
                      .returning(Author.id))
         statement.returning(Author.name)
         assert sql_of(statement).endswith("RETURNING id, name")
 
+    # Ported from test/sql/test_returning.py::ReturnCombinationTests.test_return_combinations (SQLAlchemy 2.0.51)
     def test_delete_returning_called_twice_accumulates_columns(self):
         statement = Delete(Author).where(Author.id == 1).returning(Author.id)
         statement.returning(Author.name)
         assert sql_of(statement).endswith("RETURNING id, name")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_on_conflict_do_nothing_returning_called_twice_accumulates_columns(self):
         statement = (Insert(Author).values(id=1)
                      .on_conflict_do_nothing(Author.id)
@@ -102,6 +106,7 @@ class TestReturningAccumulates:
             "ON CONFLICT (id) DO NOTHING RETURNING id, name"
         )
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_mixing_a_column_and_the_whole_model_across_two_returning_calls(self):
         # Not forbidden: the "only one whole-model call" rule only fires
         # within output_columns()/hydration_spec() bookkeeping, not at
@@ -122,6 +127,7 @@ class TestReturningExpressions:
     Mirrors the arithmetic-expression shapes in
     `ReturnCombinationTests.test_dml_returning_c_labels_four`."""
 
+    # Ported from test/sql/test_returning.py::ReturnCombinationTests.test_dml_returning_c_labels_four (SQLAlchemy 2.0.51)
     def test_delete_returning_several_arithmetic_expressions(self):
         statement = (Delete(Author).where(Author.id == 1)
                      .returning(Author.id, Author.id * -1, Author.id + 10))
@@ -132,6 +138,7 @@ class TestReturningExpressions:
         )
         assert params == (1, -1, 10)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_delete_returning_expression_over_the_using_source(self):
         statement = (Delete(Book).using(Author)
                      .where(Author.id == Book.author_id)
@@ -144,6 +151,7 @@ class TestReturningExpressions:
         )
         assert params == ("!",)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_insert_returning_an_alias_column_and_an_expression(self):
         alias = Alias(Author, "a")
         statement = (Insert(alias).values(id=1, name="x")
@@ -155,6 +163,7 @@ class TestReturningExpressions:
         )
         assert params == (1, "x", "!")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_update_returning_expression_over_the_from_source(self):
         statement = (Update(Book).set(title=Author.name).from_(Author)
                      .where(Author.id == Book.author_id)
@@ -170,6 +179,7 @@ class TestInsertValuesEdgeCases:
     (`test_multi_multi`, `test_named`) and `EmptyTest`
     (`test_insert_with_empty_collection_values`)."""
 
+    # Ported from test/sql/test_insert.py::EmptyTest.test_insert_with_empty_collection_values (SQLAlchemy 2.0.51)
     def test_empty_dict_row_renders_an_empty_column_list(self):
         # `values()` with no keywords raises (test_empty_keywords in
         # test_dml.py); `values({})` — an explicit empty *dict* — does not,
@@ -179,12 +189,14 @@ class TestInsertValuesEdgeCases:
         assert sql == "INSERT INTO t_authors () VALUES ()"
         assert params == ()
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_default_row_ceiling_uses_the_full_model_width(self):
         # test_parameter_ceiling in test_dml.py always passes an explicit
         # columns list; calling max_rows_per_statement(model) with none
         # falls back to every column the model declares.
         assert max_rows_per_statement(Book) == 32766 // len(Book.__columns__)
 
+    # Ported from test/sql/test_insert.py::MultirowTest.test_mix_single_and_multi_single_first (SQLAlchemy 2.0.51)
     def test_single_row_then_bulk_rows_accumulate_into_one_statement(self):
         # SQLAlchemy's MultirowTest forbids mixing single- and multi-row
         # .values() calls (test_mix_single_and_multi_single_first raises
@@ -202,6 +214,7 @@ class TestInsertValuesEdgeCases:
         assert params == (1, "d1", 2, "d2", 3, "d3")
         assert statement.row_count == 3
 
+    # Ported from test/sql/test_insert.py::MultirowTest.test_mix_single_and_multi_multi_first (SQLAlchemy 2.0.51)
     def test_bulk_rows_then_single_row_accumulate_into_one_statement(self):
         # The reverse order (test_mix_single_and_multi_multi_first in
         # SQLAlchemy) is likewise just accumulation here.
@@ -223,6 +236,7 @@ class TestUpdateAssignmentForms:
     assignment alongside a literal one in the same statement, params in
     declaration order) and `test_update_10` (accumulating `.values()` calls)."""
 
+    # Ported from test/sql/test_update.py::UpdateTest.test_update_6 (SQLAlchemy 2.0.51)
     def test_expression_and_literal_assignments_interleave_params_in_order(self):
         statement = (Update(Book).set(title=Book.title.concat("!"), author_id=5)
                      .where(Book.id == 1))
@@ -233,6 +247,7 @@ class TestUpdateAssignmentForms:
         )
         assert params == ("!", 5, 1)
 
+    # Ported from test/sql/test_update.py::UpdateTest.test_update_7 (SQLAlchemy 2.0.51)
     def test_literal_then_expression_assignment_also_interleaves_params(self):
         # Same shape, opposite declaration order, via two separate .set()
         # calls rather than one — params still follow assignment order.
@@ -245,6 +260,7 @@ class TestUpdateAssignmentForms:
         )
         assert params == ("x", 1, 1)
 
+    # Ported from test/sql/test_update.py::UpdateTest.test_update_10 (SQLAlchemy 2.0.51)
     def test_repeated_set_calls_on_the_same_column_do_not_merge(self):
         # Documents a real behavioural difference from SQLAlchemy: there,
         # re-`.values()`-ing the same column overwrites it (test_update_10);
@@ -257,6 +273,7 @@ class TestUpdateAssignmentForms:
         assert sql == "UPDATE t_authors SET name = $1, name = $2"
         assert params == ("a", "b")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_values_alias_and_set_can_be_mixed_in_the_same_chain(self):
         # Update.values is literally `set` (see dml.py), so a chain that
         # calls both names still accumulates into one assignment list.
@@ -266,6 +283,7 @@ class TestUpdateAssignmentForms:
         assert sql == "UPDATE t_books SET title = $1, author_id = $2 WHERE id = $3"
         assert params == ("x", 5, 1)
 
+    # Ported from test/sql/test_update.py::UpdateTest.test_correlated_update_two (SQLAlchemy 2.0.51)
     def test_scalar_subquery_as_an_assignment_value(self):
         # Fixed: scalar_subquery() now returns a real ScalarSubquery
         # Expression, so it renders as `col = (SELECT ...)` — mirroring
@@ -291,6 +309,7 @@ class TestSubqueryConditions:
     `_five`. `scalar_subquery()` on a `Query` just returns the query itself
     (see `query.py`), so any comparison operator accepts it directly."""
 
+    # Ported from test/sql/test_delete.py::DeleteTest.test_non_correlated_select (SQLAlchemy 2.0.51)
     def test_delete_where_a_non_correlated_scalar_subquery(self):
         subquery = Query(Book.title).where(Book.id == 7).scalar_subquery()
         statement = Delete(Author).where(Author.name == subquery)
@@ -301,6 +320,7 @@ class TestSubqueryConditions:
         )
         assert params == (7,)
 
+    # Ported from test/sql/test_delete.py::DeleteTest.test_correlated_select (SQLAlchemy 2.0.51)
     def test_delete_where_a_correlated_scalar_subquery(self):
         subquery = (Query(Book.title).correlate(Author)
                     .where(Book.author_id == Author.id).scalar_subquery())
@@ -313,6 +333,7 @@ class TestSubqueryConditions:
         )
         assert params == ()
 
+    # Ported from test/sql/test_update.py::UpdateTest.test_correlated_update_five (SQLAlchemy 2.0.51)
     def test_update_where_a_correlated_scalar_subquery(self):
         subquery = (Query(Book.title).correlate(Author)
                     .where(Book.author_id == Author.id).scalar_subquery())
@@ -337,6 +358,7 @@ class TestDeleteUsingVariations:
     delete) and `test_update_from.py::test_a_subquery_condition_still_works`
     (the UPDATE analogue of the last case)."""
 
+    # Ported from test/sql/test_delete.py::DeleteFromRoundTripTest.test_exec_two_table_plus_alias (SQLAlchemy 2.0.51)
     def test_using_mixes_an_alias_and_a_plain_table(self):
         author_alias = Alias(Author, "a")
         statement = (Delete(Book).using(author_alias, Tag)
@@ -349,6 +371,7 @@ class TestDeleteUsingVariations:
         )
         assert params == ()
 
+    # Ported from test/sql/test_delete.py::DeleteFromRoundTripTest.test_exec_alias_plus_table (SQLAlchemy 2.0.51)
     def test_alias_as_the_delete_target_with_using(self):
         book_alias = Alias(Book, "b")
         statement = (Delete(book_alias).using(Author)
@@ -361,6 +384,7 @@ class TestDeleteUsingVariations:
         )
         assert params == (True,)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_returning_with_several_using_tables(self):
         statement = (Delete(Book).using(Author, Tag)
                      .where(Author.id == Book.author_id, Tag.book_id == Book.id)
@@ -372,6 +396,7 @@ class TestDeleteUsingVariations:
             "AND t_tags.book_id = t_books.id RETURNING t_books.id"
         )
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_using_condition_combined_with_an_uncorrelated_subquery(self):
         statement = (Delete(Book).using(Author).where(
             Author.id == Book.author_id,
@@ -401,16 +426,19 @@ class TestEngineReturningMismatch:
         # Never connected: self.pool stays None, so this needs no server.
         return DatabaseEngine("postgresql://fake:fake@localhost/fake")
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     async def test_execute_rejects_a_statement_that_has_returning(self, engine):
         statement = Insert(Author).values(id=1).returning(Author.id)
         with pytest.raises(ValueError, match="use fetch_all"):
             await engine.execute(statement)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     async def test_fetch_all_rejects_a_statement_that_has_no_returning(self, engine):
         statement = Insert(Author).values(id=1)
         with pytest.raises(ValueError, match="has no returning"):
             await engine.fetch_all(statement)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     async def test_execute_accepts_a_statement_without_returning_and_reaches_the_pool(
         self, engine
     ):
@@ -422,6 +450,7 @@ class TestEngineReturningMismatch:
         with pytest.raises(RuntimeError, match="not connected"):
             await engine.execute(statement)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     async def test_fetch_all_accepts_a_statement_with_returning_and_reaches_the_pool(
         self, engine
     ):

@@ -73,6 +73,7 @@ def test_bindparams_kw_form():
     assert params == (4, 7)
 
 
+# sqlom-original test (no SQLAlchemy equivalent)
 def test_bindparams_can_be_supplied_across_two_calls():
     clause = text("select * from foo where lala=:bar and hoho=:whee")
     clause = clause.bindparams(bar=4)
@@ -82,6 +83,7 @@ def test_bindparams_can_be_supplied_across_two_calls():
     assert params == (4, 7)
 
 
+# sqlom-original test (no SQLAlchemy equivalent)
 def test_missing_bindparam_raises_a_clear_error():
     with pytest.raises(ValueError, match=r"references :whee"):
         text("select * from foo where lala=:bar and hoho=:whee").bindparams(
@@ -89,6 +91,10 @@ def test_missing_bindparam_raises_a_clear_error():
         ).to_sql("?")
 
 
+# sqlom-original test (no SQLAlchemy equivalent) — the one practical case
+# from SQLAlchemy's test_bindparam_detection that actually matters in real
+# SQL; see this file's module docstring for why the rest of that test's
+# escaping-edge-case matrix isn't ported.
 def test_double_colon_cast_syntax_is_not_mistaken_for_a_bindparam():
     # Postgres cast syntax (col::type) must survive untouched — the token
     # pattern requires a `:` not itself preceded by one.
@@ -97,12 +103,14 @@ def test_double_colon_cast_syntax_is_not_mistaken_for_a_bindparam():
     assert params == ("7",)
 
 
+# sqlom-original test (no SQLAlchemy equivalent)
 def test_text_as_a_where_clause_in_a_real_query():
     sql, params = Query(Author).where(text("id = 1")).to_sql()
     assert sql == "SELECT id, name, active FROM t_authors WHERE id = 1"
     assert params == ()
 
 
+# sqlom-original test (no SQLAlchemy equivalent)
 def test_text_combined_with_an_ordinary_where_clause_numbers_params_in_order():
     # The one case that would catch a placeholder-ordering bug: a text()
     # bindparam and a normal where() clause in the same statement.
@@ -119,6 +127,7 @@ def test_text_combined_with_an_ordinary_where_clause_numbers_params_in_order():
     assert params == (1, 5)
 
 
+# sqlom-original test (no SQLAlchemy equivalent)
 def test_text_used_as_a_selected_value():
     # A Predicate is also a plain Expression (Predicate extends
     # Expression[bool]), so text() composes as a value too, not just a
@@ -128,6 +137,7 @@ def test_text_used_as_a_selected_value():
     assert params == ()
 
 
+# sqlom-original test (no SQLAlchemy equivalent)
 def test_text_end_to_end(db):
     query = Query(Author).where(text("active = 1")).order_by(Author.id)
     sql, params = query.to_sql()

@@ -55,24 +55,28 @@ def _build_query(sink):
 
 
 class TestPropagation:
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_dialect_reaches_every_nested_position(self):
         sink = []
         _build_query(sink).to_sql(dialect=POSTGRES)
         assert len(sink) == 5
         assert all(dialect is POSTGRES for dialect in sink)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_a_different_dialect_reaches_every_position_too(self):
         sink = []
         _build_query(sink).to_sql(dialect=SQLITE)
         assert len(sink) == 5
         assert all(dialect is SQLITE for dialect in sink)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_no_dialect_means_current_dialect_is_none_everywhere(self):
         sink = []
         _build_query(sink).to_sql()
         assert len(sink) == 5
         assert all(dialect is None for dialect in sink)
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_current_dialect_is_none_again_after_the_render_finishes(self):
         sink = []
         query = _build_query(sink)
@@ -81,6 +85,7 @@ class TestPropagation:
 
 
 class TestCaching:
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_different_dialects_do_not_collide_in_the_cache(self):
         query = Query(Author).where(Author.id == 1)
         default_sql, _ = query.to_sql()
@@ -91,6 +96,7 @@ class TestCaching:
         assert sqlite_sql == default_sql
         assert len(query._sql_cache) == 3
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_repeat_calls_hit_the_cache_rather_than_growing_it(self):
         query = Query(Author).where(Author.id == 1)
         query.to_sql(dialect=POSTGRES)
@@ -99,6 +105,7 @@ class TestCaching:
         query.to_sql(dialect=SQLITE)
         assert len(query._sql_cache) == 2
 
+    # sqlom-original test (no SQLAlchemy equivalent)
     def test_explicit_placeholder_overrides_the_dialect_default(self):
         # dialect=POSTGRES defaults to "$", but an explicit placeholder wins.
         query = Query(Author).where(Author.id == 1)

@@ -66,6 +66,7 @@ def sql_of(query, placeholder="$"):
 # --------------------------------------------------------------------------
 
 
+# Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_plain_cartesian (SQLAlchemy 2.0.51)
 def test_where_reference_to_an_unjoined_table_is_rejected_immediately():
     # SQLAlchemy's test_plain_cartesian builds `select(a).where(b.col == 5)`
     # and only *later* discovers, by linting the compiled SQL, that `b` is
@@ -74,16 +75,19 @@ def test_where_reference_to_an_unjoined_table_is_rejected_immediately():
         Query(Author).where(Book.title == "x")
 
 
+# Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_plain_cartesian (SQLAlchemy 2.0.51)
 def test_order_by_reference_to_an_unjoined_table_is_also_rejected():
     with pytest.raises(ValueError, match="not part of this query"):
         Query(Author).order_by(Book.id)
 
 
+# Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_plain_cartesian (SQLAlchemy 2.0.51)
 def test_group_by_reference_to_an_unjoined_table_is_also_rejected():
     with pytest.raises(ValueError, match="not part of this query"):
         Query(Author).group_by(Book.author_id)
 
 
+# Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_c_and_d_both_disconnected (SQLAlchemy 2.0.51)
 def test_a_second_join_still_disconnected_from_a_third_table_is_rejected():
     # Mirrors test_c_and_d_both_disconnected's shape (a joined to b, c and d
     # both floating free) — but sqlom catches it at the join() call for
@@ -105,22 +109,26 @@ def test_a_second_join_still_disconnected_from_a_third_table_is_rejected():
 # --------------------------------------------------------------------------
 
 
+# sqlom-original test (no SQLAlchemy equivalent)
 def test_selecting_two_unjoined_models_is_rejected():
     with pytest.raises(ValueError, match="not part of this query's FROM/JOIN"):
         Query(Author, Book).to_sql()
 
 
+# sqlom-original test (no SQLAlchemy equivalent)
 def test_selecting_columns_from_two_unjoined_tables_is_rejected():
     with pytest.raises(ValueError, match="not part of this query"):
         Query(Author.name, Book.title).to_sql()
 
 
+# sqlom-original test (no SQLAlchemy equivalent)
 def test_selecting_two_models_after_joining_them_still_works():
     # The fix must not disturb the ordinary, already-well-tested case.
     sql, _ = Query(Author, Book).join(Book, Book.author_id == Author.id).to_sql()
     assert "t_books.id" in sql and "t_authors.id" in sql
 
 
+# sqlom-original test (no SQLAlchemy equivalent)
 def test_count_of_a_model_still_supplies_its_own_from_with_nothing_else_selected():
     # count(Model) is meant to work with no join at all — it names its own
     # table (see README §6) — and must not be caught by the new check.
@@ -133,6 +141,7 @@ def test_count_of_a_model_still_supplies_its_own_from_with_nothing_else_selected
 # --------------------------------------------------------------------------
 
 
+# Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_now_connected (SQLAlchemy 2.0.51)
 def test_adding_the_missing_join_condition_fixes_it():
     # The build-time equivalent of test_now_connected: once every table is
     # actually joined by a real linking condition, the query builds cleanly.
@@ -161,12 +170,14 @@ def test_adding_the_missing_join_condition_fixes_it():
 # --------------------------------------------------------------------------
 
 
+# Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_disconnected_subquery (SQLAlchemy 2.0.51)
 def test_joining_a_subquery_with_an_unrelated_on_clause_is_rejected():
     busy = Query(Book.author_id).subquery("busy")
     with pytest.raises(ValueError, match="cross join"):
         Query(Author).join(busy, Author.active == True)  # noqa: E712
 
 
+# Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_now_connect_it (SQLAlchemy 2.0.51)
 def test_joining_a_subquery_with_the_real_link_column_works():
     busy = Query(Book.author_id).subquery("busy")
     query = Query(Author).join(busy, busy.author_id == Author.id)
@@ -180,6 +191,7 @@ def test_joining_a_subquery_with_the_real_link_column_works():
 # --------------------------------------------------------------------------
 
 
+# Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_right_nested_join_without_issue (SQLAlchemy 2.0.51)
 def test_three_way_join_chain_with_no_disconnected_table():
     query = (
         Query(Author, Book, Tag)
@@ -192,6 +204,7 @@ def test_three_way_join_chain_with_no_disconnected_table():
         assert source in query._sources()
 
 
+# Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_right_nested_join_with_an_issue (SQLAlchemy 2.0.51)
 def test_a_fourth_disconnected_table_is_rejected_even_after_a_valid_chain():
     other = Alias(Author, "other")
     with pytest.raises(ValueError, match="not part of this query"):
@@ -207,6 +220,7 @@ def test_a_fourth_disconnected_table_is_rejected_even_after_a_valid_chain():
 # --------------------------------------------------------------------------
 
 
+# Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_join_on_true (SQLAlchemy 2.0.51)
 def test_there_is_no_escape_hatch_for_an_intentional_cartesian_product():
     # Unlike SQLAlchemy's join(b, true()), sqlom's join() always requires an
     # ON clause that actually links the new source to one already present —

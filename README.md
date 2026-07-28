@@ -197,9 +197,59 @@ tuple_(User.id, User.name) == (1, "ada")                # row-value comparison
 tuple_(User.id, User.name).in_(select(Post.user_id, Post.title))  # ...against a subquery too
 ```
 
-`select`/`insert`/`update`/`delete` are plain function aliases for `Query`/`Insert`/`Update`/`Delete` — construct with whichever reads better; `Query(User)` and `select(User)` are the exact same object. `Update.values()` is an alias for `.set()` (SQLAlchemy spells both `Insert` and `Update`'s assignment method `.values()`); `.outerjoin()`/`outer_join()` and `.join(..., isouter=True, full=True)` are equivalent spellings of the same four join kinds described in [§3](#3-joins-and-selecting-more-than-one-model); `add_cte()` is SQLAlchemy's name for `with_()` (its `nest_here=` isn't supported — sqlom always hoists every CTE to the outermost statement, and passing it raises rather than silently doing something else). `CompoundSelect` (what `union()`/`intersect()`/etc. return) has the same `.cte()`/`.subquery()`/`.with_()`/`.add_cte()` and every one of the six set operators, including chaining a further `intersect_all`/`except_all`. `with_for_update()` is Postgres-only — sqlite has no locking clause at all, the same status as `DELETE ... USING` (§11). What doesn't carry over: there is no `Table`/`MetaData`/reflection/DDL layer underneath — columns come from a model class (§1 below), not a schema object, which is the one deliberate divergence the rest of this README explains. There is also no `text()`/`literal_column()`/`bindparam()`, `IS DISTINCT FROM` (sqlite and Postgres spell null-safe equality completely differently — bare `IS`/`IS NOT` versus `IS [NOT] DISTINCT FROM` — and `to_sql()` renders one dialect-agnostic string, so there is no single fragment valid on both), or `select_from()` — sqlom binds every value as a parameter and validates the few places a fragment is accepted (§6), and a query's *primary* FROM table is always derived from its entities (there is no way to set it independently of what's selected, unlike SQLAlchemy's `select_from()`), so there is deliberately no raw-SQL escape hatch or from-clause-independent-of-columns spelling to port.
+`select`/`insert`/`update`/`delete` are plain function aliases for `Query`/`Insert`/`Update`/`Delete` — construct with whichever reads better; `Query(User)` and `select(User)` are the exact same object. `Update.values()` is an alias for `.set()` (SQLAlchemy spells both `Insert` and `Update`'s assignment method `.values()`); `.outerjoin()`/`outer_join()` and `.join(..., isouter=True, full=True)` are equivalent spellings of the same four join kinds described in [§3](#3-joins-and-selecting-more-than-one-model); `add_cte()` is SQLAlchemy's name for `with_()` (its `nest_here=` isn't supported — sqlom always hoists every CTE to the outermost statement, and passing it raises rather than silently doing something else). `CompoundSelect` (what `union()`/`intersect()`/etc. return) has the same `.cte()`/`.subquery()`/`.with_()`/`.add_cte()` and every one of the six set operators, including chaining a further `intersect_all`/`except_all`. What doesn't carry over: there is no `Table`/`MetaData`/reflection/DDL layer underneath — columns come from a model class (§1 below), not a schema object, which is the one deliberate divergence the rest of this README explains.
 
 One further real difference worth calling out because it was a bug until it wasn't: **every selected entity's source is checked against the join graph, same as `where()`/`order_by()`/`group_by()`/`join()` already were.** `Query(User, Post)` with no `.join()` at all now raises `ValueError` rather than silently rendering a `FROM` clause that dropped `Post` — SQLAlchemy would technically accept the implicit-cross-join reading of that shape (with its own linter only *warning*, and only if you opt in), sqlom refuses it outright, consistent with never allowing an unconditional cross join (§12).
+
+### 0b. Dialects: a common core, and Postgres/sqlite override what actually differs
+
+Like SQLAlchemy, sqlom now has a real (if much smaller) dialect system — `sqlom.dialects.Dialect` is the common core, `SqliteDialect`/`PostgresDialect` (singletons `SQLITE`/`POSTGRES`) override only what genuinely differs between the two:
+
+```python
+from sqlom import SQLITE, POSTGRES
+
+select(User).where(User.email.is_distinct_from(None)).to_sql(dialect=POSTGRES)
+# -> "... WHERE email IS DISTINCT FROM $1"
+select(User).where(User.email.is_distinct_from(None)).to_sql(dialect=SQLITE)
+# -> "... WHERE email IS NOT ?"          (sqlite has no DISTINCT FROM keyword;
+#                                          its own null-safe IS/IS NOT is the same thing)
+
+select(User).with_for_update().to_sql(dialect=SQLITE)
+# -> ValueError: with_for_update() is not supported on sqlite
+```
+
+`to_sql(dialect=...)` is fully additive — every existing call with no `dialect=` renders exactly as it always has (this is not a breaking change, it's how the whole existing test suite still passes unchanged). Passing a dialect does two things: picks a sensible default placeholder style (an explicit `placeholder=` still wins), and makes dialect-sensitive nodes aware of what they're rendering for. Four previously-silent "Postgres-only" claims are now enforced rather than just documented: `ilike()`, `with_for_update()`, `Delete.using()`, and `on_conflict_do_nothing()`/`on_conflict_do_update()`'s `constraint=` all raise a clear error when rendered with `dialect=SQLITE`, instead of producing SQL sqlite's parser would reject. `IS DISTINCT FROM`/`is_distinct_from()`/`is_not_distinct_from()` need a dialect to render at all — there is no dialect-less default, since sqlite and Postgres spell null-safe comparison completely differently and guessing one would be silently wrong for the other.
+
+This is deliberately not a full visitor/compiler rewrite — sqlom doesn't need a dozen dialects, it needs Postgres and sqlite to each get the handful of things they actually disagree on right.
+
+### 0c. Raw SQL escape hatches, and the one sanctioned cross join
+
+Three constructs sqlom didn't have until now, each an explicit "I know what I'm doing" opt-out from the validation everything else gets:
+
+```python
+from sqlom import text, literal_column, literal, bindparam
+
+select(User).where(text("email = :addr").bindparams(addr="a@b.c"))  # raw SQL, :name substitution
+select(literal_column("count(*) + 1"), User.id)                     # raw fragment, no validation at all
+select(literal(1), User.id)                                         # a bare value, standalone
+
+# bindparam() is genuinely deferred — build once, execute many times with
+# different bound values, unlike every other value in sqlom (which binds
+# immediately at build time):
+stmt = select(User.name).where(User.id == bindparam("id"))
+await db.fetch_all(stmt, id=1)
+await db.fetch_all(stmt, id=2)      # same compiled SQL, reused
+```
+
+`text()`/`literal_column()` both give up sqlom's usual guarantee that every reference is checked against the join graph — `sources()` returns nothing for either, the same trade `.operate()`/`sql_function()` already made for a fragment. `bindparam()` cannot back `Query.limit()`/`.offset()` (both reject anything that isn't a plain `int` immediately); everywhere else it composes normally.
+
+`select_from()` is the one explicit, by-name exception to "a join always needs a real linking condition" (§12) — SQLAlchemy allows the same thing (its own linter only warns about the resulting cartesian product, and only if you opt in):
+
+```python
+select(User, Post).select_from(Post)   # an explicit, deliberate cross join
+```
+
+`.join()` itself is completely unaffected — it still always refuses an ON clause that doesn't link two sources. Unlike SQLAlchemy's `select_from()`, sqlom's can only ever *add* a source: `Query()`'s constructor already requires a real source at construction time (there's no way to reach `select_from()` with none established, so `count(Model)` remains the way to name a lone `FROM` table with nothing else selected), and it doesn't re-order or re-assert a source already implied elsewhere the way repeated `select_from()` calls do in SQLAlchemy.
 
 ### 1. Define Your Schema
 
