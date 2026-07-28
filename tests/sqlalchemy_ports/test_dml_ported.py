@@ -33,24 +33,21 @@ Skipped entirely (no sqlom equivalent):
   * MySQL-specific and dialect-comparison tests, and anything keyed to a
     specific driver's paramstyle.
 
-Two behavioural quirks noticed while porting (not fixed here — sqlom's
-generative builders mutate and accumulate rather than merge, unlike
-SQLAlchemy's immutable statements with dict-merge `.values()` semantics):
+One behavioural quirk noticed while porting (not fixed — sqlom's generative
+builders mutate and accumulate rather than merge, unlike SQLAlchemy's
+immutable statements with dict-merge `.values()` semantics):
   * Calling `.set()` twice for the *same* column does not merge — it appends
     a second `col = ...` assignment, so `UPDATE t SET name = $1, name = $2`
     is rendered verbatim (Postgres rejects that at execution: "multiple
     assignments to same column"). See
     `TestUpdateAssignmentForms.test_repeated_set_calls_on_the_same_column_do_not_merge`.
-  * `Update.set(col=some_query.scalar_subquery())` — a scalar subquery as an
-    assignment *value*, mirroring SQLAlchemy's `test_correlated_update_two`
-    through `_five` — is not recognised: `_reference_nodes()` and the
-    renderer only special-case `Expression` instances, and `Query` is not an
-    `Expression` (same root cause `test_select_ported.py` already flags for
-    SELECT lists). The `Query` object silently becomes a bound parameter
-    instead of a `(SELECT ...)` fragment, producing wrong SQL with no error.
-    Not exercised by a passing test here since the point would be asserting
-    broken output; flagged in this module's docstring and in the report
-    instead.
+
+One gap noticed while porting has since been fixed centrally (not in this
+file): `Update.set(col=some_query.scalar_subquery())` — a scalar subquery as
+an assignment *value*, mirroring SQLAlchemy's `test_correlated_update_two`
+through `_five` — now renders `col = (SELECT ...)` correctly, because
+`scalar_subquery()` returns a real `ScalarSubquery` `Expression` rather than
+the bare `Query`. See `TestUpdateAssignmentForms::test_scalar_subquery_as_an_assignment_value`.
 """
 
 import pytest
@@ -268,6 +265,23 @@ class TestUpdateAssignmentForms:
         sql, params = statement.to_sql(placeholder="$")
         assert sql == "UPDATE t_books SET title = $1, author_id = $2 WHERE id = $3"
         assert params == ("x", 5, 1)
+
+    def test_scalar_subquery_as_an_assignment_value(self):
+        # Fixed: scalar_subquery() now returns a real ScalarSubquery
+        # Expression, so it renders as `col = (SELECT ...)` — mirroring
+        # SQLAlchemy's test_correlated_update_two through _five — instead
+        # of silently becoming a bound parameter.
+        latest_title = (Query(Book.title).correlate(Author)
+                         .where(Book.author_id == Author.id)
+                         .order_by(Book.id.desc()).limit(1).scalar_subquery())
+        statement = Update(Author).set(name=latest_title).where(Author.id == 1)
+        sql, params = statement.to_sql(placeholder="$")
+        assert sql == (
+            "UPDATE t_authors SET name = (SELECT t_books.title FROM t_books "
+            "WHERE t_books.author_id = t_authors.id "
+            "ORDER BY t_books.id DESC LIMIT $1) WHERE id = $2"
+        )
+        assert params == (1, 1)
 
 
 class TestSubqueryConditions:

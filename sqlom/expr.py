@@ -201,7 +201,7 @@ class Subquery:
 
     __slots__ = ("query", "alias", "__columns__", "__tablename__")
 
-    def __init__(self, query: Query[Any], alias: str) -> None:
+    def __init__(self, query: Select, alias: str) -> None:
         if not alias or not isinstance(alias, str):
             raise TypeError("subquery() needs a non-empty string alias")
         self.query = query
@@ -531,6 +531,17 @@ class Expression(Generic[T]):
     def like(self, pattern: str) -> Condition:
         return Condition(self, "LIKE", pattern)
 
+    def ilike(self, pattern: str) -> Condition:
+        """Case-insensitive `LIKE`. Postgres-only: `ILIKE` is a Postgres
+        extension to standard SQL and sqlite has no equivalent operator."""
+        return Condition(self, "ILIKE", pattern)
+
+    def between(self, lower: Any, upper: Any) -> Predicate:
+        """`col BETWEEN lower AND upper`, inclusive of both ends — spelled out
+        as `and_(self >= lower, self <= upper)` since that is exactly what
+        `BETWEEN` means and it costs nothing to render literally."""
+        return and_(self >= lower, self <= upper)
+
     def is_null(self) -> Condition:
         return Condition(self, "=", None)
 
@@ -720,6 +731,38 @@ class Labelled(Expression[T]):
 
     def __repr__(self):
         return f"<Labelled {self.expr!r} AS {self.name}>"
+
+
+class ScalarSubquery(Expression[T]):
+    """A `Query` used as a single value — what `Query.scalar_subquery()` returns.
+
+    Renders as a parenthesised subquery wherever a value is expected: a
+    comparison, an arithmetic operand, a function argument, an `UPDATE`
+    assignment, or — once `.label()`d, same rule as any other unnamed
+    expression — a `SELECT`-list entry. The one-row, one-column requirement is
+    the database's to enforce, not sqlom's.
+    """
+
+    __slots__ = ("query",)
+
+    def __init__(self, query: Any) -> None:
+        self.query = query
+
+    @property
+    def py_type(self) -> None:
+        return None  # the wrapped query's own entity type isn't tracked generically
+
+    def to_sql(self, nxt: Any, resolve: Any = _bare) -> tuple[str, tuple[Any, ...]]:
+        sql, params = self.query._render(nxt)
+        return f"({sql})", tuple(params)
+
+    def sources(self) -> tuple[Any, ...]:
+        # Self-contained: correlation is explicit via .correlate(), and this
+        # subquery's own tables are not part of the outer query's FROM/joins.
+        return ()
+
+    def __repr__(self) -> str:
+        return f"<ScalarSubquery {self.query!r}>"
 
 
 class Aggregate(Expression[T]):
@@ -991,8 +1034,10 @@ class InClause(Predicate):
         self.left = left
         # Materialise eagerly (unless it's a subquery) so a one-shot iterator
         # (a generator, say) isn't exhausted by `sources()` before `to_sql()`
-        # gets to it — both now read the same concrete list.
-        self.values = values if hasattr(values, "_render") else list(values)
+        # gets to it — both now read the same concrete list. Annotated `Any`
+        # (rather than left to infer `list[Any]`) since it may also hold a
+        # subquery, checked via `hasattr(..., "_render")` below.
+        self.values: Any = values if hasattr(values, "_render") else list(values)
         self.negated = negated
 
     def to_sql(self, nxt, resolve=_bare):
@@ -1278,36 +1323,52 @@ def sql_function(name: str, *args: Any, py_type: Any = None) -> FunctionCall[Any
 
 
 class Case(Expression[T]):
-    """`CASE WHEN cond THEN value ... ELSE other END`."""
+    """`CASE WHEN cond THEN value ... ELSE other END` (the "searched" form), or
+    — when `value` is given — `CASE value WHEN match THEN result ... ELSE
+    other END` (the "simple" form, SQLAlchemy's `case(..., value=col)`), where
+    each `match` is compared against `value` by equality rather than being a
+    predicate of its own.
+    """
 
-    __slots__ = ("whens", "else_")
+    __slots__ = ("whens", "else_", "value")
 
-    def __init__(self, whens: Any, else_: Any = None) -> None:
+    def __init__(self, whens: Any, else_: Any = None, value: Any = None) -> None:
         self.whens = list(whens)
         if not self.whens:
             raise ValueError("case() needs at least one (condition, value) pair")
+        self.value = value
         for pair in self.whens:
             if not (isinstance(pair, tuple) and len(pair) == 2):
                 raise TypeError(
                     f"case() takes (condition, value) pairs, got {pair!r}"
                 )
-            if not isinstance(pair[0], Predicate):
+            if value is None and not isinstance(pair[0], Predicate):
                 raise TypeError(
                     f"case() condition must be a predicate, got "
-                    f"{type(pair[0]).__name__}"
+                    f"{type(pair[0]).__name__} (pass value=... for the simple "
+                    f"CASE form, where each pair's first element is compared "
+                    f"against it instead of being a predicate)"
                 )
         self.else_ = else_
 
     def to_sql(self, nxt, resolve=_bare):
         advance = nxt if callable(nxt) else (lambda value=nxt: value)
-        sql = "CASE"
         params: tuple[Any, ...] = ()
-        for condition, value in self.whens:
-            cond_sql, cond_params = condition.to_sql(advance, resolve)
-            params += cond_params
-            value_sql, value_params = _operand_sql(value, advance, resolve)
+        if self.value is not None:
+            value_sql, value_params = _operand_sql(self.value, advance, resolve)
             params += value_params
-            sql += f" WHEN {cond_sql} THEN {value_sql}"
+            sql = f"CASE {value_sql}"
+        else:
+            sql = "CASE"
+        for left, result in self.whens:
+            if self.value is not None:
+                left_sql, left_params = _operand_sql(left, advance, resolve)
+            else:
+                left_sql, left_params = left.to_sql(advance, resolve)
+            params += left_params
+            value_sql, value_params = _operand_sql(result, advance, resolve)
+            params += value_params
+            sql += f" WHEN {left_sql} THEN {value_sql}"
         if self.else_ is not None:
             else_sql, else_params = _operand_sql(self.else_, advance, resolve)
             params += else_params
@@ -1316,10 +1377,15 @@ class Case(Expression[T]):
 
     def sources(self):
         found: tuple[Any, ...] = ()
-        for condition, value in self.whens:
-            found += condition.sources()
-            if isinstance(value, Expression):
-                found += value.sources()
+        if isinstance(self.value, Expression):
+            found += self.value.sources()
+        for left, result in self.whens:
+            if isinstance(left, Expression):
+                found += left.sources()
+            elif self.value is None:
+                found += left.sources()  # left is a Predicate in the searched form
+            if isinstance(result, Expression):
+                found += result.sources()
         if isinstance(self.else_, Expression):
             found += self.else_.sources()
         return found
@@ -1447,13 +1513,18 @@ def _order_entry(entry: Any) -> tuple[Any, str]:
     return entry, ""
 
 
-def case(*whens: tuple[Predicate, Any], else_: Any = None) -> Case[Any]:
-    """`case((User.active == True, "on"), else_="off")`.
+def case(*whens: tuple[Any, Any], value: Any = None, else_: Any = None) -> Case[Any]:
+    """Searched form: `case((User.active == True, "on"), else_="off")` ->
+    `CASE WHEN active = $1 THEN 'on' ELSE 'off' END`. The pair type is spelled
+    out so a bare predicate — `case(User.active == True)` — is a type error
+    rather than a runtime one.
 
-    The pair type is spelled out so a bare predicate — `case(User.active == True)`
-    — is a type error rather than a runtime one.
+    Simple form, with `value=`: `case((1, "a"), (2, "b"), value=Post.status)`
+    -> `CASE status WHEN 1 THEN 'a' WHEN 2 THEN 'b' END` — each pair's first
+    element is compared against `value` by equality rather than being a
+    predicate of its own, matching SQLAlchemy's `case(..., value=col)`.
     """
-    return Case(whens, else_)
+    return Case(whens, else_, value)
 
 
 # Window functions. Each is a FunctionCall, so `.over(...)` is available on it.
@@ -1469,12 +1540,23 @@ def dense_rank() -> FunctionCall[int]:
     return FunctionCall("dense_rank", py_type=int)
 
 
-def lag(column: Expression[T], offset: int = 1) -> FunctionCall[T]:
-    return FunctionCall("lag", column, offset)
+_NO_DEFAULT = object()
 
 
-def lead(column: Expression[T], offset: int = 1) -> FunctionCall[T]:
-    return FunctionCall("lead", column, offset)
+def lag(column: Expression[T], offset: int = 1, default: Any = _NO_DEFAULT) -> FunctionCall[T]:
+    """`lag(column, offset)`, or `lag(column, offset, default)` when the window
+    has no such row (SQL's own default there is `NULL`)."""
+    if default is _NO_DEFAULT:
+        return FunctionCall("lag", column, offset)
+    return FunctionCall("lag", column, offset, default)
+
+
+def lead(column: Expression[T], offset: int = 1, default: Any = _NO_DEFAULT) -> FunctionCall[T]:
+    """`lead(column, offset)`, or `lead(column, offset, default)` when the window
+    has no such row (SQL's own default there is `NULL`)."""
+    if default is _NO_DEFAULT:
+        return FunctionCall("lead", column, offset)
+    return FunctionCall("lead", column, offset, default)
 
 
 def first_value(column: Expression[T]) -> FunctionCall[T]:

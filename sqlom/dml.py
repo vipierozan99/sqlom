@@ -46,6 +46,7 @@ from .expr import (
     Excluded,
     Expression,
     Predicate,
+    _operand_sql,
     source_name,
     source_prefix,
     walk_nodes,
@@ -673,15 +674,14 @@ class Update(_Statement):
         with_sql = _with_clause(self, nxt, params)
         parts = []
         for name, value in self._assignments:
-            if isinstance(value, Expression):
-                sql, extra = value.to_sql(nxt, resolve)
-                params.extend(extra)
-                # The assignment target is never qualified: Postgres rejects
-                # `SET t.col = ...` outright, and it is unambiguous anyway.
-                parts.append(f"{name} = {sql}")
-            else:
-                parts.append(f"{name} = {nxt()}")
-                params.append(value)
+            # `_operand_sql` renders an Expression as itself, a scalar subquery
+            # (anything with `_render`, i.e. a `Query`) as `(SELECT ...)`, and
+            # anything else as a bound parameter — the assignment target is
+            # never qualified, since Postgres rejects `SET t.col = ...` outright
+            # and it is unambiguous anyway.
+            sql, extra = _operand_sql(value, nxt, resolve)
+            params.extend(extra)
+            parts.append(f"{name} = {sql}")
         sql = f"{with_sql}UPDATE {self._table_sql()} SET {', '.join(parts)}"
         sql += self._extra_sources_sql("FROM")
         if self._conditions:

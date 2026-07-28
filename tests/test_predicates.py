@@ -190,8 +190,11 @@ class TestScalarSubquery:
         assert clause == "id > (SELECT count(id) FROM t_books)"
 
     def test_a_query_works_without_the_explicit_call(self):
-        # scalar_subquery() returns self; it exists for readability, so the bare
-        # query must behave identically or the API would be lying.
+        # A bare Query is still accepted too (Condition duck-types on
+        # `_render`), so it renders identically to the explicit
+        # scalar_subquery() call above — the wrapper is for readability and
+        # for use as a value outside a comparison (a SELECT-list entry, an
+        # UPDATE assignment), not a requirement.
         clause, _ = where_of(Query(Book).where(Book.id > Query(count(Book.id))))
         assert clause == "id > (SELECT count(id) FROM t_books)"
 

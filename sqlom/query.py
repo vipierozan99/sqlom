@@ -10,6 +10,7 @@ from .expr import (
     Expression,
     Labelled,
     Predicate,
+    ScalarSubquery,
     Subquery,
     _bare,
     _collect_ctes,
@@ -440,19 +441,35 @@ class Query(Generic[R]):
         self._invalidate()
         return self
 
+    def add_cte(self, *ctes: CTE, nest_here: bool = False) -> Self:
+        """SQLAlchemy's name for `with_()` (`HasCTE.add_cte`). `nest_here` is
+        not supported — sqlom always hoists every CTE to the outermost
+        statement's WITH clause, so passing `True` raises rather than
+        silently placing it somewhere else."""
+        if nest_here:
+            raise NotImplementedError(
+                "add_cte(nest_here=True) is not supported; sqlom always "
+                "hoists every CTE to the outermost statement's WITH clause"
+            )
+        return self.with_(*ctes)
+
     def subquery(self, alias: str) -> Subquery:
         """Wrap this query as a derived table usable in FROM and joins."""
         return Subquery(self, alias)
 
-    def scalar_subquery(self) -> Self:
-        """Use this query as a single value in a comparison.
+    def scalar_subquery(self) -> ScalarSubquery[Any]:
+        """Use this query as a single value: in a comparison, an arithmetic or
+        function operand, an `UPDATE` assignment, or (labelled) a SELECT-list
+        entry.
 
-        Returns the query itself — `Condition` renders any object with `_render`
-        as a parenthesised subquery. It exists so calling code reads as intended
-        and so the one-row-one-column requirement has somewhere to be documented:
-        it is the database that enforces it, not sqlom.
+        Returns a real `Expression`, so it composes wherever one is expected —
+        rather than relying on the duck-typed `hasattr(x, "_render")` fallback
+        those call sites also still accept for a bare `Query`. It exists so
+        calling code reads as intended and so the one-row-one-column
+        requirement has somewhere to be documented: it is the database that
+        enforces it, not sqlom.
         """
-        return self
+        return ScalarSubquery(self)
 
     # ------------------------------------------------------------- predicates
 
@@ -542,7 +559,7 @@ class Query(Generic[R]):
         self._invalidate()
         return self
 
-    def order_by(self, *columns: Expression[Any] | str,
+    def order_by(self, *columns: Expression[Any] | str | _OrderingExpr[Any],
                  descending: bool = False) -> Self:
         """Order the result set. Accepts columns, aggregates, or bare names.
 
@@ -558,12 +575,13 @@ class Query(Generic[R]):
         byte, needs a total order.
         """
         for column in columns:
+            expression: Expression[Any] | str
             if isinstance(column, _OrderingExpr):
-                column, direction = column.expression, column.descending
+                expression, direction = column.expression, column.descending
             else:
-                direction = descending
+                expression, direction = column, descending
             self._order_by.append(
-                (self._as_expression(column, "order_by"), direction)
+                (self._as_expression(expression, "order_by"), direction)
             )
         self._invalidate()
         return self
@@ -981,16 +999,26 @@ class CompoundSelect(Generic[R]):
         self._sql_cache.clear()
         return self
 
+    def add_cte(self, *ctes: CTE, nest_here: bool = False) -> Self:
+        """SQLAlchemy's name for `with_()`. See `Query.add_cte()`."""
+        if nest_here:
+            raise NotImplementedError(
+                "add_cte(nest_here=True) is not supported; sqlom always "
+                "hoists every CTE to the outermost statement's WITH clause"
+            )
+        return self.with_(*ctes)
+
     def order_by(self, *columns: Any, descending: bool = False) -> Self:
         for column in columns:
             if isinstance(column, _OrderingExpr):
-                column, direction = column.expression, column.descending
+                expression, direction = column.expression, column.descending
             else:
-                direction = descending
-            name = column if isinstance(column, str) else getattr(column, "name", None)
+                expression, direction = column, descending
+            name = (expression if isinstance(expression, str)
+                     else getattr(expression, "name", None))
             if name is None:
                 raise TypeError(
-                    f"a compound select orders by output column name; got {column!r}"
+                    f"a compound select orders by output column name; got {expression!r}"
                 )
             known = {output for output, _ in self.output_columns()}
             if name not in known:

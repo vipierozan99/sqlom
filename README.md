@@ -165,9 +165,17 @@ Query(User, Post).join(Post, Post.user_id == User.id, isouter=True)  # same as .
 User.email.is_(None)          # IS NULL — only None is accepted, same restriction as SQLAlchemy's is_()
 User.email.is_not(None)       # IS NOT NULL
 Post.score.desc()             # pass straight to order_by(), instead of descending=True
+User.name.like("a%")          # same on both; ilike() is Postgres-only (no ILIKE on sqlite)
+Post.score.between(10, 100)   # -> Post.score >= 10 AND Post.score <= 100
+
+select(func.avg(Post.score)).scalar_subquery()   # ScalarSubquery — a real Expression,
+                                                  # usable as a value: in a comparison,
+                                                  # a SELECT-list entry (once .label()d),
+                                                  # or an UPDATE assignment
+select(User).add_cte(some_cte)                   # SQLAlchemy's name for with_()
 ```
 
-`select`/`insert`/`update`/`delete` are plain function aliases for `Query`/`Insert`/`Update`/`Delete` — construct with whichever reads better; `Query(User)` and `select(User)` are the exact same object. `Update.values()` is an alias for `.set()` (SQLAlchemy spells both `Insert` and `Update`'s assignment method `.values()`); `.outerjoin()`/`outer_join()` and `.join(..., isouter=True, full=True)` are equivalent spellings of the same four join kinds described in [§3](#3-joins-and-selecting-more-than-one-model). What doesn't carry over: there is no `Table`/`MetaData`/reflection/DDL layer underneath — columns come from a model class (§1 below), not a schema object, which is the one deliberate divergence the rest of this README explains.
+`select`/`insert`/`update`/`delete` are plain function aliases for `Query`/`Insert`/`Update`/`Delete` — construct with whichever reads better; `Query(User)` and `select(User)` are the exact same object. `Update.values()` is an alias for `.set()` (SQLAlchemy spells both `Insert` and `Update`'s assignment method `.values()`); `.outerjoin()`/`outer_join()` and `.join(..., isouter=True, full=True)` are equivalent spellings of the same four join kinds described in [§3](#3-joins-and-selecting-more-than-one-model); `add_cte()` is SQLAlchemy's name for `with_()` (its `nest_here=` isn't supported — sqlom always hoists every CTE to the outermost statement, and passing it raises rather than silently doing something else). `CompoundSelect` (what `union()`/`intersect()`/etc. return) has the same `.cte()`/`.subquery()`/`.with_()`/`.add_cte()` and every one of the six set operators, including chaining a further `intersect_all`/`except_all`. What doesn't carry over: there is no `Table`/`MetaData`/reflection/DDL layer underneath — columns come from a model class (§1 below), not a schema object, which is the one deliberate divergence the rest of this README explains. There is also no `cast()`, `tuple_()`, `text()`/`literal_column()`/`bindparam()`, or `true()`/`false()`/`null()` — sqlom binds every value as a parameter and validates the few places a fragment is accepted (§6), so there is deliberately no raw-SQL escape hatch to port.
 
 ### 1. Define Your Schema
 

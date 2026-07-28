@@ -39,18 +39,16 @@ Skipped entirely (no sqlom equivalent, or the concept does not exist here):
     `test_query_methods_mutate_in_place_and_return_self` below, which pins
     down the actual (inverted) behaviour instead of skipping it.
 
-Two API gaps noticed while porting (not fixed here — flagged for triage):
-  * `CompoundSelect` (what `.union()`/`.intersect()`/etc. return) only
-    implements `union`, `union_all`, `intersect` and `except_` as further
-    chaining methods. `intersect_all`/`except_all` exist on `Query` but not
-    on `CompoundSelect`, so a *second* INTERSECT ALL or EXCEPT ALL cannot be
-    chained onto an existing compound the way the other four operators can.
-  * A subquery cannot be placed directly in a SELECT list as a value —
-    `Query()` only accepts models, aliases or `Expression` instances, and a
-    `Query` (even through `.scalar_subquery()`, which just returns `self`)
-    is not an `Expression`. So `Query(Author.name, sub.scalar_subquery())`
-    raises `TypeError`; a scalar subquery is usable only inside `where()`/
-    `having()`/comparisons, never as a selected column.
+Both API gaps originally noticed while porting have since been fixed centrally
+(not in this file) and are exercised below instead of skipped:
+  * `CompoundSelect` now has `intersect_all`/`except_all` too, chaining a
+    compound the same way `union`/`union_all`/`intersect`/`except_` always
+    could — see `test_intersect_all_and_except_all_chain_on_a_compound`.
+  * `Query.scalar_subquery()` now returns a real `ScalarSubquery` `Expression`
+    rather than the bare `Query`, so — once `.label()`d, the same rule as any
+    other unnamed expression — it can be placed directly in a SELECT list as
+    a value: `Query(Author.name, sub.scalar_subquery().label("n"))`. See
+    `test_scalar_subquery_as_a_selected_column`.
 """
 
 from sqlom import (
@@ -288,6 +286,20 @@ def test_compound_select_needs_a_query_not_a_string():
         Query(Author).union("SELECT 1")
 
 
+def test_intersect_all_and_except_all_chain_on_a_compound():
+    # Fixed: CompoundSelect now has intersect_all()/except_all(), so a
+    # *second* INTERSECT ALL/EXCEPT ALL chains onto an existing compound the
+    # same way union/union_all/intersect/except_ already did.
+    stmt = (Query(Author.id).intersect_all(Query(Author.id))
+            .intersect_all(Query(Author.id)))
+    sql, _ = stmt.to_sql()
+    assert sql.count(" INTERSECT ALL ") == 2
+
+    stmt2 = Query(Author.id).except_all(Query(Author.id)).except_all(Query(Author.id))
+    sql2, _ = stmt2.to_sql()
+    assert sql2.count(" EXCEPT ALL ") == 2
+
+
 # --------------------------------------------------------------------------
 # Correlated subqueries (correlate() requirement)
 # --------------------------------------------------------------------------
@@ -315,6 +327,41 @@ def test_correlated_scalar_subquery_in_a_comparison():
         "WHERE other.author_id = t_books.author_id)"
     )
     assert params == ()
+
+
+def test_scalar_subquery_as_a_selected_column():
+    # Fixed: scalar_subquery() now returns a real Expression, so — labelled,
+    # the same rule as any other unnamed expression selected on its own —
+    # it can be placed directly in a SELECT list, not just inside where()/
+    # having()/a comparison.
+    book_count = Query(count(Book.id)).correlate(Author).where(
+        Book.author_id == Author.id
+    ).scalar_subquery()
+    sql, params = (
+        Query(Author.name, book_count.label("n_books"))
+        .to_sql(placeholder="$")
+    )
+    assert sql == (
+        "SELECT name, (SELECT count(t_books.id) FROM t_books "
+        "WHERE t_books.author_id = t_authors.id) AS n_books FROM t_authors"
+    )
+    assert params == ()
+
+
+def test_unlabelled_scalar_subquery_in_a_select_list_still_needs_a_label_to_be_wrapped():
+    # Selecting an unlabelled scalar subquery directly still works (it
+    # renders as "expr", same default as any other unnamed expression) —
+    # but wrapping *that* query as a further CTE/subquery still requires a
+    # label, exactly like an unlabelled aggregate does.
+    import pytest
+
+    book_count = Query(count(Book.id)).scalar_subquery()
+    outer = Query(Author.name, book_count)
+    sql, _ = outer.to_sql()
+    assert "SELECT count(id) FROM t_books" in sql
+
+    with pytest.raises(ValueError, match="usable column name"):
+        outer.cte("author_counts")
 
 
 def test_correlation_must_be_declared_or_the_reference_is_rejected():

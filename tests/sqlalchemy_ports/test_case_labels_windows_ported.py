@@ -19,15 +19,17 @@ Adapted to sqlom. Skipped:
   What *does* map — label collisions, relabelling, labelling a
   subquery-exposed column, and the "unlabelled aggregate/expression in a
   CTE or subquery is refused" rule from README §10/§12 — is ported below.
-* test_case_statement.py's dict-based `case({cond: val, ...})` form, the
-  "simple case" comparand form (`case(..., value=col)`, i.e.
-  `CASE col WHEN val THEN ... END`), `text()`/`literal_column()` arguments,
-  and the `.type` inference tests — sqlom's `case()` only accepts
-  `(predicate, value)` pairs (see sqlom/expr.py's `Case`/`case()`), has no
-  raw-text expression type, and aggregates/case expressions are
-  deliberately left `py_type=None` rather than inferring SQL types. Ported
-  what maps: several WHEN branches, no ELSE, nested CASE, CASE used in
-  WHERE/ORDER BY/GROUP BY/arithmetic, and None as a THEN/ELSE value.
+* test_case_statement.py's dict-based `case({cond: val, ...})` form,
+  `text()`/`literal_column()` arguments, and the `.type` inference tests —
+  sqlom has no raw-text expression type, and aggregates/case expressions
+  are deliberately left `py_type=None` rather than inferring SQL types.
+  Ported what maps: several WHEN branches, no ELSE, nested CASE, CASE used
+  in WHERE/ORDER BY/GROUP BY/arithmetic, None as a THEN/ELSE value — and,
+  since it has since been added (`case(..., value=col)` — the "simple
+  case" form, `CASE col WHEN match THEN ... END`, with each match compared
+  against `value` by equality rather than being its own predicate), that
+  too: see `test_simple_case_form_with_value` and
+  `test_simple_case_form_end_to_end`.
 """
 
 import pytest
@@ -179,6 +181,27 @@ class TestCaseMoreVariants:
         assert with_none == without_else == "CASE WHEN id > $1 THEN $2 END"
         assert params == (10, 1)
 
+    def test_simple_case_form_with_value(self):
+        # Fixed: case() now accepts value=, the "simple CASE" form —
+        # CASE value WHEN match THEN result ... END — matching SQLAlchemy's
+        # case(..., value=col). Each pair's first element is compared
+        # against `value` by equality rather than being its own predicate.
+        clause, params = select_of(
+            Query(case((1, "a"), (2, "b"), value=Book.author_id, else_="c"))
+        )
+        assert clause == "CASE author_id WHEN $1 THEN $2 WHEN $3 THEN $4 ELSE $5 END"
+        assert params == (1, "a", 2, "b", "c")
+
+    def test_simple_case_form_end_to_end(self, run_query):
+        rows = run_query(
+            Query(Book.id, case((1, "alpha"), (2, "beta"), value=Book.author_id,
+                                 else_="other"))
+            .order_by(Book.id)
+        )
+        assert rows == [
+            (10, "alpha"), (11, "alpha"), (12, "beta"), (13, "other"),
+        ]
+
 
 # --------------------------------------------------------------------------
 # Window functions: partition + order combinations not in test_expressions.py
@@ -247,6 +270,21 @@ class TestWindowMorePatterns:
         )
         assert clause == "lead(id, $1) OVER (PARTITION BY author_id ORDER BY id)"
         assert params == (2,)
+
+    def test_lag_and_lead_accept_a_default_value(self):
+        # Matches SQLAlchemy's func.lag(col, offset, default): the row-out-of-
+        # range fallback is a third positional argument to the function call.
+        clause, params = select_of(
+            Query(lag(Book.id, 1, 0).over(order_by=Book.id))
+        )
+        assert clause == "lag(id, $1, $2) OVER (ORDER BY id)"
+        assert params == (1, 0)
+
+        clause, params = select_of(
+            Query(lead(Book.id, 2, -1).over(order_by=Book.id))
+        )
+        assert clause == "lead(id, $1, $2) OVER (ORDER BY id)"
+        assert params == (2, -1)
 
     def test_mixed_ascending_and_descending_order_columns(self):
         clause, _ = select_of(

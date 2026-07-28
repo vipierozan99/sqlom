@@ -399,6 +399,18 @@ class TestForcedInclusion:
         assert "other_ids AS (" in rendered
         assert rendered.index("counts AS") < rendered.index("other_ids AS")
 
+    def test_add_cte_is_an_alias_for_with_(self):
+        # SQLAlchemy's actual name for this (HasCTE.add_cte), added alongside
+        # with_() rather than instead of it.
+        counts = book_counts()
+        rendered = sql_of(Query(Author).add_cte(counts))
+        assert "counts AS (" in rendered
+
+    def test_add_cte_nest_here_is_rejected_rather_than_silently_ignored(self):
+        counts = book_counts()
+        with pytest.raises(NotImplementedError, match="nest_here"):
+            Query(Author).add_cte(counts, nest_here=True)
+
 
 class TestKnownGaps:
     """Not part of the port itself — these record behaviour a maintainer

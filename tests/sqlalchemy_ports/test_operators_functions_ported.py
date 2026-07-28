@@ -142,6 +142,33 @@ class TestNullAndIsOperators:
 # --------------------------------------------------------------------------
 
 
+class TestLikeIlikeBetween:
+    """`.like()`/`.ilike()`/`.between()` — SQLAlchemy's `ColumnOperators`
+    names, added to close the naming gap so these read as a drop-in
+    substitute for the same calls against a SQLAlchemy column."""
+
+    def test_like(self):
+        clause, params = where_of(Query(Author).where(Author.name.like("a%")))
+        assert clause == "name LIKE $1"
+        assert params == ("a%",)
+
+    def test_ilike(self):
+        # Postgres-only: ILIKE is a Postgres extension, sqlite has no
+        # equivalent operator (see Expression.ilike's docstring).
+        clause, params = where_of(Query(Author).where(Author.name.ilike("A%")))
+        assert clause == "name ILIKE $1"
+        assert params == ("A%",)
+
+    def test_between(self):
+        clause, params = where_of(Query(Book).where(Book.id.between(10, 20)))
+        assert clause == "(id >= $1 AND id <= $2)"
+        assert params == (10, 20)
+
+    def test_between_end_to_end(self, run_query):
+        rows = run_query(Query(Book.id).where(Book.id.between(11, 12)).order_by(Book.id))
+        assert rows == [(11,), (12,)]
+
+
 class TestInAndNotIn:
     def test_in_accepts_a_list(self):
         clause, params = Author.id.in_([1, 2, 3]).to_sql("?")
