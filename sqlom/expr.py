@@ -1389,6 +1389,114 @@ def text(raw_sql: str) -> TextClause:
     return TextClause(raw_sql)
 
 
+class _MissingType:
+    """Sentinel distinguishing "no value given" from a legitimate `None`."""
+
+    def __repr__(self) -> str:
+        return "<no value>"
+
+
+_MISSING: Any = _MissingType()
+
+
+class _Deferred:
+    """Placeholder for a `bindparam()`'s value, left unresolved until
+    `bind_params()` supplies (or falls back to its construction-time
+    default). Never reaches a driver — `bind_params()` always replaces it
+    before the params tuple is sent anywhere.
+    """
+
+    __slots__ = ("key", "default")
+
+    def __init__(self, key: str, default: Any = _MISSING) -> None:
+        self.key = key
+        self.default = default
+
+    def __repr__(self) -> str:
+        return f"<Deferred {self.key!r}>"
+
+
+class BindParameter(Expression[T]):
+    """A named, deferred parameter — SQLAlchemy's `bindparam(key, value)`.
+
+    Unlike every other value in this library, which binds *immediately* at
+    render time, this renders an ordinary placeholder but leaves the actual
+    *value* unresolved: a `Query`/statement built with one can be rendered
+    (and its SQL cached) once, then executed many times with different
+    values supplied per call via `bind_params()`/`engine.fetch_all(query,
+    **overrides)`. A `value` given at construction is a *default* — it is
+    still overridable later, exactly like SQLAlchemy's.
+
+    Not supported: `Query.limit()`/`.offset()` reject anything that isn't a
+    plain `int` immediately, so a `bindparam()` cannot back either — there is
+    no deferred row count/offset in sqlom.
+    """
+
+    __slots__ = ("key", "value", "py_type")
+
+    def __init__(self, key: str, value: Any = _MISSING, py_type: Any = None) -> None:
+        if not isinstance(key, str) or not key:
+            raise TypeError("bindparam() needs a non-empty string key")
+        self.key = key
+        self.value = value
+        self.py_type = py_type
+
+    def to_sql(self, nxt, resolve=_bare):
+        advance = nxt if callable(nxt) else (lambda value=nxt: value)
+        placeholder = str(advance())
+        return placeholder, (_Deferred(self.key, self.value),)
+
+    def sources(self):
+        return ()
+
+    def __repr__(self) -> str:
+        if self.value is _MISSING:
+            return f"<BindParameter {self.key!r}>"
+        return f"<BindParameter {self.key!r}={self.value!r}>"
+
+
+def bindparam(key: str, value: Any = _MISSING, py_type: Any = None) -> BindParameter[Any]:
+    """A named, deferred parameter — SQLAlchemy's `bindparam()`. See
+    `BindParameter` for what "deferred" means here and what it cannot back
+    (`limit()`/`offset()`)."""
+    return BindParameter(key, value, py_type)
+
+
+def bind_params(params: tuple[Any, ...], **overrides: Any) -> tuple[Any, ...]:
+    """Resolve every `bindparam()` marker in a rendered params tuple.
+
+    `overrides` supplies (or replaces) values by key; a `bindparam()` given a
+    value at construction falls back to it when not overridden here. Raises
+    `ValueError` naming whichever keys are still unresolved, rather than
+    letting a leftover marker object reach a driver call.
+    """
+    resolved = []
+    missing = []
+    for param in params:
+        if isinstance(param, _Deferred):
+            if param.key in overrides:
+                resolved.append(overrides[param.key])
+            elif param.default is not _MISSING:
+                resolved.append(param.default)
+            else:
+                missing.append(param.key)
+        else:
+            resolved.append(param)
+    if missing:
+        raise ValueError(
+            f"missing value(s) for bindparam(s): "
+            f"{', '.join(sorted(set(missing)))}"
+        )
+    return tuple(resolved)
+
+
+def has_deferred_params(params: tuple[Any, ...]) -> bool:
+    """True if `params` (as returned by `to_sql()`) contains any unresolved
+    `bindparam()` — the check an engine makes once, before deciding whether
+    `bind_params()` needs to run at all."""
+    return any(isinstance(param, _Deferred) for param in params)
+
+
 class BooleanClause(Predicate):
     """`AND` or `OR` over two or more predicates, always parenthesised.
 

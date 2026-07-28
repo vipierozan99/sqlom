@@ -47,6 +47,7 @@ from .expr import (
     Excluded,
     Expression,
     Predicate,
+    _bare,
     _operand_sql,
     source_name,
     source_prefix,
@@ -550,8 +551,16 @@ class Insert(_Statement):
         for row in self._rows:
             placeholders = []
             for value in row:
-                placeholders.append(nxt())
-                params.append(value)
+                # Route every row value through the same Expression-aware
+                # dispatch every other value-position already uses (a bare
+                # value binds as a parameter; an Expression — e.g. a
+                # bindparam(), an arithmetic expression — renders itself).
+                # Previously this treated every value as opaque, so an
+                # Expression given here was spliced straight into the params
+                # tuple as an object rather than rendered.
+                sql, extra = _operand_sql(value, nxt, _bare)
+                placeholders.append(sql)
+                params.extend(extra)
             groups.append(f"({', '.join(placeholders)})")
         sql = (f"{with_sql}INSERT INTO {self._table_sql()} "
                f"({', '.join(self._columns)}) VALUES {', '.join(groups)}")
