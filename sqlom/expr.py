@@ -898,6 +898,87 @@ def null() -> _Keyword:
     return _Keyword("NULL", None)
 
 
+class Tuple(Expression[Any]):
+    """A row value: `(a, b, c)` — SQLAlchemy's `tuple_(a, b, c)`.
+
+    Comparable with `==`/`!=` against another `tuple_(...)` or a plain Python
+    tuple of the same width (`tuple_(a, b) == (1, 2)` renders `(a, b) = (1,
+    2)`), and usable with `.in_()`/`.not_in()` against a sequence of
+    same-width tuples — each a `tuple_(...)` or a plain Python tuple, both
+    accepted the same way a bare value is elsewhere in this library — or a
+    subquery selecting that many columns.
+    """
+
+    __slots__ = ("elements",)
+
+    def __init__(self, *elements: Any) -> None:
+        if not elements:
+            raise ValueError("tuple_() needs at least one element")
+        self.elements = elements
+
+    def to_sql(self, nxt, resolve=_bare):
+        parts: list[str] = []
+        params: tuple[Any, ...] = ()
+        for element in self.elements:
+            sql, element_params = _operand_sql(element, nxt, resolve)
+            parts.append(sql)
+            params += element_params
+        return f"({', '.join(parts)})", params
+
+    def sources(self):
+        found: tuple[Any, ...] = ()
+        for element in self.elements:
+            if isinstance(element, Expression):
+                found += element.sources()
+        return found
+
+    def _as_tuple(self, other: Any) -> "Expression[Any]":
+        if isinstance(other, Expression):
+            return other  # another Tuple, a ScalarSubquery, ...
+        if isinstance(other, (tuple, list)):
+            return Tuple(*other)
+        raise TypeError(
+            f"tuple_() compares against another tuple_(...) or a plain "
+            f"Python tuple of the same width, got {other!r}"
+        )
+
+    def __eq__(self, other: Any) -> Condition:  # type: ignore[override]
+        return Condition(self, "=", self._as_tuple(other))
+
+    def __ne__(self, other: Any) -> Condition:  # type: ignore[override]
+        return Condition(self, "!=", self._as_tuple(other))
+
+    def in_(self, values: Any) -> InClause:
+        """`(a, b) IN ((v1, v2), ...)`, or a subquery selecting the same
+        number of columns."""
+        if hasattr(values, "_render"):
+            return InClause(self, values, negated=False)
+        return InClause(
+            self, [v if isinstance(v, Tuple) else Tuple(*v) for v in values],
+            negated=False,
+        )
+
+    def not_in(self, values: Any) -> InClause:
+        if hasattr(values, "_render"):
+            return InClause(self, values, negated=True)
+        return InClause(
+            self, [v if isinstance(v, Tuple) else Tuple(*v) for v in values],
+            negated=True,
+        )
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def __repr__(self) -> str:
+        return f"<Tuple {self.elements!r}>"
+
+
+def tuple_(*elements: Any) -> Tuple:
+    """`(a, b, c)` as a comparable row value — SQLAlchemy's `tuple_(a, b, c)`.
+    See `Tuple`."""
+    return Tuple(*elements)
+
+
 class Aggregate(Expression[T]):
     """`count(x)`, `sum(x)`, and friends. Usable in a select list and in HAVING."""
 

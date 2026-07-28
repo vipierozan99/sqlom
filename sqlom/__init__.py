@@ -45,6 +45,7 @@ from .expr import (
     Predicate,
     ScalarSubquery,
     Subquery,
+    Tuple,
     and_,
     avg,
     count,
@@ -72,6 +73,7 @@ from .expr import (
     sql_function,
     sum_,
     true,
+    tuple_,
 )
 from .query import CompoundSelect, Query, json_bytes, select
 from .transaction import Transaction, active_transaction
@@ -107,6 +109,7 @@ __all__ = [
     "Case",
     "Cast",
     "Literal",
+    "Tuple",
     "Over",
     "case",
     "cast",
@@ -114,6 +117,7 @@ __all__ = [
     "true",
     "false",
     "null",
+    "tuple_",
     "func",
     "sql_function",
     "row_number",

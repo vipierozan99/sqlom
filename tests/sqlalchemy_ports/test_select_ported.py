@@ -13,15 +13,12 @@ Skipped entirely (no sqlom equivalent, or the concept does not exist here):
   * `join_from()` and implicit-FK `join(child)` (inferring the ON clause
     from a declared `ForeignKey`) — sqlom's `join()` always requires an
     explicit ON predicate; there is no FK metadata to infer one from.
-  * `filter_by(**kwargs)` — no keyword-based WHERE; use `where()` with an
-    explicit column comparison.
   * `select(table.c)`, `.c[0:2]`, `.c["x", "y"]`, keyed `Column(key=...)`
     mapping — no `Table.c` column-collection object.
-  * `with_only_columns()`, and `select_from()` as a FROM declared
-    independently of any selected column — the FROM is always derived from
-    the first selected entity (or the first join source it needs).
-  * `tuple_()` composite SELECT targets, and the "tuple() not supported for
-    SELECT" CompileError that guards them.
+  * `select_from()` as a FROM declared independently of any selected column
+    — the FROM is always derived from the first selected entity (or the
+    first join source it needs); `with_only_columns()` and `filter_by()`
+    are supported (see below) and don't change that.
   * Anonymous-label / column-correspondence machinery: `corresponding_column`,
     `proxy_set`, `_clone()`/`_copy_internals()`, `anon_1`-style auto-labels.
     sqlom has no clause-element graph to clone or re-correspond; every

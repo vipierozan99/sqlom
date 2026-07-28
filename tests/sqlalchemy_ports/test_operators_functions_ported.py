@@ -9,10 +9,12 @@ per-dialect operator rewriting; JSON/ARRAY/HSTORE indexing operators (Postgres
 extension types sqlom does not model); ORM-level `Comparator` customization,
 `GenericFunction` subclassing and the function registry (no ORM, and
 `func.*` here is a thin passthrough, not a registry); ANSI `IS DISTINCT FROM`
-(no equivalent method exists — see the gap note below); pickling of
-expression trees; ``tuple_()`` composite IN (no tuple-valued column support);
-`VALUES` constructs and boolean-literal singletons (`true()`/`false()`) since
-sqlom has neither; and precedence tests that rely on SQLAlchemy's
+(no equivalent method exists — see the gap note below: sqlite and Postgres
+spell null-safe equality completely differently — bare `IS`/`IS NOT` versus
+`IS [NOT] DISTINCT FROM` — and `to_sql()` renders one dialect-agnostic
+string, so there is no single fragment that is valid on both); pickling of
+expression trees; `VALUES` constructs since sqlom has no derived-table VALUES
+clause; and precedence tests that rely on SQLAlchemy's
 precedence-aware compiler omitting "unnecessary" parens — sqlom always
 parenthesises `BinaryOp`/`BooleanClause`/`Not`, so there is no
 precedence-dependent rendering to assert on the sqlom side (only the *Python*
@@ -34,6 +36,7 @@ from sqlom import (
     or_,
     sql_function,
     sum_,
+    tuple_,
 )
 from tests.conftest import Author, Book
 
@@ -236,6 +239,91 @@ class TestInAndNotIn:
         clause, params = Book.id.in_([Book.author_id, 5, Book.id]).to_sql("?")
         assert clause == "id IN (author_id, ?, id)"
         assert params == (5,)
+
+
+class TestTupleComparisons:
+    """`tuple_()` — SQLAlchemy's composite row-value comparisons. Portable:
+    `(a, b) = (1, 2)` and `(a, b) IN ((1, 2), ...)` are standard SQL both
+    sqlite and Postgres support identically, unlike `IS DISTINCT FROM`."""
+
+    def test_tuple_equality_against_a_plain_python_tuple(self):
+        clause, params = where_of(
+            Query(Author).where(tuple_(Author.id, Author.name) == (1, "ada"))
+        )
+        assert clause == "(id, name) = ($1, $2)"
+        assert params == (1, "ada")
+
+    def test_tuple_inequality(self):
+        clause, params = where_of(
+            Query(Author).where(tuple_(Author.id, Author.name) != (1, "ada"))
+        )
+        assert clause == "(id, name) != ($1, $2)"
+        assert params == (1, "ada")
+
+    def test_tuple_equality_against_another_tuple_of_columns(self):
+        # Mirrors test_compiler.py's test_tuple_clauselist_in, but for `==`
+        # rather than `.in_()`.
+        clause, params = where_of(
+            Query(Author, Book)
+            .join(Book, Book.author_id == Author.id)
+            .where(tuple_(Author.id, Author.name) == tuple_(Book.author_id, Book.title))
+        )
+        assert clause == "(t_authors.id, t_authors.name) = (t_books.author_id, t_books.title)"
+        assert params == ()
+
+    def test_tuple_in_a_list_of_plain_tuples(self):
+        clause, params = where_of(
+            Query(Author).where(
+                tuple_(Author.id, Author.name).in_([(1, "ada"), (2, "brian")])
+            )
+        )
+        assert clause == "(id, name) IN (($1, $2), ($3, $4))"
+        assert params == (1, "ada", 2, "brian")
+
+    def test_tuple_in_a_list_of_column_tuples(self):
+        # test_compiler.py's test_tuple_clauselist_in: the IN list may itself
+        # hold tuple_(...) of columns, not just plain value tuples.
+        clause, params = where_of(
+            Query(Author, Book)
+            .join(Book, Book.author_id == Author.id)
+            .where(tuple_(Author.id, Author.name).in_(
+                [tuple_(Book.author_id, Book.title)]
+            ))
+        )
+        assert clause == (
+            "(t_authors.id, t_authors.name) IN "
+            "((t_books.author_id, t_books.title))"
+        )
+        assert params == ()
+
+    def test_tuple_not_in(self):
+        clause, params = where_of(
+            Query(Author).where(tuple_(Author.id, Author.name).not_in([(1, "ada")]))
+        )
+        assert clause == "(id, name) NOT IN (($1, $2))"
+        assert params == (1, "ada")
+
+    def test_tuple_in_a_subquery(self):
+        # test_compiler.py's test_select_in.
+        clause, params = where_of(
+            Query(Author).where(
+                tuple_(Author.id, Author.name).in_(Query(Book.author_id, Book.title))
+            )
+        )
+        assert clause == "(id, name) IN (SELECT author_id, title FROM t_books)"
+        assert params == ()
+
+    def test_tuple_comparison_rejects_a_mismatched_value(self):
+        with pytest.raises(TypeError, match="tuple_"):
+            tuple_(Author.id) == 5
+
+    def test_tuple_needs_at_least_one_element(self):
+        with pytest.raises(ValueError, match="at least one element"):
+            tuple_()
+
+    def test_tuple_equality_end_to_end(self, run_query):
+        rows = run_query(Query(Author).where(tuple_(Author.id, Author.name) == (1, "ada")))
+        assert len(rows) == 1 and rows[0].name == "ada"
 
 
 # --------------------------------------------------------------------------
