@@ -26,6 +26,7 @@ from .compile import (
     compile_batch_hydrator,
     compile_join_hydrator,
 )
+from .dialects import POSTGRES
 from .dml import _Statement
 from .query import CompoundSelect, Query
 from .query import json_bytes as _json_bytes
@@ -233,7 +234,7 @@ class PsycopgEngine:
     async def fetch_all(self, query: Any) -> Any:
         self._reject_if_in_transaction("fetch_all")
         _require_rows(query)
-        sql, params = query.to_sql(placeholder="%s")
+        sql, params = query.to_sql(placeholder="%s", dialect=POSTGRES)
         async with self._require_pool().connection() as conn:
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
@@ -250,7 +251,7 @@ class PsycopgEngine:
                 "this statement has RETURNING, so it produces rows — use "
                 "fetch_all() to get them"
             )
-        sql, params = statement.to_sql(placeholder="%s")
+        sql, params = statement.to_sql(placeholder="%s", dialect=POSTGRES)
         async with self._require_pool().connection() as conn:
             cur = await conn.execute(sql, params)
             return cur.rowcount

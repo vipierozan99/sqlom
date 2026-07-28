@@ -12,6 +12,7 @@ from .compile import (
     compile_batch_hydrator,
     compile_join_hydrator,
 )
+from .dialects import POSTGRES
 from .dml import _Statement
 from .query import CompoundSelect, Query
 from .query import json_bytes as _json_bytes
@@ -270,7 +271,7 @@ class DatabaseEngine:
     async def fetch_all(self, query: Any) -> Any:
         self._reject_if_in_transaction("fetch_all")
         _require_rows(query)
-        sql, params = query.to_sql(placeholder="$")
+        sql, params = query.to_sql(placeholder="$", dialect=POSTGRES)
         async with self._require_pool().acquire() as conn:
             rows = await conn.fetch(sql, *params)
         return self._hydrator_for(query)(rows)
@@ -292,7 +293,7 @@ class DatabaseEngine:
                 "this statement has RETURNING, so it produces rows — use "
                 "fetch_all() to get them"
             )
-        sql, params = statement.to_sql(placeholder="$")
+        sql, params = statement.to_sql(placeholder="$", dialect=POSTGRES)
         async with self._require_pool().acquire() as conn:
             return await conn.execute(sql, *params)
 

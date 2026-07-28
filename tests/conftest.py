@@ -216,3 +216,30 @@ def pg_schema(pg_dsn):
     asyncio.run(setup())
     yield pg_dsn
     asyncio.run(teardown())
+
+
+# --------------------------------------------------------------------------
+# Multi-dialect test helper
+# --------------------------------------------------------------------------
+
+
+def assert_dialect_sql(built, *, sqlite=None, postgres=None, params=None):
+    """Assert something with `.to_sql(placeholder=, dialect=)` (a `Query`, a
+    `CompoundSelect`, an Insert/Update/Delete) renders as expected under one
+    or both dialects — pass whichever of `sqlite=`/`postgres=` you want
+    checked. `params`, if given, is asserted identically for every dialect
+    checked: sqlom's dialects only ever differ in keyword spelling, never in
+    which values get bound or in what order.
+    """
+    from sqlom import POSTGRES, SQLITE
+
+    if sqlite is not None:
+        sql, bound = built.to_sql(dialect=SQLITE)
+        assert sql == sqlite
+        if params is not None:
+            assert bound == params
+    if postgres is not None:
+        sql, bound = built.to_sql(dialect=POSTGRES)
+        assert sql == postgres
+        if params is not None:
+            assert bound == params

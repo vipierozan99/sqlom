@@ -1,0 +1,68 @@
+"""The `Dialect` abstraction itself: `SQLITE`/`POSTGRES` singletons, their
+`is_distinct_from_sql()` spellings, and `current_dialect()`'s contextvar
+behaviour outside of any render.
+
+sqlom-original tests (no SQLAlchemy equivalent) — this module doesn't exist
+in SQLAlchemy, whose dialect system is a full compiler/visitor hierarchy.
+sqlom's is deliberately a much smaller "common core + a few overridable
+flags/methods" — see sqlom/dialects.py's module docstring for why.
+"""
+
+from sqlom import SQLITE, POSTGRES, Dialect, PostgresDialect, SqliteDialect
+from sqlom.dialects import current_dialect
+
+
+class TestSingletons:
+    def test_sqlite_and_postgres_are_shared_instances(self):
+        assert SqliteDialect() is not SQLITE
+        assert SQLITE is SQLITE
+        assert PostgresDialect() is not POSTGRES
+        assert POSTGRES is POSTGRES
+
+    def test_names_and_default_placeholders(self):
+        assert SQLITE.name == "sqlite"
+        assert SQLITE.default_placeholder == "?"
+        assert POSTGRES.name == "postgres"
+        assert POSTGRES.default_placeholder == "$"
+
+    def test_generic_base_dialect_is_permissive(self):
+        base = Dialect()
+        assert base.supports_ilike
+        assert base.supports_for_update
+        assert base.supports_delete_using
+        assert base.supports_on_conflict_constraint
+
+
+class TestSupportsFlags:
+    def test_postgres_supports_everything(self):
+        assert POSTGRES.supports_ilike
+        assert POSTGRES.supports_for_update
+        assert POSTGRES.supports_delete_using
+        assert POSTGRES.supports_on_conflict_constraint
+
+    def test_sqlite_supports_none_of_the_postgres_only_features(self):
+        assert not SQLITE.supports_ilike
+        assert not SQLITE.supports_for_update
+        assert not SQLITE.supports_delete_using
+        assert not SQLITE.supports_on_conflict_constraint
+
+
+class TestIsDistinctFromSql:
+    def test_postgres_uses_the_ansi_keyword(self):
+        assert POSTGRES.is_distinct_from_sql("a", "b", False) == "a IS DISTINCT FROM b"
+        assert (
+            POSTGRES.is_distinct_from_sql("a", "b", True)
+            == "a IS NOT DISTINCT FROM b"
+        )
+
+    def test_sqlite_uses_is_is_not(self):
+        # sqlite has no IS DISTINCT FROM keyword at all; its own IS/IS NOT
+        # are already null-safe, so they are the direct equivalent —
+        # inverted, since "IS" means "same" and "distinct" means "different".
+        assert SQLITE.is_distinct_from_sql("a", "b", False) == "a IS NOT b"
+        assert SQLITE.is_distinct_from_sql("a", "b", True) == "a IS b"
+
+
+class TestCurrentDialect:
+    def test_none_outside_any_render(self):
+        assert current_dialect() is None

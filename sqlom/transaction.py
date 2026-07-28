@@ -49,6 +49,8 @@ import contextvars
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any, TypeVar, Union, overload
 
+from .dialects import POSTGRES
+
 if TYPE_CHECKING:
     from .dml import _Statement
     from .query import CompoundSelect, Query
@@ -131,7 +133,7 @@ class Transaction:
 
     async def fetch_all(self, query: Any) -> Any:
         """Hydrated model instances, read inside this transaction."""
-        sql, params = query.to_sql(placeholder=self._placeholder)
+        sql, params = query.to_sql(placeholder=self._placeholder, dialect=POSTGRES)
         rows = await self._fetch_rows(sql, params)
         return self._engine._hydrator_for(query)(rows)
 

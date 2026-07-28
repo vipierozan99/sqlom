@@ -314,3 +314,23 @@ class TestNewQueryFeaturesOnPostgres:
             .order_by(Book.id)
         )
         assert [book.title for _, book in rows] == ["structures", "algorithms"]
+
+    # Ported from test/sql/test_operators.py::IsDistinctFromTest (SQLAlchemy
+    # 2.0.51) — executed against a real server rather than string-matched,
+    # since this is the one predicate the multi-dialect system exists for.
+    async def test_is_distinct_from_executes_and_is_null_safe(self, engine):
+        rows = await engine.fetch_all(
+            Query(Author.name, Book.id)
+            .outer_join(Book, Book.author_id == Author.id)
+            .where(Book.id.is_distinct_from(None))
+            .order_by(Author.id)
+        )
+        assert [name for name, _ in rows] == ["ada", "ada", "brian", "carol"]
+
+        rows = await engine.fetch_all(
+            Query(Author.name, Book.id)
+            .outer_join(Book, Book.author_id == Author.id)
+            .where(Book.id.is_not_distinct_from(None))
+            .order_by(Author.id)
+        )
+        assert rows == [("dan", None)]

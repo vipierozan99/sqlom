@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Self
 
+from .dialects import Dialect, dialect_scope, resolve_placeholder
 from .expr import (
     Alias,
     ColumnExpr,
@@ -285,13 +286,17 @@ class _Statement:
                 parts.append(sql)
         return " RETURNING " + ", ".join(parts)
 
-    def to_sql(self, placeholder: str = "?") -> tuple[str, tuple[Any, ...]]:
-        cached = self._sql_cache.get(placeholder)
+    def to_sql(self, placeholder: str | None = None,
+               dialect: Dialect | None = None) -> tuple[str, tuple[Any, ...]]:
+        style = resolve_placeholder(placeholder, dialect)
+        cache_key = (style, dialect.name if dialect else None)
+        cached = self._sql_cache.get(cache_key)
         if cached is not None:
             return cached
-        sql, params = self._render(_placeholders(placeholder))
+        with dialect_scope(dialect):
+            sql, params = self._render(_placeholders(style))
         result = (sql, tuple(params))
-        self._sql_cache[placeholder] = result
+        self._sql_cache[cache_key] = result
         return result
 
     def _render(self, nxt: Any = None, resolve: Any = None) -> tuple[str, list[Any]]:

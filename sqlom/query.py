@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, Iterable, Self, TypeVar, Union, overload
 
+from .dialects import Dialect, dialect_scope, resolve_placeholder
 from .expr import (
     CTE,
     Aggregate,
@@ -833,8 +834,17 @@ class Query(Generic[R]):
 
         return sql, params
 
-    def to_sql(self, placeholder: str = "?") -> tuple[str, tuple[Any, ...]]:
+    def to_sql(self, placeholder: str | None = None,
+               dialect: Dialect | None = None) -> tuple[str, tuple[Any, ...]]:
         """Return `(sql, params)`. `params` is a **tuple**.
+
+        `dialect=` (`SQLITE`/`POSTGRES`, from `sqlom.dialects`) is optional and
+        additive: omitted, rendering is exactly what it always was. Passed, it
+        both picks a sensible default placeholder style (unless `placeholder`
+        is also given, which always wins) and makes `current_dialect()`
+        available to dialect-sensitive nodes for the duration of this render
+        — `IS DISTINCT FROM`, and the handful of Postgres-only features that
+        now raise instead of silently rendering unsupported SQL for sqlite.
 
         Deliberately immutable: the result is cached and the same object is
         handed to every caller, so a mutable list would let one caller alter the
@@ -843,12 +853,15 @@ class Query(Generic[R]):
         hot path — a tuple is safe *and* free. Every driver here accepts one
         (sqlite3 and psycopg take a sequence, asyncpg is splatted).
         """
-        cached = self._sql_cache.get(("select", placeholder))
+        style = resolve_placeholder(placeholder, dialect)
+        cache_key = ("select", style, dialect.name if dialect else None)
+        cached = self._sql_cache.get(cache_key)
         if cached is not None:
             return cached
-        sql, params = self._render(_placeholders(placeholder), with_clause=True)
+        with dialect_scope(dialect):
+            sql, params = self._render(_placeholders(style), with_clause=True)
         result = (sql, tuple(params))
-        self._sql_cache[("select", placeholder)] = result
+        self._sql_cache[cache_key] = result
         return result
 
     def to_json_sql(self, dialect: str = "postgres") -> tuple[str, tuple[Any, ...]]:
@@ -1199,13 +1212,17 @@ class CompoundSelect(Generic[R]):
             params.append(self._offset)
         return sql, params
 
-    def to_sql(self, placeholder: str = "?") -> tuple[str, tuple[Any, ...]]:
-        cached = self._sql_cache.get(placeholder)
+    def to_sql(self, placeholder: str | None = None,
+               dialect: Dialect | None = None) -> tuple[str, tuple[Any, ...]]:
+        style = resolve_placeholder(placeholder, dialect)
+        cache_key = (style, dialect.name if dialect else None)
+        cached = self._sql_cache.get(cache_key)
         if cached is not None:
             return cached
-        sql, params = self._render(_placeholders(placeholder), with_clause=True)
+        with dialect_scope(dialect):
+            sql, params = self._render(_placeholders(style), with_clause=True)
         result = (sql, tuple(params))
-        self._sql_cache[placeholder] = result
+        self._sql_cache[cache_key] = result
         return result
 
     def __repr__(self) -> str:

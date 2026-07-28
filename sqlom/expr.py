@@ -39,6 +39,8 @@ from typing import (
 )
 from typing import cast as _type_narrow
 
+from .dialects import current_dialect
+
 if TYPE_CHECKING:
     from .query import CompoundSelect, Query
 
@@ -567,6 +569,20 @@ class Expression(Generic[T]):
                 "is_not() only supports None; use != for a value comparison"
             )
         return self.is_not_null()
+
+    def is_distinct_from(self, other: Any) -> "IsDistinctFrom":
+        """`self IS DISTINCT FROM other` — null-safe inequality: unlike `!=`,
+        two `NULL`s compare as *not* distinct (i.e. this is `False`), and
+        `NULL` vs. a real value compares as distinct (`True`). Needs a
+        dialect to render (`to_sql(dialect=SQLITE)`/`to_sql(dialect=
+        POSTGRES)`) — sqlite and Postgres spell this completely differently.
+        """
+        return IsDistinctFrom(self, other)
+
+    def is_not_distinct_from(self, other: Any) -> "IsDistinctFrom":
+        """`self IS NOT DISTINCT FROM other` — null-safe equality, the
+        negation of `is_distinct_from()`. Also needs a dialect."""
+        return IsDistinctFrom(self, other, negated=True)
 
     def label(self, name: str) -> Labelled[T]:
         """Name this expression in the select list (`AS name`)."""
@@ -1184,6 +1200,66 @@ class Condition(Predicate):
         if self.is_column_comparison:
             return f"<Condition {self.left!r} {self.op} {self.right!r}>"
         return f"<Condition {self.left!r} {self.op} {self.value!r}>"
+
+
+class IsDistinctFrom(Predicate):
+    """`left IS DISTINCT FROM right` / `left IS NOT DISTINCT FROM right` —
+    null-safe (in)equality: two `NULL`s are *not* distinct, `NULL` versus a
+    real value *is* distinct — the case plain `=`/`!=` get wrong, since SQL's
+    three-valued logic makes `NULL = NULL` and `NULL != NULL` both `NULL`
+    (neither true nor false), not `TRUE`.
+
+    sqlite and Postgres spell this completely differently — sqlite has no
+    `DISTINCT FROM` keyword at all, using its own null-safe `IS`/`IS NOT`
+    instead — so, unlike everything else in this library (which stays
+    permissive and dialect-less by default), this raises rather than
+    guessing if rendered with no dialect in effect. See `sqlom/dialects.py`.
+    """
+
+    __slots__ = ("left", "right", "negated")
+
+    def __init__(self, left: Expression[Any], right: Any,
+                 negated: bool = False) -> None:
+        self.left = left
+        self.right = right
+        self.negated = negated
+
+    def to_sql(self, nxt, resolve=_bare):
+        dialect = current_dialect()
+        if dialect is None:
+            method = "is_not_distinct_from" if self.negated else "is_distinct_from"
+            raise ValueError(
+                f"{method}() needs a dialect: call to_sql(dialect=SQLITE) or "
+                f"to_sql(dialect=POSTGRES) — sqlite and Postgres spell "
+                f"null-safe comparison completely differently, so there is "
+                f"no dialect-less default to fall back on"
+            )
+        advance = nxt if callable(nxt) else (lambda value=nxt: value)
+        left, params = self.left.to_sql(advance, resolve)
+
+        if isinstance(self.right, Expression):
+            right, right_params = self.right.to_sql(advance, resolve)
+            return (dialect.is_distinct_from_sql(left, right, self.negated),
+                    params + right_params)
+
+        right = self.right
+        if right is not None and hasattr(right, "_render"):  # a bare scalar subquery
+            sql, right_params = right._render(advance)
+            return (dialect.is_distinct_from_sql(left, f"({sql})", self.negated),
+                    params + tuple(right_params))
+
+        return (dialect.is_distinct_from_sql(left, str(advance()), self.negated),
+                params + (self.right,))
+
+    def sources(self):
+        sources = self.left.sources()
+        if isinstance(self.right, Expression):
+            sources += self.right.sources()
+        return sources
+
+    def __repr__(self):
+        keyword = "IS NOT DISTINCT FROM" if self.negated else "IS DISTINCT FROM"
+        return f"<{keyword} {self.left!r} {self.right!r}>"
 
 
 class BooleanClause(Predicate):

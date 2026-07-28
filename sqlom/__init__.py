@@ -10,6 +10,7 @@ from .compile import (
     json_default,
 )
 from .dataclass_model import DATACLASS_DUMP_OPTION, model
+from .dialects import POSTGRES, SQLITE, Dialect, PostgresDialect, SqliteDialect
 from .dml import (
     MAX_PARAMETERS,
     Delete,
@@ -39,6 +40,7 @@ from .expr import (
     ExistsClause,
     Expression,
     InClause,
+    IsDistinctFrom,
     Labelled,
     Literal,
     Not,
@@ -79,6 +81,11 @@ from .query import CompoundSelect, Query, json_bytes, select
 from .transaction import Transaction, active_transaction
 
 __all__ = [
+    "Dialect",
+    "PostgresDialect",
+    "SqliteDialect",
+    "POSTGRES",
+    "SQLITE",
     "Column",
     "ColumnExpr",
     "Condition",
@@ -94,6 +101,7 @@ __all__ = [
     "BooleanClause",
     "Not",
     "InClause",
+    "IsDistinctFrom",
     "ExistsClause",
     "Excluded",
     "excluded",

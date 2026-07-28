@@ -38,7 +38,7 @@ from sqlom import (
     sum_,
     tuple_,
 )
-from tests.conftest import Author, Book
+from tests.conftest import Author, Book, assert_dialect_sql
 
 
 def where_of(query, placeholder="$"):
@@ -138,6 +138,90 @@ class TestNullAndIsOperators:
         clause, params = where_of(Query(Book).where(Book.title.like("a%")))
         assert clause == "title LIKE $1"
         assert params == ("a%",)
+
+
+class TestIsDistinctFrom:
+    """`IS DISTINCT FROM` / `IS NOT DISTINCT FROM` — null-safe (in)equality,
+    added alongside the multi-dialect Dialect system since sqlite and
+    Postgres spell this completely differently (sqlite has no `DISTINCT
+    FROM` keyword at all)."""
+
+    # Ported from test/sql/test_operators.py::IsDistinctFromTest.test_is_distinct_from_postgresql (SQLAlchemy 2.0.51)
+    def test_is_distinct_from_on_postgres(self):
+        assert_dialect_sql(
+            Query(Book).where(Book.id.is_distinct_from(1)),
+            postgres="SELECT id, author_id, title FROM t_books "
+                     "WHERE id IS DISTINCT FROM $1",
+            params=(1,),
+        )
+
+    # Ported from test/sql/test_operators.py::IsDistinctFromTest.test_is_distinct_from_sqlite (SQLAlchemy 2.0.51)
+    def test_is_distinct_from_on_sqlite(self):
+        assert_dialect_sql(
+            Query(Book).where(Book.id.is_distinct_from(1)),
+            sqlite="SELECT id, author_id, title FROM t_books WHERE id IS NOT ?",
+            params=(1,),
+        )
+
+    # Ported from test/sql/test_operators.py::IsDistinctFromTest.test_is_not_distinct_from_postgresql (SQLAlchemy 2.0.51)
+    def test_is_not_distinct_from_on_postgres(self):
+        assert_dialect_sql(
+            Query(Book).where(Book.id.is_not_distinct_from(1)),
+            postgres="SELECT id, author_id, title FROM t_books "
+                     "WHERE id IS NOT DISTINCT FROM $1",
+            params=(1,),
+        )
+
+    # Ported from test/sql/test_operators.py::IsDistinctFromTest.test_is_not_distinct_from_sqlite (SQLAlchemy 2.0.51)
+    def test_is_not_distinct_from_on_sqlite(self):
+        assert_dialect_sql(
+            Query(Book).where(Book.id.is_not_distinct_from(1)),
+            sqlite="SELECT id, author_id, title FROM t_books WHERE id IS ?",
+            params=(1,),
+        )
+
+    # sqlom-original test (no SQLAlchemy equivalent) — SQLAlchemy has no
+    # dialect-less default to fall back on either, but it never needs one:
+    # its compiler always has a dialect (defaulting to "generic ANSI"),
+    # where sqlom's to_sql() is dialect-less unless a dialect is explicitly
+    # given. This is the one predicate that requires one.
+    def test_raises_without_a_dialect(self):
+        with pytest.raises(ValueError, match="needs a dialect"):
+            Query(Book).where(Book.id.is_distinct_from(1)).to_sql()
+        with pytest.raises(ValueError, match="needs a dialect"):
+            Query(Book).where(Book.id.is_not_distinct_from(1)).to_sql()
+
+    # sqlom-original test (no SQLAlchemy equivalent) — proves the null-safe
+    # semantics actually execute correctly against real NULLs, the exact
+    # case plain ==/!= get wrong. No fixture column is ever NULL, so an
+    # outer join supplies one: author "dan" (id 4) has no books, so
+    # Book.id is NULL for that row only.
+    def test_is_distinct_from_end_to_end_on_sqlite(self, db):
+        from sqlom import SQLITE
+
+        distinct = (
+            Query(Author.name, Book.id)
+            .outer_join(Book, Book.author_id == Author.id)
+            .where(Book.id.is_distinct_from(None))
+            .order_by(Author.id)
+        )
+        sql, params = distinct.to_sql(dialect=SQLITE)
+        rows = db.execute(sql, params).fetchall()
+        # "dan" (NULL book.id) is correctly excluded — NULL is not distinct
+        # from NULL, unlike `!= NULL`, which would exclude every row.
+        assert rows == [("ada", 10), ("ada", 11), ("brian", 12), ("carol", 13)]
+
+        not_distinct = (
+            Query(Author.name, Book.id)
+            .outer_join(Book, Book.author_id == Author.id)
+            .where(Book.id.is_not_distinct_from(None))
+            .order_by(Author.id)
+        )
+        sql, params = not_distinct.to_sql(dialect=SQLITE)
+        rows = db.execute(sql, params).fetchall()
+        # Only "dan" — the one row where book.id really is NULL — matches,
+        # unlike `== NULL`, which would match zero rows.
+        assert rows == [("dan", None)]
 
 
 # --------------------------------------------------------------------------
