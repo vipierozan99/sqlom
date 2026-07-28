@@ -35,9 +35,9 @@ from typing import (
     Protocol,
     TypeVar,
     Union,
-    cast,
     overload,
 )
+from typing import cast as _type_narrow
 
 if TYPE_CHECKING:
     from .query import CompoundSelect, Query
@@ -126,7 +126,7 @@ class Alias(Generic[M]):
             raise TypeError("Alias() needs a non-empty string alias")
         self.model = model
         self.alias = alias
-        table = cast(_TableSource, model)
+        table = _type_narrow(_TableSource, model)
         self.__columns__ = table.__columns__
         self.__tablename__ = table.__tablename__
 
@@ -639,6 +639,17 @@ class Expression(Generic[T]):
             )
         return BinaryOp(self, operator, other)
 
+    def cast(self, type_name: str, py_type: Any = None) -> "Cast[Any]":
+        """`CAST(self AS type_name)` — SQLAlchemy's `col.cast(Type)`.
+
+        `type_name` is a plain SQL type name (`"numeric"`, `"integer"`,
+        `"numeric(12, 9)"`), not a type *object* — sqlom has no type system to
+        instantiate one from (see README). Pass `py_type` to also declare the
+        Python type of the result, the role SQLAlchemy's type object plays for
+        hydration/typing purposes.
+        """
+        return Cast(self, type_name, py_type)
+
     def __hash__(self) -> int:
         return id(self)
 
@@ -763,6 +774,128 @@ class ScalarSubquery(Expression[T]):
 
     def __repr__(self) -> str:
         return f"<ScalarSubquery {self.query!r}>"
+
+
+class Cast(Expression[T]):
+    """`CAST(expr AS type_name)` — SQLAlchemy's `cast(expr, Type)`/`col.cast(Type)`.
+
+    `type_name` is inserted verbatim into the SQL, so — the same rule as a
+    function name or a custom operator — it is validated as a plain type
+    name (`numeric`, `integer`, `numeric(12, 9)`) rather than trusted.
+    """
+
+    __slots__ = ("expr", "type_name", "py_type")
+
+    def __init__(self, expr: Any, type_name: str, py_type: Any = None) -> None:
+        import re
+
+        stripped = type_name.strip() if isinstance(type_name, str) else ""
+        if not stripped or not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_ ]*(\(\s*\d+\s*(,\s*\d+\s*)?\))?", stripped
+        ):
+            raise ValueError(
+                f"{type_name!r} is not a valid SQL type name for cast(); "
+                f"expected something like 'numeric' or 'numeric(12, 9)'"
+            )
+        self.expr = expr
+        self.type_name = stripped
+        self.py_type = py_type
+
+    def to_sql(self, nxt: Any, resolve: Any = _bare) -> tuple[str, tuple[Any, ...]]:
+        sql, params = _operand_sql(self.expr, nxt, resolve)
+        return f"CAST({sql} AS {self.type_name})", params
+
+    def sources(self) -> tuple[Any, ...]:
+        return self.expr.sources() if isinstance(self.expr, Expression) else ()
+
+    def output_name(self) -> str:
+        return "cast"
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def __repr__(self) -> str:
+        return f"<Cast {self.expr!r} AS {self.type_name}>"
+
+
+def cast(expr: Any, type_name: str, py_type: Any = None) -> Cast[Any]:
+    """`CAST(expr AS type_name)`. See `Expression.cast()` — the free-function
+    and method forms are equivalent, matching SQLAlchemy's `cast(col, Type)`
+    and `col.cast(Type)`."""
+    return Cast(expr, type_name, py_type)
+
+
+class Literal(Expression[T]):
+    """A Python value forced into value position — SQLAlchemy's `literal(value)`.
+
+    Needed only where a bare Python value is not already accepted: as a whole
+    `SELECT`-list entry, standalone. Everywhere else — arithmetic, function
+    arguments, comparisons, `UPDATE` assignments — a bare value is already
+    bound as a parameter (`_operand_sql`), so wrapping it there is optional,
+    not required.
+    """
+
+    __slots__ = ("value", "py_type")
+
+    def __init__(self, value: T, py_type: Any = None) -> None:
+        self.value = value
+        self.py_type = py_type if py_type is not None else type(value)
+
+    def to_sql(self, nxt: Any, resolve: Any = _bare) -> tuple[str, tuple[Any, ...]]:
+        advance = nxt if callable(nxt) else (lambda value=nxt: value)
+        return advance(), (self.value,)
+
+    def sources(self) -> tuple[Any, ...]:
+        return ()
+
+    def __repr__(self) -> str:
+        return f"<Literal {self.value!r}>"
+
+
+def literal(value: T, py_type: Any = None) -> Literal[T]:
+    """Force a bare Python value into an `Expression`, usable standalone (a
+    `SELECT`-list entry with nothing else wrapping it) — see `Literal`."""
+    return Literal(value, py_type)
+
+
+class _Keyword(Expression[Any]):
+    """A literal SQL keyword expression: `TRUE` / `FALSE` / `NULL`, inserted
+    verbatim rather than bound — both sqlite (3.23+) and Postgres understand
+    all three as-is."""
+
+    __slots__ = ("keyword", "py_type")
+
+    def __init__(self, keyword: str, py_type: Any = None) -> None:
+        self.keyword = keyword
+        self.py_type = py_type
+
+    def to_sql(self, nxt: Any, resolve: Any = _bare) -> tuple[str, tuple[Any, ...]]:
+        return self.keyword, ()
+
+    def sources(self) -> tuple[Any, ...]:
+        return ()
+
+    def __repr__(self) -> str:
+        return f"<{self.keyword}>"
+
+
+def true() -> _Keyword:
+    """Literal SQL `TRUE`, standalone. `col == True` already renders a bound
+    `TRUE` for a comparison; this is for using the literal as a value on its
+    own, e.g. `Query(Book.id, true())`."""
+    return _Keyword("TRUE", bool)
+
+
+def false() -> _Keyword:
+    """Literal SQL `FALSE`, standalone. See `true()`."""
+    return _Keyword("FALSE", bool)
+
+
+def null() -> _Keyword:
+    """Literal SQL `NULL`, standalone. `col.is_(None)`/`col == None` already
+    handle the comparison case; this is for using `NULL` as a plain value,
+    e.g. a `CASE` arm or a `SELECT`-list entry."""
+    return _Keyword("NULL", None)
 
 
 class Aggregate(Expression[T]):

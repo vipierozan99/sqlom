@@ -53,7 +53,21 @@ Skipped entirely, and why:
 
 import pytest
 
-from sqlom import Alias, Query, and_, case, count, exists, not_, or_
+from sqlom import (
+    Alias,
+    Query,
+    and_,
+    case,
+    cast,
+    count,
+    exists,
+    false,
+    literal,
+    not_,
+    null,
+    or_,
+    true,
+)
 from tests.conftest import Author, Book, Tag
 
 
@@ -485,6 +499,81 @@ class TestArithmeticExpressions:
         sql, params = Query(Book).where(Book.id % 2 == 0).to_sql(placeholder="$")
         assert sql.endswith("WHERE (id % $1) = $2")
         assert params == (2, 0)
+
+
+class TestCast:
+    """Ported from test_compiler.py's test_cast: sqlom's `cast()` takes a
+    plain SQL type-name string rather than a type object (see cast()'s
+    docstring), since sqlom has no type system to instantiate one from."""
+
+    def test_cast_function_form(self):
+        sql, params = Query(cast(Book.id, "numeric")).to_sql(placeholder="$")
+        assert sql == "SELECT CAST(id AS numeric) FROM t_books"
+        assert params == ()
+
+    def test_cast_method_form_matches_the_function(self):
+        function_form, _ = Query(cast(Book.id, "numeric")).to_sql()
+        method_form, _ = Query(Book.id.cast("numeric")).to_sql()
+        assert function_form == method_form
+
+    def test_cast_with_type_parameters(self):
+        sql, _ = Query(cast(Book.id, "numeric(12, 9)")).to_sql()
+        assert sql == "SELECT CAST(id AS numeric(12, 9)) FROM t_books"
+
+    def test_cast_a_literal_value(self):
+        # Unlike SQLAlchemy's select(cast(1234, Text)), sqlom always needs a
+        # real table in FROM (see Query()'s own "no table to select from"
+        # error) — there is no bare-value SELECT with no source.
+        sql, params = Query(Book.id, cast(1234, "text")).to_sql(placeholder="$")
+        assert sql == "SELECT id, CAST($1 AS text) FROM t_books"
+        assert params == (1234,)
+
+    def test_cast_used_in_a_comparison(self):
+        sql, params = (
+            Query(Book).where(Book.id.cast("text") == "7").to_sql(placeholder="$")
+        )
+        assert sql.endswith('WHERE CAST(id AS text) = $1')
+        assert params == ("7",)
+
+    def test_cast_rejects_a_fragment_as_the_type_name(self):
+        with pytest.raises(ValueError, match="not a valid SQL type name"):
+            cast(Book.id, "text); DROP TABLE t_books; --")
+
+    def test_cast_end_to_end(self, run_query):
+        rows = run_query(Query(cast(Book.id, "text")).where(Book.id == 10))
+        assert rows == [("10",)]
+
+
+class TestLiteralsAndKeywords:
+    """`literal()`, `true()`, `false()`, `null()` — standalone value/keyword
+    wrappers, needed only where a bare Python value isn't already accepted
+    (as a whole SELECT-list entry on its own)."""
+
+    def test_literal_as_a_selected_value(self):
+        sql, params = Query(Book.id, literal(1)).to_sql(placeholder="$")
+        assert sql == "SELECT id, $1 FROM t_books"
+        assert params == (1,)
+
+    def test_literal_declares_its_py_type_from_the_value_by_default(self):
+        assert literal("x").py_type is str
+        assert literal(1).py_type is int
+        assert literal(1, py_type=float).py_type is float
+
+    def test_true_false_null_render_as_bare_keywords(self):
+        sql, params = Query(Book.id, true(), false(), null()).to_sql()
+        assert sql == "SELECT id, TRUE, FALSE, NULL FROM t_books"
+        assert params == ()
+
+    def test_true_and_false_end_to_end(self, run_query):
+        rows = run_query(Query(Book.id, true(), false()).where(Book.id == 10))
+        assert rows == [(10, 1, 0)]  # sqlite has no bool type; 1/0 on the wire
+
+    def test_null_used_in_a_case_arm(self):
+        sql, params = Query(case((Book.id > 10, null()), else_="x")).to_sql(
+            placeholder="$"
+        )
+        assert sql == "SELECT CASE WHEN id > $1 THEN NULL ELSE $2 END FROM t_books"
+        assert params == (10, "x")
 
 
 # --------------------------------------------------------------------------
