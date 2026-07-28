@@ -1,3 +1,27 @@
+[project]
+name = "sqlom"
+version = "0.1.0"
+description = "Zero-overhead async data layer for Python: a statically-typed query builder over asyncpg/psycopg, with compiled hydration and orjson serialization."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+asyncpg = [
+    "asyncpg>=0.29",
+]
+psycopg = [
+    "psycopg[binary]>=3.1",
+    "psycopg-pool>=3.2",
+]
+orjson = [
+    "orjson>=3.9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [tool.mypy]
 python_version = "3.11"
 # The point of the typing tests: an ignore that stops being necessary becomes an
@@ -31,6 +55,19 @@ reportUnnecessaryTypeIgnoreComment = "error"
 enableTypeIgnoreComments = false
 # tests/typing/negative.py is deliberately a list of bare expressions.
 reportUnusedExpression = "none"
-# sqlom's own internals are unannotated; report on the typing tests only.
-include = ["tests/typing"]
+include = ["sqlom", "tests/typing"]
 extraPaths = ["."]
+
+[dependency-groups]
+dev = [
+    "asyncpg>=0.29",
+    "coverage>=7.15.2",
+    "mypy>=2.3.0",
+    "orjson>=3.9",
+    "psycopg-pool>=3.2",
+    "psycopg[binary]>=3.1",
+    "pyright>=1.1.411",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+]

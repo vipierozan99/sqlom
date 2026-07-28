@@ -32,8 +32,10 @@ from typing import (
     Callable,
     Generic,
     Iterable,
+    Protocol,
     TypeVar,
     Union,
+    cast,
     overload,
 )
 
@@ -47,6 +49,14 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 M = TypeVar("M")
+
+
+class _TableSource(Protocol):
+    """Runtime column map shared by ModelMeta classes and @model dataclasses."""
+
+    __columns__: dict[str, Any]
+    __tablename__: str
+
 
 # `x = NULL` is never true in SQL — comparison against NULL yields unknown, so a
 # row is neither matched nor excluded. Equality against None becomes IS / IS NOT,
@@ -90,11 +100,6 @@ def source_name(source):
     return f"{source.model.__name__} AS {alias}"
 
 
-def source_model(source):
-    """The model class behind a source, or None for a subquery."""
-    return getattr(source, "model", source) if hasattr(source, "alias") else source
-
-
 class Alias(Generic[M]):
     """An aliased reference to a model, which is what makes a self-join possible.
 
@@ -121,10 +126,9 @@ class Alias(Generic[M]):
             raise TypeError("Alias() needs a non-empty string alias")
         self.model = model
         self.alias = alias
-        # `type[M]` carries no declaration of these; they come from ModelMeta or
-        # the @model decorator at runtime, checked by the hasattr above.
-        self.__columns__ = model.__columns__  # type: ignore[attr-defined]
-        self.__tablename__ = model.__tablename__  # type: ignore[attr-defined]
+        table = cast(_TableSource, model)
+        self.__columns__ = table.__columns__
+        self.__tablename__ = table.__tablename__
 
     def __getattr__(self, name: str) -> ColumnExpr[Any]:
         # Statically this is ColumnExpr[Any]: an alias resolves columns from the
@@ -850,8 +854,9 @@ class Condition(Predicate):
             right, right_params = self.right.to_sql(advance, resolve)
             return f"{left} {self.op} {right}", params + right_params
 
-        if hasattr(self.right, "_render"):  # a Query used as a scalar subquery
-            sql, right_params = self.right._render(advance)
+        right = self.right
+        if right is not None and hasattr(right, "_render"):  # scalar subquery
+            sql, right_params = right._render(advance)
             return f"{left} {self.op} ({sql})", params + tuple(right_params)
 
         return f"{left} {self.op} {advance()}", params + (self.right,)
@@ -950,7 +955,7 @@ class InClause(Predicate):
             # perfectly reasonable thing for calling code to end up with, so
             # render the constant it is equivalent to.
             return ("FALSE" if not self.negated else "TRUE"), params
-        placeholders = ", ".join(advance() for _ in values)
+        placeholders = ", ".join(str(advance()) for _ in values)
         return f"{left} {keyword} ({placeholders})", params + tuple(values)
 
     def sources(self):

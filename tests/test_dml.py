@@ -17,6 +17,18 @@ from sqlom import (
 from tests.conftest import Author, Book
 
 
+class TestStatementBase:
+    """_Statement is the shared base Insert/Update/Delete build on; each of
+    them overrides _render(), so the base implementation itself needs its
+    own direct test."""
+
+    def test_render_is_not_implemented(self):
+        from sqlom.dml import _Statement
+
+        with pytest.raises(NotImplementedError):
+            _Statement(Author)._render()
+
+
 class TestInsert:
     def test_single_row_from_keywords(self):
         sql, params = Insert(Author).values(id=1, name="ada", active=True).to_sql(
@@ -118,6 +130,14 @@ class TestInsertValidation:
         statement = Insert(Author).values([{"id": n} for n in range(ceiling)])
         assert statement.row_count == ceiling
 
+    def test_repr_reports_the_row_count(self):
+        assert repr(Insert(Author).values([{"id": 1}, {"id": 2}])) == "<Insert Author x2>"
+
+    def test_render_with_no_placeholder_generator_falls_back_to_question_marks(self):
+        sql, params = Insert(Author).values(id=1)._render()
+        assert sql == "INSERT INTO t_authors (id) VALUES (?)"
+        assert params == [1]
+
 
 class TestUpdate:
     def test_set_and_where(self):
@@ -173,6 +193,14 @@ class TestUpdate:
         with pytest.raises(TypeError, match="takes a predicate"):
             Update(Author).set(name="z").where("id = 1")
 
+    def test_repr(self):
+        assert repr(Update(Author).set(name="z")) == "<Update Author>"
+
+    def test_render_with_no_placeholder_generator_falls_back_to_question_marks(self):
+        sql, params = Update(Author).set(name="z")._render()
+        assert sql == "UPDATE t_authors SET name = ?"
+        assert params == ["z"]
+
 
 class TestDelete:
     def test_with_where(self):
@@ -197,6 +225,20 @@ class TestDelete:
         with pytest.raises(ValueError, match="not the table being written to"):
             Delete(Author).where(Book.id == 1).to_sql()
 
+    def test_where_rejects_a_non_predicate(self):
+        with pytest.raises(TypeError, match="takes a predicate"):
+            Delete(Author).where("id = 1")
+
+    def test_repr(self):
+        assert repr(Delete(Author).all_rows()) == "<Delete Author>"
+
+    def test_render_with_no_placeholder_generator_falls_back_to_question_marks(self):
+        # all_rows() alone never calls nxt() (no WHERE, no RETURNING): use a
+        # condition instead, so the fallback placeholder is actually reached.
+        sql, params = Delete(Author).where(Author.id == 1)._render()
+        assert sql == "DELETE FROM t_authors WHERE id = ?"
+        assert params == [1]
+
 
 class TestReturningValidation:
     def test_returning_another_model_is_refused(self):
@@ -211,6 +253,18 @@ class TestReturningValidation:
         with pytest.raises(TypeError, match="takes the model or its columns"):
             Insert(Author).values(id=1).returning("id")
 
+    def test_returning_an_unknown_column_of_the_right_table_is_refused(self):
+        from sqlom import ColumnExpr
+
+        # Passes the "is this table being written to" check (it is Author),
+        # then fails the deeper "does that table actually have this column"
+        # check — only reachable by hand-building the reference, as in the
+        # other has-no-column tests.
+        ghost = ColumnExpr(Author, "nope", int)
+        with pytest.raises(ValueError, match="has no column 'nope'"):
+            (Update(Author).set(name="z").where(Author.id == 1)
+             .returning(ghost).to_sql())
+
     def test_returns_rows_reflects_whether_returning_was_called(self):
         assert Insert(Author).values(id=1).returns_rows is False
         assert Insert(Author).values(id=1).returning(Author.id).returns_rows is True
@@ -223,6 +277,16 @@ class TestHydrationInterface:
         statement = Insert(Author).values(id=1).returning(Author)
         assert statement.is_multi_entity is False
         assert statement._hydration_key is Author
+
+    def test_returning_a_model_hydration_spec_and_output_columns(self):
+        # test_returning_columns_hydrates_as_tuples and test_output_columns
+        # below only exercise the "column" kind; a whole-model RETURNING
+        # takes a different branch through both methods.
+        statement = Insert(Author).values(id=1).returning(Author)
+        assert statement.hydration_spec() == [("model", Author, False)]
+        assert statement.output_columns() == [
+            ("id", int), ("name", str), ("active", bool),
+        ]
 
     def test_returning_columns_hydrates_as_tuples(self):
         statement = Insert(Author).values(id=1).returning(Author.id, Author.name)

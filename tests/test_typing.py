@@ -45,10 +45,10 @@ def test_mypy_is_clean():
 
 @pytest.mark.typing
 def test_pyright_is_clean():
-    """pyright over tests/typing/, with reportUnnecessaryTypeIgnoreComment on."""
+    """pyright over sqlom/ and tests/typing/, with reportUnnecessaryTypeIgnoreComment on."""
     if not shutil.which("pyright"):
         pytest.skip("pyright is not installed")
-    result = _run(["pyright", "--outputjson", str(TYPING_DIR)])
+    result = _run(["pyright", "--outputjson"])
     # pyright exits 1 when it reports errors; parse rather than trust the code, so
     # the failure message names the actual diagnostics.
     assert result.returncode == 0, (

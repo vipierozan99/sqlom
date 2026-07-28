@@ -76,6 +76,25 @@ class TestRendering:
         compound.limit(3)
         assert compound.to_sql() is not first
 
+    def test_chaining_intersect_on_a_compound(self):
+        # test_every_operator above calls Query.intersect(); this is
+        # CompoundSelect.intersect(), reached only by chaining off a compound.
+        compound = Query(Author).intersect(Query(Author)).intersect(Query(Author))
+        assert compound.to_sql()[0].count("INTERSECT") == 2
+        assert len(compound.operands) == 3
+
+    def test_repr(self):
+        compound = Query(Author).union(Query(Author))
+        assert repr(compound) == "<CompoundSelect UNION x2>"
+
+    def test_render_with_no_placeholder_generator_falls_back_to_question_marks(self):
+        sql, params = Query(Author).union(Query(Author)).limit(2)._render()
+        assert sql == (
+            "SELECT id, name, active FROM t_authors "
+            "UNION SELECT id, name, active FROM t_authors LIMIT ?"
+        )
+        assert params == [2]
+
 
 class TestValidation:
     def test_operands_must_select_the_same_number_of_columns(self):
@@ -85,6 +104,10 @@ class TestValidation:
     def test_operand_must_be_a_query(self):
         with pytest.raises(TypeError, match="takes another Query"):
             Query(Author).union("SELECT 1")
+
+    def test_needs_at_least_two_operands(self):
+        with pytest.raises(ValueError, match="at least two operands"):
+            CompoundSelect("UNION", [Query(Author)])
 
     def test_order_by_must_name_an_output_column(self):
         with pytest.raises(ValueError, match="not an output column"):

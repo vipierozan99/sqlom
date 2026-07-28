@@ -60,7 +60,9 @@ _Select = Union["Query[R]", "CompoundSelect[R]"]
 # instance attribute: one engine serves many concurrent tasks, and each needs its
 # own answer. Reading it costs ~30 ns, which is why the guard on the hot path is
 # affordable at all.
-_ACTIVE = contextvars.ContextVar("sqlom_active_transaction", default=None)
+_ACTIVE: contextvars.ContextVar[Transaction | None] = contextvars.ContextVar(
+    "sqlom_active_transaction", default=None
+)
 
 
 def active_transaction() -> Transaction | None:

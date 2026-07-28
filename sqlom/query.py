@@ -115,6 +115,8 @@ class Query(Generic[R]):
     as `None`.
     """
 
+    source: Any
+
     # Row type per arity. A lone model yields instances, so `Query(User)` is
     # `Query[User]`; a lone expression yields one-tuples, matching runtime and
     # SQLAlchemy's `select(col)`. Past five entities the row degrades to
@@ -171,18 +173,19 @@ class Query(Generic[R]):
         # column name in order_by/group_by. Taken from the first entity that has
         # one — `count(*)` references no table, so `Query(count(), Book.id)` has
         # to look past it.
-        self.source = None
+        source = None
         for kind, entity in self._entities:
             candidates = (entity,) if kind == "model" else entity.sources()
             if candidates:
-                self.source = candidates[0]
+                source = candidates[0]
                 break
-        if self.source is None:
+        if source is None:
             raise TypeError(
                 "no table to select from — every selected entity is independent "
                 "of any column (e.g. Query(count())). Select at least one column, "
                 "or count a column: Query(count(Model.id))."
             )
+        self.source = source
 
         self._conditions = []       # AND-ed predicates for WHERE
         self._having = []           # AND-ed predicates for HAVING
@@ -605,8 +608,9 @@ class Query(Generic[R]):
         """
         params = []
         if nxt is None:
-            def nxt():
+            def _nxt():
                 return "?"
+            nxt = _nxt
         if resolve is None:
             resolve = self._resolver()
 
@@ -967,8 +971,9 @@ class CompoundSelect(Generic[R]):
 
     def _render(self, nxt=None, resolve=None, with_clause=False):
         if nxt is None:
-            def nxt():
+            def _nxt():
                 return "?"
+            nxt = _nxt
         parts, params = [], []
         # One WITH clause in front of the whole compound, covering every operand.
         # An operand cannot carry its own: `SELECT ... UNION WITH x AS (...)` is

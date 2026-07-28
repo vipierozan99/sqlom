@@ -41,6 +41,9 @@ class TestAliasBasics:
         assert Query(a).model is Author
         assert Query(a)._hydration_key is Author
 
+    def test_repr(self):
+        assert repr(Alias(Author, "a")) == "<Alias Author AS a>"
+
 
 class TestSelfJoin:
     def test_renders_with_both_sides_distinguished(self):

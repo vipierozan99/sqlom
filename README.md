@@ -4,7 +4,7 @@
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
-> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It has a pytest suite (698 tests) covering SQL generation, codegen, joins, predicates, grouping, expressions, set operations, CTEs, writes, upserts, transactions and static types, but it is not packaged, not on PyPI, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
+> **Status:** early, but no longer hypothetical. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load; every number below comes from a script in [`benchmarks/`](benchmarks/) with results checked in. It has a pytest suite (770 tests) covering SQL generation, codegen, joins, predicates, grouping, expressions, set operations, CTEs, writes, upserts, transactions and static types, but it is not packaged, not on PyPI, and has never run in production. Read [what none of this shows](docs/BENCHMARKS.md#16-what-none-of-this-shows) before believing any of it applies to your workload.
 
 ---
 
@@ -25,9 +25,11 @@ It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rathe
 ## 🧪 Tests
 
 ```bash
-pip install pytest pytest-asyncio
-python3 -m pytest tests/            # 698 tests, including two type checkers
+uv sync --all-extras          # installs dev tools plus asyncpg/psycopg/orjson
+uv run pytest                 # 770 tests, including two type checkers
 ```
+
+Without `uv`, `pip install pytest pytest-asyncio` and `python3 -m pytest tests/` still work; the Postgres-backed and typing tests just skip until their extras (`asyncpg`/`psycopg[binary]`/`psycopg-pool`, `mypy`/`pyright`) are installed too.
 
 Two tiers. Everything testable without a server is — SQL generation, code
 generation, validation, and joins end-to-end against sqlite — so most of the suite
@@ -59,6 +61,9 @@ a feature cannot end up quietly asyncpg-only — `PsycopgEngine` began life with
 | `test_joins_sqlite.py` | joins end to end — real SQL *and* real hydrator, so a select list and hydrator that disagree get caught |
 | `test_engines_pg.py` | lifecycle, `fetch_all`, `fetch_json`, every query feature against a real server |
 | `test_transactions_pg.py` | commit, rollback, savepoints, isolation, the in-transaction guard, the session-reset invariant |
+| `test_transaction_base.py` | the shared `Transaction` base's abstract contract and `__repr__`, with no database |
+| `test_engine_helpers.py` | pure-function engine internals (the deprecated `$`-placeholder shim) that need no database |
+| `test_dataclass_model.py` | the `@model` decorator's validation, its metaclass descriptor, and orjson's dataclass-passthrough serialization |
 | `test_typing.py` + `typing/` | mypy and pyright over `assert_type` positives and expected-error negatives |
 
 The suite keeps earning its keep. Bugs it found, none of which were visible by
@@ -127,11 +132,14 @@ a clone:
 
 ```bash
 git clone https://github.com/vipierozan99/sqlom && cd sqlom
-pip install orjson                              # required
-pip install asyncpg                             # for DatabaseEngine
-pip install "psycopg[binary]" psycopg-pool      # for PsycopgEngine
-python3 -c "from sqlom import Query; print('ok')"
+uv sync --extra asyncpg --extra psycopg --extra orjson   # or --all-extras
+uv run python -c "from sqlom import Query; print('ok')"
 ```
+
+Without `uv`: `pip install orjson` (required for JSON serialization), `pip install
+asyncpg` (for `DatabaseEngine`), `pip install "psycopg[binary]" psycopg-pool` (for
+`PsycopgEngine`) — each is an optional extra (`sqlom[orjson]`, `sqlom[asyncpg]`,
+`sqlom[psycopg]`) once installed from a clone.
 
 To reproduce the benchmarks as well, see
 [docs/METHODOLOGY.md](docs/METHODOLOGY.md#reproducing).
