@@ -8,6 +8,7 @@ from .expr import (
     Alias,
     ColumnExpr,
     Expression,
+    ExistsClause,
     Labelled,
     Predicate,
     ScalarSubquery,
@@ -505,6 +506,36 @@ class Query(Generic[R]):
             self._conditions.append(predicate)
         self._invalidate()
         return self
+
+    def filter(self, *predicates: Predicate) -> Self:
+        """SQLAlchemy's synonym for `where()` — the ORM `Query.filter()` name,
+        also present on Core's `Select` since 1.4."""
+        return self.where(*predicates)
+
+    def filter_by(self, **kwargs: Any) -> Self:
+        """Equality WHERE clauses by column name, against whichever source
+        was joined in most recently (or the primary source, with no joins) —
+        SQLAlchemy's convenience form: `filter_by(name="ada")` is
+        `where(Model.name == "ada")` for that source.
+        """
+        target = self._joins[-1][0] if self._joins else self.source
+        columns = getattr(target, "__columns__", None)
+        if columns is None:
+            raise TypeError(
+                f"filter_by() needs a source with columns, got {target!r}"
+            )
+        conditions = []
+        for name, value in kwargs.items():
+            if name not in columns:
+                raise ValueError(f"{source_name(target)} has no column {name!r}")
+            conditions.append(ColumnExpr(target, name, columns[name].py_type) == value)
+        return self.where(*conditions)
+
+    def exists(self) -> ExistsClause:
+        """SQLAlchemy's `Select.exists()` — a method form of the free
+        `exists(query)` function, usable as a predicate: `Query(...).where(
+        other.exists())`."""
+        return ExistsClause(self)
 
     def having(self, *predicates: Predicate) -> Self:
         """Predicates applied after grouping, where aggregates are allowed."""

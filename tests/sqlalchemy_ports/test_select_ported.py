@@ -85,6 +85,53 @@ def test_select_model_and_expression_together():
     assert sql == "SELECT author_id, count(*) FROM t_books"
 
 
+def test_filter_is_a_synonym_for_where():
+    sql, params = Query(Author).filter(Author.id > 1).to_sql()
+    assert sql == Query(Author).where(Author.id > 1).to_sql()[0]
+    assert params == (1,)
+
+
+def test_filter_by_targets_the_primary_source_with_no_joins():
+    sql, params = Query(Author).filter_by(name="ada", active=True).to_sql()
+    assert sql == "SELECT id, name, active FROM t_authors WHERE name = ? AND active = ?"
+    assert params == ("ada", True)
+
+
+def test_filter_by_targets_the_most_recently_joined_source():
+    # Mirrors SQLAlchemy's own filter_by() resolution rule: the last entity
+    # joined in, not the primary one, once a join exists.
+    sql, params = (
+        Query(Author, Book)
+        .join(Book, Book.author_id == Author.id)
+        .filter_by(title="algorithms")
+        .to_sql()
+    )
+    assert sql == (
+        "SELECT t_authors.id, t_authors.name, t_authors.active, "
+        "t_books.id, t_books.author_id, t_books.title FROM t_authors "
+        "JOIN t_books ON t_books.author_id = t_authors.id "
+        "WHERE t_books.title = ?"
+    )
+    assert params == ("algorithms",)
+
+
+def test_filter_by_rejects_an_unknown_column():
+    import pytest
+
+    with pytest.raises(ValueError, match="has no column"):
+        Query(Author).filter_by(nope=1)
+
+
+def test_exists_method_matches_the_free_function():
+    from sqlom import exists
+
+    inner = Query(Book).correlate(Author).where(Book.author_id == Author.id)
+    method_form, method_params = Query(Author).where(inner.exists()).to_sql(placeholder="$")
+    function_form, function_params = Query(Author).where(exists(inner)).to_sql(placeholder="$")
+    assert method_form == function_form
+    assert method_params == function_params == ()
+
+
 # --------------------------------------------------------------------------
 # JOIN construction (test_join_nofrom_* / test_joins_w_filter_by intent)
 # --------------------------------------------------------------------------
