@@ -26,6 +26,8 @@ sources by identity.
 
 from __future__ import annotations
 
+import re
+
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -949,6 +951,9 @@ def literal_column(text: str, py_type: Any = None) -> LiteralColumn[Any]:
     return LiteralColumn(text, py_type)
 
 
+_BINDPARAM_TOKEN = re.compile(r"(?<!:):(\w+)")
+
+
 class Tuple(Expression[Any]):
     """A row value: `(a, b, c)` — SQLAlchemy's `tuple_(a, b, c)`.
 
@@ -1303,6 +1308,85 @@ class IsDistinctFrom(Predicate):
     def __repr__(self):
         keyword = "IS NOT DISTINCT FROM" if self.negated else "IS DISTINCT FROM"
         return f"<{keyword} {self.left!r} {self.right!r}>"
+
+
+class TextClause(Predicate):
+    """A raw SQL fragment — SQLAlchemy's `text()`. A `Predicate`, so it
+    satisfies `.where()`'s existing `isinstance(predicate, Predicate)` check
+    directly, and — since `Predicate` already extends `Expression[bool]` —
+    also composes as a plain value everywhere else (a `SELECT`-list entry,
+    an operand).
+
+    `:name` tokens are found and substituted with the query's own positional
+    placeholder in encounter order, reusing the exact same parameter-binding
+    machinery every other node already uses rather than a separate one — a
+    literal `::` (Postgres cast syntax) is left alone, since the token
+    pattern requires a `:` not itself preceded by one.
+
+    Like `literal_column()`, `sources()` returns nothing: raw SQL is exactly
+    that, and sqlom cannot know what it references.
+    """
+
+    __slots__ = ("text", "_bindparams")
+
+    def __init__(self, text: str, bindparams: dict[str, Any] | None = None) -> None:
+        self.text = text
+        self._bindparams: dict[str, Any] = dict(bindparams) if bindparams else {}
+
+    def bindparams(self, *positional: Any, **kwargs: Any) -> "TextClause":
+        """Supply values for this text's `:name` tokens, in place — matches
+        every other builder method in this library (mutate, return `self`),
+        rather than `text()`'s own generative style in SQLAlchemy.
+
+        Takes `key=value` keywords directly, or `bindparam(key, value)`
+        objects positionally (see `bindparam()`) for parity with
+        SQLAlchemy's call shape.
+        """
+        for entry in positional:
+            key = getattr(entry, "key", None)
+            if key is None:
+                raise TypeError(
+                    f"bindparams() takes bindparam(...) objects positionally, "
+                    f"got {entry!r}"
+                )
+            self._bindparams[key] = entry.value
+        self._bindparams.update(kwargs)
+        return self
+
+    def to_sql(self, nxt, resolve=_bare):
+        advance = nxt if callable(nxt) else (lambda value=nxt: value)
+        params: list[Any] = []
+        missing: list[str] = []
+
+        def replace(match: Any) -> str:
+            key = match.group(1)
+            if key not in self._bindparams:
+                missing.append(key)
+                return match.group(0)
+            params.append(self._bindparams[key])
+            return str(advance())
+
+        sql = _BINDPARAM_TOKEN.sub(replace, self.text)
+        if missing:
+            raise ValueError(
+                f"text() references {', '.join(f':{k}' for k in missing)} with "
+                f"no value given; call .bindparams({missing[0]}=...) to supply one"
+            )
+        return sql, tuple(params)
+
+    def sources(self):
+        return ()
+
+    def __repr__(self) -> str:
+        return f"<TextClause {self.text!r}>"
+
+
+def text(raw_sql: str) -> TextClause:
+    """A raw SQL fragment — SQLAlchemy's `text()`. Usable as a whole `WHERE`
+    clause (it's a `Predicate`) or as a plain value elsewhere. See
+    `TextClause` for the `:name` substitution rule and what this
+    deliberately does not check."""
+    return TextClause(raw_sql)
 
 
 class BooleanClause(Predicate):
