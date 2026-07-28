@@ -763,11 +763,11 @@ class ScalarSubquery(Expression[T]):
     def py_type(self) -> None:
         return None  # the wrapped query's own entity type isn't tracked generically
 
-    def to_sql(self, nxt: Any, resolve: Any = _bare) -> tuple[str, tuple[Any, ...]]:
+    def to_sql(self, nxt, resolve=_bare):
         sql, params = self.query._render(nxt)
         return f"({sql})", tuple(params)
 
-    def sources(self) -> tuple[Any, ...]:
+    def sources(self):
         # Self-contained: correlation is explicit via .correlate(), and this
         # subquery's own tables are not part of the outer query's FROM/joins.
         return ()
@@ -801,11 +801,11 @@ class Cast(Expression[T]):
         self.type_name = stripped
         self.py_type = py_type
 
-    def to_sql(self, nxt: Any, resolve: Any = _bare) -> tuple[str, tuple[Any, ...]]:
+    def to_sql(self, nxt, resolve=_bare):
         sql, params = _operand_sql(self.expr, nxt, resolve)
         return f"CAST({sql} AS {self.type_name})", params
 
-    def sources(self) -> tuple[Any, ...]:
+    def sources(self):
         return self.expr.sources() if isinstance(self.expr, Expression) else ()
 
     def output_name(self) -> str:
@@ -841,11 +841,11 @@ class Literal(Expression[T]):
         self.value = value
         self.py_type = py_type if py_type is not None else type(value)
 
-    def to_sql(self, nxt: Any, resolve: Any = _bare) -> tuple[str, tuple[Any, ...]]:
-        advance = nxt if callable(nxt) else (lambda value=nxt: value)
-        return advance(), (self.value,)
+    def to_sql(self, nxt, resolve=_bare):
+        placeholder = nxt() if callable(nxt) else nxt
+        return placeholder, (self.value,)
 
-    def sources(self) -> tuple[Any, ...]:
+    def sources(self):
         return ()
 
     def __repr__(self) -> str:
@@ -869,10 +869,10 @@ class _Keyword(Expression[Any]):
         self.keyword = keyword
         self.py_type = py_type
 
-    def to_sql(self, nxt: Any, resolve: Any = _bare) -> tuple[str, tuple[Any, ...]]:
+    def to_sql(self, nxt, resolve=_bare):
         return self.keyword, ()
 
-    def sources(self) -> tuple[Any, ...]:
+    def sources(self):
         return ()
 
     def __repr__(self) -> str:

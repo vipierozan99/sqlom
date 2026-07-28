@@ -690,6 +690,35 @@ class Query(Generic[R]):
         self._invalidate()
         return self
 
+    def with_for_update(self, *, nowait: bool = False, read: bool = False,
+                        of: Any = None, skip_locked: bool = False,
+                        key_share: bool = False) -> Self:
+        """Row locking: `SELECT ... FOR UPDATE` — SQLAlchemy's
+        `GenerativeSelect.with_for_update()`.
+
+        Postgres-only; sqlite has no locking clause at all, so this is one of
+        the few sqlom-generated statements that only ever makes sense against
+        Postgres (same status as `DELETE ... USING`, see README §11).
+        `of=` takes a model/alias or a sequence of them, restricting the lock
+        to specific tables in a join (`FOR UPDATE OF t1, t2`, Postgres-only,
+        same as SQLAlchemy). `key_share=True` selects the weaker
+        `FOR NO KEY UPDATE`/`FOR KEY SHARE` forms (with `read=`) instead of
+        `FOR UPDATE`/`FOR SHARE`. `nowait=`/`skip_locked=` are mutually
+        exclusive at the database level; that isn't enforced here — the
+        server rejects both together.
+        """
+        if read and key_share:
+            strength = "FOR KEY SHARE"
+        elif key_share:
+            strength = "FOR NO KEY UPDATE"
+        elif read:
+            strength = "FOR SHARE"
+        else:
+            strength = "FOR UPDATE"
+        self._for_update = (strength, of, nowait, skip_locked)
+        self._invalidate()
+        return self
+
     # ------------------------------------------------------------- rendering
 
     def _resolver(self):
@@ -790,6 +819,17 @@ class Query(Generic[R]):
         if self._offset is not None:
             sql += f" OFFSET {advance()}"
             params.append(self._offset)
+
+        if self._for_update is not None:
+            strength, of, nowait, skip_locked = self._for_update
+            sql += f" {strength}"
+            if of is not None:
+                of_sources = of if isinstance(of, (list, tuple)) else [of]
+                sql += " OF " + ", ".join(source_prefix(s) for s in of_sources)
+            if nowait:
+                sql += " NOWAIT"
+            elif skip_locked:
+                sql += " SKIP LOCKED"
 
         return sql, params
 

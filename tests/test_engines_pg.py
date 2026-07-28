@@ -294,3 +294,23 @@ class TestNewQueryFeaturesOnPostgres:
     async def test_single_column_select_is_not_nested(self, engine):
         rows = await engine.fetch_all(Query(Author.name).order_by(Author.name).limit(2))
         assert rows == [("ada",), ("brian",)]
+
+    async def test_with_for_update_executes(self, engine):
+        # FOR UPDATE/FOR SHARE are Postgres-only (sqlite has no locking
+        # clause), so this can only be exercised here. A single fetch_all
+        # outside an explicit transaction still executes it validly —
+        # Postgres wraps each statement in its own implicit transaction.
+        rows = await engine.fetch_all(
+            Query(Author).where(Author.id == 1).with_for_update()
+        )
+        assert len(rows) == 1 and rows[0].name == "ada"
+
+    async def test_with_for_update_of_a_specific_table_across_a_join(self, engine):
+        rows = await engine.fetch_all(
+            Query(Author, Book)
+            .join(Book, Book.author_id == Author.id)
+            .where(Author.id == 1)
+            .with_for_update(of=Author, skip_locked=True)
+            .order_by(Book.id)
+        )
+        assert [book.title for _, book in rows] == ["structures", "algorithms"]

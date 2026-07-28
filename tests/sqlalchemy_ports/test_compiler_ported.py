@@ -480,6 +480,71 @@ class TestDistinctLimitOffset:
 
 
 # --------------------------------------------------------------------------
+# Row locking — dialect/postgresql/test_compiler.py's test_for_update.
+# Postgres-only: sqlite has no locking clause at all (same status as
+# DELETE ... USING, README §11) — these check SQL generation only.
+# --------------------------------------------------------------------------
+
+
+class TestForUpdate:
+    def test_plain_for_update(self):
+        sql, params = Query(Author).where(Author.id == 7).with_for_update().to_sql(
+            placeholder="$"
+        )
+        assert sql == "SELECT id, name, active FROM t_authors WHERE id = $1 FOR UPDATE"
+        assert params == (7,)
+
+    def test_nowait(self):
+        sql, _ = Query(Author).with_for_update(nowait=True).to_sql()
+        assert sql.endswith("FOR UPDATE NOWAIT")
+
+    def test_skip_locked(self):
+        sql, _ = Query(Author).with_for_update(skip_locked=True).to_sql()
+        assert sql.endswith("FOR UPDATE SKIP LOCKED")
+
+    def test_read_renders_for_share(self):
+        sql, _ = Query(Author).with_for_update(read=True).to_sql()
+        assert sql.endswith("FOR SHARE")
+
+    def test_read_and_nowait(self):
+        sql, _ = Query(Author).with_for_update(read=True, nowait=True).to_sql()
+        assert sql.endswith("FOR SHARE NOWAIT")
+
+    def test_key_share_and_nowait_renders_for_no_key_update(self):
+        sql, _ = Query(Author).with_for_update(key_share=True, nowait=True).to_sql()
+        assert sql.endswith("FOR NO KEY UPDATE NOWAIT")
+
+    def test_key_share_and_read_and_nowait_renders_for_key_share(self):
+        sql, _ = (
+            Query(Author)
+            .with_for_update(key_share=True, read=True, nowait=True)
+            .to_sql()
+        )
+        assert sql.endswith("FOR KEY SHARE NOWAIT")
+
+    def test_of_a_single_source(self):
+        sql, _ = Query(Author).with_for_update(of=Author).to_sql()
+        assert sql.endswith("FOR UPDATE OF t_authors")
+
+    def test_of_several_sources_with_nowait(self):
+        sql, _ = (
+            Query(Author, Book)
+            .join(Book, Book.author_id == Author.id)
+            .with_for_update(read=True, nowait=True, of=[Author, Book])
+            .to_sql()
+        )
+        assert sql.endswith("FOR SHARE OF t_authors, t_books NOWAIT")
+
+    def test_key_share_of_source_with_skip_locked(self):
+        sql, _ = (
+            Query(Author)
+            .with_for_update(key_share=True, skip_locked=True, of=Author)
+            .to_sql()
+        )
+        assert sql.endswith("FOR NO KEY UPDATE OF t_authors SKIP LOCKED")
+
+
+# --------------------------------------------------------------------------
 # Arithmetic expression rendering — test_calculated_columns
 # --------------------------------------------------------------------------
 
