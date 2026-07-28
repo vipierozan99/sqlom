@@ -63,6 +63,7 @@ from sqlom import (
     exists,
     false,
     literal,
+    literal_column,
     not_,
     null,
     or_,
@@ -639,6 +640,60 @@ class TestLiteralsAndKeywords:
         )
         assert sql == "SELECT CASE WHEN id > $1 THEN NULL ELSE $2 END FROM t_books"
         assert params == (10, "x")
+
+
+class TestLiteralColumn:
+    """`literal_column()` — a raw SQL fragment inserted verbatim, the "I know
+    what I'm doing" escape hatch (unlike `cast()`'s type-name regex or
+    `sql_function()`'s identifier regex, there is no validation at all
+    here). Ported from test/sql/test_compiler.py's general usage of
+    literal_column() as a plain value/column stand-in throughout that file
+    (e.g. lines 322-481), adapted to sqlom idiom rather than any single test
+    function — SQLAlchemy has no isolated "test literal_column renders
+    verbatim" test of its own, since it is used as a building block
+    everywhere else in that file instead.
+    """
+
+    def test_renders_verbatim_in_a_select_list(self):
+        sql, params = Query(Book.id, literal_column("count(*) + 1")).to_sql()
+        assert sql == "SELECT id, count(*) + 1 FROM t_books"
+        assert params == ()
+
+    def test_composes_with_ordinary_comparison_operators(self):
+        sql, params = (
+            Query(Book).where(literal_column("1") == Book.id).to_sql(placeholder="$")
+        )
+        assert sql == "SELECT id, author_id, title FROM t_books WHERE 1 = id"
+        assert params == ()
+
+    def test_composes_with_arithmetic(self):
+        # literal_column() alone selects nothing to name a FROM table from
+        # (sources() is empty) — pair it with a real column, same as any
+        # other from-less expression like count().
+        sql, _ = Query(Book.id, literal_column("1") + literal_column("2")).to_sql()
+        assert sql == "SELECT id, (1 + 2) FROM t_books"
+
+    def test_py_type_is_declarable(self):
+        assert literal_column("count(*)", py_type=int).py_type is int
+        assert literal_column("count(*)").py_type is None
+
+    def test_no_validation_at_all_unlike_cast_or_sql_function(self):
+        # Deliberately accepts anything, including something that would be
+        # rejected everywhere else in this library that takes a fragment.
+        weird = literal_column("; DROP TABLE t_books; --")
+        sql, _ = Query(Book.id, weird).to_sql()
+        assert "DROP TABLE" in sql  # exactly the point: nothing stops this
+
+    def test_an_unjoined_table_reference_is_not_caught(self):
+        # The deliberate cost of the escape hatch: sources() returns nothing,
+        # so unlike a real ColumnExpr this is never validated against the
+        # join graph — contrast with tests/sqlalchemy_ports/
+        # test_from_linter_ported.py, where every *real* column reference to
+        # an unjoined table raises immediately.
+        query = Query(Author).where(literal_column("t_books.title") == "x")
+        sql, params = query.to_sql()  # does not raise
+        assert sql == "SELECT id, name, active FROM t_authors WHERE t_books.title = ?"
+        assert params == ("x",)
 
 
 # --------------------------------------------------------------------------

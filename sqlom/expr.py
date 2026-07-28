@@ -914,6 +914,41 @@ def null() -> _Keyword:
     return _Keyword("NULL", None)
 
 
+class LiteralColumn(Expression[T]):
+    """A raw SQL fragment inserted verbatim — SQLAlchemy's `literal_column()`.
+
+    Deliberately **not** validated the way `cast()`'s type name or
+    `sql_function()`'s function name are: this is the explicit "I know what
+    I'm doing" escape hatch, so whatever text it's given goes straight into
+    the SQL. It costs the one thing every other sqlom construct gives for
+    free — `sources()` returns nothing, so a fragment that happens to
+    reference a table not actually joined in is never caught, unlike an
+    ordinary column reference. That's the deliberate trade of using it.
+    """
+
+    __slots__ = ("text", "py_type")
+
+    def __init__(self, text: str, py_type: Any = None) -> None:
+        self.text = text
+        self.py_type = py_type
+
+    def to_sql(self, nxt, resolve=_bare):
+        return self.text, ()
+
+    def sources(self):
+        return ()
+
+    def __repr__(self) -> str:
+        return f"<LiteralColumn {self.text!r}>"
+
+
+def literal_column(text: str, py_type: Any = None) -> LiteralColumn[Any]:
+    """A raw SQL fragment used as a column/value — SQLAlchemy's
+    `literal_column()`. See `LiteralColumn` for what this deliberately does
+    not check."""
+    return LiteralColumn(text, py_type)
+
+
 class Tuple(Expression[Any]):
     """A row value: `(a, b, c)` — SQLAlchemy's `tuple_(a, b, c)`.
 
