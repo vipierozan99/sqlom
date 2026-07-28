@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Self
 
-from .dialects import Dialect, dialect_scope, resolve_placeholder
+from .dialects import Dialect, current_dialect, dialect_scope, resolve_placeholder
 from .expr import (
     Alias,
     ColumnExpr,
@@ -391,7 +391,10 @@ class Insert(_Statement):
         find out whether the row was new.
         """
         target = self._conflict_target(index_elements, constraint, "nothing")
-        self._conflict = {"target": target, "action": "nothing"}
+        self._conflict = {
+            "target": target, "action": "nothing",
+            "uses_constraint": constraint is not None,
+        }
         self._invalidate()
         return self
 
@@ -440,6 +443,7 @@ class Insert(_Statement):
             "action": "update",
             "set": assignments,
             "where": where,
+            "uses_constraint": constraint is not None,
         }
         self._invalidate()
         return self
@@ -559,6 +563,14 @@ class Insert(_Statement):
         conflict = self._conflict
         if conflict is None:
             return ""
+        if conflict.get("uses_constraint"):
+            dialect = current_dialect()
+            if dialect is not None and not dialect.supports_on_conflict_constraint:
+                raise ValueError(
+                    f"constraint= is not supported on {dialect.name} — it has "
+                    f"no ON CONFLICT ... ON CONSTRAINT; name the conflicting "
+                    f"column(s) instead"
+                )
         sql = f" ON CONFLICT{conflict['target']}"
         if conflict["action"] == "nothing":
             return sql + " DO NOTHING"
@@ -766,6 +778,14 @@ class Delete(_Statement):
                 "all_rows() if that is the intent."
             )
         self._check_references()
+        if self._extra_sources:
+            dialect = current_dialect()
+            if dialect is not None and not dialect.supports_delete_using:
+                raise ValueError(
+                    f"using() is not supported on {dialect.name} — there is no "
+                    f"DELETE ... USING there; the portable spelling is "
+                    f"Delete(...).where(col.in_(Query(...)))"
+                )
         if nxt is None:
             def _nxt():
                 return "?"

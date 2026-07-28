@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, Iterable, Self, TypeVar, Union, overload
 
-from .dialects import Dialect, dialect_scope, resolve_placeholder
+from .dialects import Dialect, current_dialect, dialect_scope, resolve_placeholder
 from .expr import (
     CTE,
     Aggregate,
@@ -822,6 +822,12 @@ class Query(Generic[R]):
             params.append(self._offset)
 
         if self._for_update is not None:
+            dialect = current_dialect()
+            if dialect is not None and not dialect.supports_for_update:
+                raise ValueError(
+                    f"with_for_update() is not supported on {dialect.name} — it "
+                    f"has no row-locking clause at all"
+                )
             strength, of, nowait, skip_locked = self._for_update
             sql += f" {strength}"
             if of is not None:

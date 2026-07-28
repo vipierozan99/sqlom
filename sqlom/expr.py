@@ -1172,6 +1172,14 @@ class Condition(Predicate):
         advance = nxt if callable(nxt) else (lambda value=nxt: value)
         left, params = self.left.to_sql(advance, resolve)
 
+        if self.op == "ILIKE":
+            dialect = current_dialect()
+            if dialect is not None and not dialect.supports_ilike:
+                raise ValueError(
+                    f"ilike() is not supported on {dialect.name} — it has no "
+                    f"ILIKE operator"
+                )
+
         if self.right is None and self.op in _NULL_FORMS:
             return f"{left} {_NULL_FORMS[self.op]}", params
 
