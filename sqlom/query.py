@@ -178,6 +178,7 @@ class Query(Generic[R]):
         self._conditions = []       # AND-ed predicates for WHERE
         self._having = []           # AND-ed predicates for HAVING
         self._joins = []            # (source, on, kind)
+        self._explicit_from = []    # extra FROM sources from select_from()
         self._group_by = []         # expressions
         self._order_by = []         # (expression, descending)
         self._limit = None
@@ -223,6 +224,7 @@ class Query(Generic[R]):
     def _sources(self):
         """Every source a predicate may reference."""
         return ([self.source]
+                + list(self._explicit_from)
                 + [source for source, _, _ in self._joins]
                 + list(self._correlated))
 
@@ -309,19 +311,7 @@ class Query(Generic[R]):
             raise TypeError(
                 f"join() takes a model, Alias or Subquery, got {source!r}"
             )
-        if any(source is existing for existing in self._sources()):
-            raise ValueError(
-                f"{source_name(source)} is already in this query. To join a table "
-                f"to itself, alias one side: Alias({self.model.__name__}, "
-                f"'other')"
-            )
-        prefix = source_prefix(source)
-        for existing in self._sources():
-            if source_prefix(existing) == prefix:
-                raise ValueError(
-                    f"two sources would both render as {prefix!r}; alias one of "
-                    f"them so their columns can be told apart"
-                )
+        self._check_new_source(source)
         if not isinstance(on, Predicate):
             raise TypeError(
                 f"join() needs an ON predicate comparing columns "
@@ -341,6 +331,63 @@ class Query(Generic[R]):
                 f"cross join. Got {on!r}."
             )
         self._joins.append((source, on, kind))
+        self._invalidate()
+        return self
+
+    def _check_new_source(self, source):
+        """The two checks any new source (a join, or an explicit `select_from()`
+        one) must pass regardless of whether it needs an ON clause: it isn't
+        already part of this query, and it wouldn't collide with an existing
+        source's qualifier."""
+        if any(source is existing for existing in self._sources()):
+            raise ValueError(
+                f"{source_name(source)} is already in this query. To join a table "
+                f"to itself, alias one side: Alias({self.model.__name__}, "
+                f"'other')"
+            )
+        prefix = source_prefix(source)
+        for existing in self._sources():
+            if source_prefix(existing) == prefix:
+                raise ValueError(
+                    f"two sources would both render as {prefix!r}; alias one of "
+                    f"them so their columns can be told apart"
+                )
+
+    def select_from(self, *sources: Any) -> Self:
+        """Add source(s) to `FROM` directly, independent of what's
+        selected — SQLAlchemy's `Select.select_from()`.
+
+        Unlike `join()`, this needs **no ON clause** — it is the one
+        explicit, by-name exception to this library's rule that a join
+        always requires a real linking condition (README §12). SQLAlchemy
+        allows exactly the same thing (its from-linter only *warns* about
+        the resulting cartesian product, and only if you opt in); the
+        difference here is that sqlom has no implicit way to reach it —
+        `join()` still always refuses an ON clause that doesn't link two
+        sources, unaffected by this method's existence.
+
+        Only ever *adds* a source — `Query()`'s constructor already requires
+        at least one entity with a real source (`count()` alone is refused
+        immediately, before `select_from()` could ever run), so unlike
+        SQLAlchemy's `select(func.count()).select_from(table)` this cannot
+        supply the *only* table either; `count(Model)` remains the way to
+        name a FROM table with nothing else selected. The case this is
+        actually for: an additional, genuinely unrelated table — a
+        deliberate, explicit cross join.
+
+        Also unlike SQLAlchemy: this only ever *adds*, never re-orders or
+        re-asserts a source already implied by the selected columns or a
+        join — passing one already present raises the same "already in this
+        query" error `join()` does, rather than controlling FROM-clause
+        ordering the way repeated `select_from()` calls do in SQLAlchemy.
+        """
+        for source in sources:
+            if isinstance(source, Expression) or not hasattr(source, "__columns__"):
+                raise TypeError(
+                    f"select_from() takes a model, Alias or Subquery, got {source!r}"
+                )
+            self._check_new_source(source)
+            self._explicit_from.append(source)
         self._invalidate()
         return self
 
@@ -729,7 +776,7 @@ class Query(Generic[R]):
         single-table query byte-identical. With more than one, qualify by table
         name or alias, because `id` would otherwise be ambiguous.
         """
-        if not self._joins and not self._correlated:
+        if not self._joins and not self._correlated and not self._explicit_from:
             return _bare
         return lambda source, name: f"{source_prefix(source)}.{name}"
 
@@ -778,6 +825,11 @@ class Query(Generic[R]):
         from_sql_text, from_params = from_sql(self.source, advance)
         params.extend(from_params)
         sql += f" FROM {from_sql_text}"
+
+        for source in self._explicit_from:
+            extra_text, extra_params = from_sql(source, advance)
+            params.extend(extra_params)
+            sql += f", {extra_text}"
 
         for source, on, kind in self._joins:
             keyword, _, _ = JOIN_KINDS[kind]

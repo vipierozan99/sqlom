@@ -709,3 +709,85 @@ def test_add_columns_and_with_only_columns_end_to_end(run_query):
                 .where(Author.name == "ada")
                 .order_by(Book.id))
     assert run_query(narrowed) == [("structures",), ("algorithms",)]
+
+
+# --------------------------------------------------------------------------
+# select_from() — an explicit FROM source needing no ON clause, the one
+# sanctioned exception to "join() always requires a real linking condition"
+# (README §12). Ported from test/sql/test_compiler.py::CompileTest, scoped
+# down: sqlom's select_from() only ever *adds* a source (see its docstring
+# for the SQLAlchemy behaviours this deliberately doesn't replicate: naming
+# the *sole* FROM table with nothing else selected, and re-ordering/
+# re-asserting a source already implied elsewhere).
+# --------------------------------------------------------------------------
+
+
+# Ported from test/sql/test_compiler.py::CompileTest.test_select_from_ordering (SQLAlchemy 2.0.51)
+def test_select_from_adds_a_genuinely_unrelated_table_as_a_cross_join():
+    # Once a second source is in play — select_from() included, same as a
+    # join — every column renders table-qualified, since `id` would
+    # otherwise be ambiguous (README §3).
+    sql, params = Query(Author, Book).select_from(Book).to_sql()
+    assert sql == (
+        "SELECT t_authors.id, t_authors.name, t_authors.active, "
+        "t_books.id, t_books.author_id, t_books.title "
+        "FROM t_authors, t_books"
+    )
+    assert params == ()
+
+
+def test_select_from_accepts_several_sources_at_once():
+    sql, _ = Query(Author).select_from(Book, Tag).to_sql()
+    assert sql == (
+        "SELECT t_authors.id, t_authors.name, t_authors.active "
+        "FROM t_authors, t_books, t_tags"
+    )
+
+
+def test_select_from_end_to_end_cross_join(run_query):
+    rows = run_query(
+        Query(Author.id, Book.id).select_from(Book).order_by(Author.id, Book.id)
+    )
+    # 4 authors x 4 books = 16 rows, a genuine cartesian product.
+    assert len(rows) == 16
+
+
+def test_select_from_rejects_a_source_already_in_the_query():
+    import pytest
+
+    with pytest.raises(ValueError, match="already in this query"):
+        Query(Author, Book).select_from(Author)
+
+
+def test_select_from_still_requires_a_columns_source_or_model_alias_subquery():
+    import pytest
+
+    with pytest.raises(TypeError, match="select_from\\(\\) takes a model"):
+        Query(Author).select_from(Book.id)
+
+
+def test_joins_cross_join_guard_is_unaffected_by_select_from_existing():
+    import pytest
+
+    # select_from()'s existence must not weaken join()'s own guard: join()
+    # still always refuses an ON clause that links nothing.
+    with pytest.raises(ValueError, match="cross join"):
+        Query(Author).join(Book, Author.active == True)  # noqa: E712
+
+
+def test_select_from_combined_with_a_real_join():
+    # select_from() adds an unrelated table; join() still needs a real ON
+    # clause for anything joined normally alongside it.
+    sql, _ = (
+        Query(Author, Book, Tag)
+        .select_from(Tag)
+        .join(Book, Book.author_id == Author.id)
+        .to_sql()
+    )
+    assert sql == (
+        "SELECT t_authors.id, t_authors.name, t_authors.active, "
+        "t_books.id, t_books.author_id, t_books.title, "
+        "t_tags.id, t_tags.book_id, t_tags.label "
+        "FROM t_authors, t_tags "
+        "JOIN t_books ON t_books.author_id = t_authors.id"
+    )
