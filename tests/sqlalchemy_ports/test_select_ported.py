@@ -624,3 +624,91 @@ def test_cte_end_to_end(run_query):
         Query(active_authors.name).order_by(active_authors.id)
     )
     assert rows == [("ada",), ("brian",), ("dan",)]
+
+
+# --------------------------------------------------------------------------
+# add_columns() / with_only_columns() — SQLAlchemy's Select methods for
+# amending the select list after construction (test_select.py uses
+# with_only_columns() as a utility inside its correlate()/join tests rather
+# than testing it in isolation; this section covers it directly).
+# --------------------------------------------------------------------------
+
+
+def test_add_columns_appends_to_the_select_list():
+    sql, _ = Query(Author.id).add_columns(Author.name).to_sql()
+    assert sql == "SELECT id, name FROM t_authors"
+
+
+def test_add_columns_can_reference_a_source_joined_afterward():
+    # Builder order doesn't matter, same as where()/order_by()/group_by():
+    # validation happens at render time, not at the add_columns() call.
+    stmt = Query(Author).add_columns(Book.title)
+    stmt.join(Book, Book.author_id == Author.id)
+    sql, _ = stmt.to_sql()
+    assert sql == (
+        "SELECT t_authors.id, t_authors.name, t_authors.active, t_books.title "
+        "FROM t_authors JOIN t_books ON t_books.author_id = t_authors.id"
+    )
+
+
+def test_add_columns_of_an_unjoined_source_is_rejected_at_render():
+    import pytest
+
+    stmt = Query(Author).add_columns(Book.title)
+    with pytest.raises(ValueError, match="not part of this query"):
+        stmt.to_sql()
+
+
+def test_with_only_columns_replaces_the_select_list():
+    stmt = Query(Author).where(Author.active == True).with_only_columns(  # noqa: E712
+        Author.name
+    )
+    sql, params = stmt.to_sql()
+    assert sql == "SELECT name FROM t_authors WHERE active = ?"
+    assert params == (True,)
+
+
+def test_with_only_columns_keeps_froms_and_joins_intact():
+    # The FROM/JOIN graph is untouched — only which columns come back
+    # changes, so a column from a table no longer selected still renders
+    # correctly as long as it is still joined in.
+    stmt = (Query(Author, Book)
+            .join(Book, Book.author_id == Author.id)
+            .with_only_columns(Book.title))
+    sql, _ = stmt.to_sql()
+    assert sql == (
+        "SELECT t_books.title FROM t_authors "
+        "JOIN t_books ON t_books.author_id = t_authors.id"
+    )
+
+
+def test_with_only_columns_updates_is_multi_entity():
+    stmt = Query(Author, Book).join(Book, Book.author_id == Author.id)
+    assert stmt.is_multi_entity
+    stmt.with_only_columns(Author)
+    assert not stmt.is_multi_entity
+
+
+def test_with_only_columns_needs_at_least_one_entity():
+    import pytest
+
+    with pytest.raises(TypeError, match="needs at least one entity"):
+        Query(Author).with_only_columns()
+
+
+def test_add_columns_and_with_only_columns_end_to_end(run_query):
+    rows = run_query(
+        Query(Author.id)
+        .add_columns(Book.title)
+        .join(Book, Book.author_id == Author.id)
+        .where(Author.name == "ada")
+        .order_by(Book.id)
+    )
+    assert rows == [(1, "structures"), (1, "algorithms")]
+
+    narrowed = (Query(Author, Book)
+                .join(Book, Book.author_id == Author.id)
+                .with_only_columns(Book.title)
+                .where(Author.name == "ada")
+                .order_by(Book.id))
+    assert run_query(narrowed) == [("structures",), ("algorithms",)]

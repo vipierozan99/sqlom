@@ -154,23 +154,7 @@ class Query(Generic[R]):
         if not entities:
             raise TypeError("Query() needs at least one model, column or aggregate")
 
-        self._entities = []
-        for entity in entities:
-            if isinstance(entity, Expression):
-                self._entities.append(("expr", entity))
-            elif isinstance(entity, Subquery):
-                raise TypeError(
-                    f"a subquery cannot be selected as a whole ({entity!r}); there "
-                    f"is no model to hydrate into. Select its columns: "
-                    f"Query({entity.alias}.some_column)"
-                )
-            elif hasattr(entity, "__columns__"):
-                self._entities.append(("model", entity))
-            else:
-                raise TypeError(
-                    f"Query() takes models, aliases, columns or aggregates "
-                    f"(e.g. Query(User) or Query(User, Post.title)), got {entity!r}"
-                )
+        self._entities = [self._classify_entity(entity, "Query()") for entity in entities]
 
         # The primary source: the FROM table, and the default target of a bare
         # column name in order_by/group_by. Taken from the first entity that has
@@ -200,12 +184,32 @@ class Query(Generic[R]):
         self._distinct = False
         self._correlated = []       # extra sources allowed in predicates
         self._ctes = []             # CTEs forced in via with_(); see that method
+        self._for_update = None     # (strength, kwargs) from with_for_update()
         # Compiled SQL is cached per (kind, dialect/placeholder). A hot endpoint
         # builds the same query shape on every request, and regenerating the
         # string each time is pure overhead — it measured as ~4% of throughput.
         self._sql_cache = {}
         self._hydration_key = None
         self._recompute_key()
+
+    @staticmethod
+    def _classify_entity(entity: Any, what: str) -> tuple[str, Any]:
+        """Turn a raw `Query()`/`add_columns()`/`with_only_columns()` argument
+        into an internal `("model" | "expr", entity)` pair."""
+        if isinstance(entity, Expression):
+            return ("expr", entity)
+        if isinstance(entity, Subquery):
+            raise TypeError(
+                f"a subquery cannot be selected as a whole ({entity!r}); there "
+                f"is no model to hydrate into. Select its columns: "
+                f"Query({entity.alias}.some_column)"
+            )
+        if hasattr(entity, "__columns__"):
+            return ("model", entity)
+        raise TypeError(
+            f"{what} takes models, aliases, columns or aggregates "
+            f"(e.g. Query(User) or Query(User, Post.title)), got {entity!r}"
+        )
 
     # ------------------------------------------------------------------ model
 
@@ -643,6 +647,33 @@ class Query(Generic[R]):
 
     def distinct(self, on: bool = True) -> Self:
         self._distinct = bool(on)
+        self._invalidate()
+        return self
+
+    def add_columns(self, *entities: Any) -> Self:
+        """Append more entities to the select list — SQLAlchemy's
+        `Select.add_columns()`. Each new entity's source(s) must already be
+        part of this query's FROM/JOIN, checked at render time by
+        `_check_entities()` like every other selected entity — so a `join()`
+        for the new entity's table may come before or after this call.
+        """
+        for entity in entities:
+            self._entities.append(self._classify_entity(entity, "add_columns()"))
+        self._invalidate()
+        return self
+
+    def with_only_columns(self, *entities: Any) -> Self:
+        """Replace the select list entirely — SQLAlchemy's
+        `Select.with_only_columns()`. The primary FROM table and any joins
+        are untouched; only which columns are *returned* changes, so a
+        column from a table no longer selected still renders correctly as
+        long as that table is still joined in.
+        """
+        if not entities:
+            raise TypeError("with_only_columns() needs at least one entity")
+        self._entities = [
+            self._classify_entity(entity, "with_only_columns()") for entity in entities
+        ]
         self._invalidate()
         return self
 
