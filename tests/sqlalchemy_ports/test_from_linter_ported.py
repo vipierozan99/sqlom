@@ -22,6 +22,16 @@ package's test_select_ported.py), this file pairs each of the linter's meaningfu
 *scenarios* with sqlom's build-time equivalent, so the coverage is provable rather
 than assumed.
 
+Writing that pairing surfaced a real bug, since `test_plain_cartesian`'s exact
+shape has a select-list-only variant nothing previously checked: `Query(a, b)`
+or `Query(a.col, b.col)` with *no* `.where()`/`.join()` at all silently rendered
+a FROM clause that dropped `b` entirely, rather than raising the same way every
+other reference to an unjoined source already did. Fixed by
+`Query._check_entities()` (called once per render, alongside the existing
+`where()`/`order_by()`/`group_by()`/`join()` checks) — see the dedicated section
+below, which is the one part of this file that is a genuine regression test
+rather than a "SQLAlchemy would warn, sqlom already refuses" pairing.
+
 One scenario has no sqlom equivalent at all, by design: `test_join_on_true` /
 `test_join_on_true_muti_levels` show SQLAlchemy deliberately allowing an
 *explicit* cartesian product via `.join(b, true())` — an escape hatch for "yes, I
@@ -42,7 +52,7 @@ concern with no sqlom analogue, since there is no separate lint pass to wire in)
 
 import pytest
 
-from sqlom import Alias, Query
+from sqlom import Alias, Query, count
 from tests.conftest import Author, Book, Tag
 
 
@@ -83,6 +93,39 @@ def test_a_second_join_still_disconnected_from_a_third_table_is_rejected():
         (Query(Author)
          .join(Book, Book.author_id == Author.id)
          .join(Tag, Tag.label == "x"))  # no link to Author or Book
+
+
+# --------------------------------------------------------------------------
+# The one shape none of where()/order_by()/group_by()/join() protect: the
+# select list itself. This was a real bug, found while working through this
+# file — plain_cartesian's exact shape, one level up: `Query(a, b)` or
+# `Query(a.col, b.col)` with no join at all between a and b used to render
+# silently, dropping `b` from FROM entirely rather than raising. Fixed by
+# Query._check_entities(), called once per render.
+# --------------------------------------------------------------------------
+
+
+def test_selecting_two_unjoined_models_is_rejected():
+    with pytest.raises(ValueError, match="not part of this query's FROM/JOIN"):
+        Query(Author, Book).to_sql()
+
+
+def test_selecting_columns_from_two_unjoined_tables_is_rejected():
+    with pytest.raises(ValueError, match="not part of this query"):
+        Query(Author.name, Book.title).to_sql()
+
+
+def test_selecting_two_models_after_joining_them_still_works():
+    # The fix must not disturb the ordinary, already-well-tested case.
+    sql, _ = Query(Author, Book).join(Book, Book.author_id == Author.id).to_sql()
+    assert "t_books.id" in sql and "t_authors.id" in sql
+
+
+def test_count_of_a_model_still_supplies_its_own_from_with_nothing_else_selected():
+    # count(Model) is meant to work with no join at all — it names its own
+    # table (see README §6) — and must not be caught by the new check.
+    sql, _ = Query(count(Author)).to_sql()
+    assert sql == "SELECT count(*) FROM t_authors"
 
 
 # --------------------------------------------------------------------------

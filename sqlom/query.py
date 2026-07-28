@@ -579,6 +579,30 @@ class Query(Generic[R]):
                     f"{source_name(column.source)} has no column {column.name!r}"
                 )
 
+    def _check_entities(self):
+        """Every selected entity's source must already be in the join graph.
+
+        `where()`/`order_by()`/`group_by()`/`join()` all refuse a reference to
+        an unknown source immediately — but the *select list itself* never
+        got the same check, so `Query(Author, Book)` with no `.join()` (or
+        `Query(Author.name, Book.title)`) silently rendered a FROM clause
+        missing a table whose columns it was about to reference. Checked here,
+        at render time, rather than in `__init__` — a join usually arrives in
+        a later chained call, after the entities that need it.
+        """
+        sources = self._sources()
+        for kind, entity in self._entities:
+            if kind == "model":
+                if not any(entity is candidate for candidate in sources):
+                    raise ValueError(
+                        f"{source_name(entity)} is selected but not part of "
+                        f"this query's FROM/JOIN (selecting from "
+                        f"{', '.join(source_name(s) for s in sources)}). "
+                        f"Add a join linking it in."
+                    )
+            else:
+                self._check_expression(entity, "select list")
+
     def group_by(self, *columns: Expression[Any] | str) -> Self:
         """GROUP BY. Takes columns or bare column-name strings.
 
@@ -669,6 +693,7 @@ class Query(Generic[R]):
         render — a derived table, a scalar subquery, an EXISTS, a compound operand,
         a CTE body — must not emit one, or the same CTE gets defined twice.
         """
+        self._check_entities()
         params = []
         if nxt is None:
             def _nxt():

@@ -329,9 +329,16 @@ class TestArithmetic:
 
     def test_concat_of_two_columns(self):
         # test_expressions.py already covers concat against a literal; this
-        # is the column-to-column form, `title || name`.
-        clause, params = select_of(Query(Book.title.concat(Author.name)))
-        assert clause == "(title || name)"
+        # is the column-to-column form, `title || name` — across a join,
+        # since Author and Book are different tables (caught by the select-
+        # list validation fixed alongside this port: an entity referencing an
+        # unjoined source now raises, the same protection where()/join()/
+        # order_by() already had).
+        clause, params = select_of(
+            Query(Book.title.concat(Author.name))
+            .join(Author, Book.author_id == Author.id)
+        )
+        assert clause == "(t_books.title || t_authors.name)"
         assert params == ()
 
     def test_operate_supports_bitwise_operators(self):
