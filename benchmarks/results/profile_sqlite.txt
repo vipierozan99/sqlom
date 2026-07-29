@@ -5,7 +5,7 @@ cores: [0]   rows/request: 100   table: 200000 rows
 no event loop, no connection pool, no TLS — in-process sqlite3 only
 
 ==============================================================================
-sqlom (compiled)
+rowform (compiled)
 ==============================================================================
   0.100 ms wall/req, 0.100 ms CPU/req, utilization 1.00, 9997 req/s single-threaded
       -> utilization ~1.0 with no event loop: a synchronous sqlite call
@@ -16,7 +16,7 @@ sqlom (compiled)
 
     library                  share    flat
     --------------------------------------
-    sqlom (codegen)          65.0%   44.2%
+    rowform (codegen)          65.0%   44.2%
     orjson                   17.3%   17.3%
     sqlite3 driver           16.2%   16.2%
     benchmark harness         1.6%    1.6%
@@ -27,7 +27,7 @@ sqlom (compiled)
      /_//_/// /_\ / //_// / //_'/ //     Duration: 0.137     CPU time: 0.137
     /   _/                      v5.1.2
     
-    Profile at /home/user/sqlom/benchmarks/profile_sqlite.py:149
+    Profile at /home/user/rowform/benchmarks/profile_sqlite.py:149
     
     0.1361 profile_one  profile_sqlite.py:130
     └─ 0.1351 request  profile_sqlite.py:72
@@ -78,7 +78,7 @@ SQLAlchemy Core
      /_//_/// /_\ / //_// / //_'/ //     Duration: 0.719     CPU time: 0.719
     /   _/                      v5.1.2
     
-    Profile at /home/user/sqlom/benchmarks/profile_sqlite.py:149
+    Profile at /home/user/rowform/benchmarks/profile_sqlite.py:149
     
     0.7184 profile_one  profile_sqlite.py:130
     └─ 0.7119 request  profile_sqlite.py:107
@@ -139,7 +139,7 @@ SQLAlchemy ORM
      /_//_/// /_\ / //_// / //_'/ //     Duration: 1.172     CPU time: 1.172
     /   _/                      v5.1.2
     
-    Profile at /home/user/sqlom/benchmarks/profile_sqlite.py:149
+    Profile at /home/user/rowform/benchmarks/profile_sqlite.py:149
     
     1.1712 profile_one  profile_sqlite.py:130
     ├─ 1.1107 request  profile_sqlite.py:89
@@ -177,12 +177,12 @@ SQLAlchemy ORM
 ==============================================================================
 WHERE THE DIFFERENCE GOES (shares rescaled onto measured CPU/req)
 ==============================================================================
-  library                 sqlom (compiled)   SQLAlchemy Core    SQLAlchemy ORM
+  library                 rowform (compiled)   SQLAlchemy Core    SQLAlchemy ORM
   ----------------------------------------------------------------------------
   SQLAlchemy ORM                     0.000             0.000             0.438
   SQLAlchemy engine                  0.000             0.327             0.056
   benchmark harness                  0.002             0.073             0.177
-  sqlom (codegen)                    0.065             0.000             0.000
+  rowform (codegen)                    0.065             0.000             0.000
   sqlite3 driver                     0.016             0.023             0.019
   stdlib / other                     0.000             0.005             0.019
   SQLAlchemy SQL                     0.000             0.008             0.018

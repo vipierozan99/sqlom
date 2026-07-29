@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, Callable, Generic, Sequence, TypeVar, ove
 # ColumnExpr, Condition and the predicate tree live in expr.py, which grew out of
 # this module once aliases, OR-groups and aggregates arrived. They are re-exported
 # here because that is where they were first defined and callers import them from
-# `sqlom` anyway.
+# `rowform` anyway.
 from .expr import (  # noqa: F401
     Aggregate,
     Alias,
@@ -157,7 +157,7 @@ def hydrate(model_cls: type[M], row: Sequence[Any]) -> M:
 
 
 def as_dict(obj: Any) -> dict[str, Any]:
-    """orjson `default=` hook: sqlom models aren't stdlib dataclasses, so
+    """orjson `default=` hook: rowform models aren't stdlib dataclasses, so
     orjson can't introspect them natively."""
     cls = type(obj)
     if hasattr(cls, "__columns__"):

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import Boolean, Column as SAColumn, Integer, String, Table, MetaData
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from sqlom import Column, ModelMeta, model
+from rowform import Column, ModelMeta, model
 
 TABLE_NAME = "users"
 
@@ -26,7 +26,7 @@ CREATE TABLE {TABLE_NAME} (
 
 
 class User(metaclass=ModelMeta):
-    """sqlom model — the thing under test."""
+    """rowform model — the thing under test."""
 
     __tablename__ = TABLE_NAME
 

@@ -3,8 +3,8 @@
 
 import pytest
 
-from sqlom import compile_json_default, model
-from sqlom.dataclass_model import DATACLASS_DUMP_OPTION, ColumnDescriptor
+from rowform import compile_json_default, model
+from rowform.dataclass_model import DATACLASS_DUMP_OPTION, ColumnDescriptor
 from tests.conftest import AuthorDC
 
 

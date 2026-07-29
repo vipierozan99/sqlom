@@ -45,7 +45,7 @@ dict lookup — and widest on `sqlite3.Row`, which resolves names in Python.
 
 **Building a dict per row costs 5-7x, and dwarfs the access question.** If the
 destination is a dict, that allocation is the dominant term, not how the fields were
-read. Which is why sqlom hydrates into `__slots__` objects and hands them to orjson
+read. Which is why rowform hydrates into `__slots__` objects and hands them to orjson
 through a compiled `default=` hook: no intermediate dict is ever built.
 
 **If you do want dicts, let the driver build them.** psycopg's `dict_row` is 125.8
@@ -71,18 +71,18 @@ TWO NUANCES WORTH NOT ROUNDING AWAY
    one run.
 
 2. **These micro-numbers do not add up to the end-to-end ratios, and should not be
-   expected to.** Even the *fair* Core idiom pays 407 ns/row against sqlom's 54, yet
-   sqlom is only ~1.5x Core overall — because for both of them the dominant cost is the
+   expected to.** Even the *fair* Core idiom pays 407 ns/row against rowform's 54, yet
+   rowform is only ~1.5x Core overall — because for both of them the dominant cost is the
    driver materializing Python values from the wire, which this measurement excludes
    entirely (the rows are already fetched before timing starts). Per the profiles, that
    is 64% of the sqlite request. Quoting 7.6x from this file as a library ratio would be
    the bottom-up/top-down error of correction 7.
 
-WHY SQLOM CAN ALWAYS BE POSITIONAL
+WHY ROWFORM CAN ALWAYS BE POSITIONAL
 ----------------------------------
 It is structural, not a tuning choice. `Query._select_list()` enumerates columns
 explicitly for every entity — there is no `SELECT *` anywhere in the builder — so at
-codegen time sqlom knows the exact ordinal of every output column, and the hydrator is
+codegen time rowform knows the exact ordinal of every output column, and the hydrator is
 pure tuple unpacking with no names in it at all:
 
     def _hydrate_all(rows):
@@ -97,7 +97,7 @@ pure tuple unpacking with no names in it at all:
             append(obj)
         return out
 
-This is also exactly why the two-model join was unproblematic for sqlom and fatal for
+This is also exactly why the two-model join was unproblematic for rowform and fatal for
 Core's `.mappings()`: two `id` columns collide *by name*, and ordinals do not collide.
 The join hydrator slices one flat tuple into two objects by position:
 
@@ -112,7 +112,7 @@ WHAT WOULD BREAK IT
 -------------------
 * **`SELECT *`.** Ordinals would shift the moment a column was added to the table, and
   every field after it would be silently assigned the wrong value — a data-corruption
-  bug with no error. sqlom cannot emit `SELECT *`; the absence of that feature is what
+  bug with no error. rowform cannot emit `SELECT *`; the absence of that feature is what
   makes positional safe rather than reckless.
 * **A select list and hydrator spec built from different sources.** Both derive from the
   same ordered `__columns__` mapping, and `tests/test_joins_sqlite.py` executes real SQL

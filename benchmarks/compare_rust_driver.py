@@ -4,7 +4,7 @@
 `psqlpy` is a PostgreSQL driver built on Rust's tokio-postgres, and its
 `QueryResult.as_class()` constructs Python class instances **from Rust** — which
 is exactly the hypothetical: no intermediate tuple, no Python-level hydration
-loop. It works with sqlom's `@model` dataclasses unchanged, because those have a
+loop. It works with rowform's `@model` dataclasses unchanged, because those have a
 generated `__init__` and the query-expression descriptors live on the metaclass.
 
 Two confounds had to be controlled first, both measured rather than assumed:
@@ -37,7 +37,7 @@ from psqlpy import ConnectionPool
 
 from benchmarks.benchargs import validate
 from benchmarks.models import TABLE_NAME, User, UserDC
-from sqlom import (
+from rowform import (
     ASYNCPG_CONVERTERS,
     DATACLASS_DUMP_OPTION,
     compile_batch_hydrator,
@@ -46,8 +46,8 @@ from sqlom import (
 
 SQL = (f"SELECT id, name, email, is_active FROM {TABLE_NAME} "
        f"WHERE is_active = $1 AND id > $2 LIMIT $3")
-DSN_ASYNCPG = "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench"
-DSN_PSQLPY = "postgres://postgres:postgres@127.0.0.1:5432/sqlom_bench"
+DSN_ASYNCPG = "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench"
+DSN_PSQLPY = "postgres://postgres:postgres@127.0.0.1:5432/rowform_bench"
 
 
 async def noop_reset(con):
@@ -137,11 +137,11 @@ def build_contenders(limit, pool_size, concurrency):
         return build
 
     return {
-        "asyncpg default + sqlom (TLS, RESET)":
+        "asyncpg default + rowform (TLS, RESET)":
             wrap(lambda: make_asyncpg(limit, pool_size, fair=False)),
-        "asyncpg fair + sqlom (no TLS/RESET)":
+        "asyncpg fair + rowform (no TLS/RESET)":
             wrap(lambda: make_asyncpg(limit, pool_size, fair=True)),
-        "asyncpg held conn + sqlom":
+        "asyncpg held conn + rowform":
             lambda: make_asyncpg_held(limit, concurrency),
         "psqlpy (Rust) pool -> dicts":
             make_psqlpy(limit, pool_size, concurrency),
@@ -229,7 +229,7 @@ async def main():
         results[name] = (rps, cpu)
         print(f"{name:<46}{rps:>8.0f}{cpu:>12.4f}{util:>7.2f}")
 
-    fair = results["asyncpg fair + sqlom (no TLS/RESET)"]
+    fair = results["asyncpg fair + rowform (no TLS/RESET)"]
     print(f"\nvs. the fair asyncpg baseline ({fair[0]:.0f} rps, {fair[1]:.4f} ms CPU/req):")
     for name, (rps, cpu) in results.items():
         print(f"  {name:<46}{rps / fair[0]:>7.2f}x rps{fair[1] / cpu:>9.2f}x cpu")

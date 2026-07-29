@@ -2,7 +2,7 @@
 Postgres and sqlite — the minimum needed to catch a real class of mistake at
 build time rather than at the server.
 
-Until this module, every "Postgres-only" feature in sqlom (`ILIKE`,
+Until this module, every "Postgres-only" feature in rowform (`ILIKE`,
 `FOR UPDATE`, `DELETE ... USING`, `ON CONFLICT ... ON CONSTRAINT`) was
 documentation-only: `to_sql()` rendered identical SQL regardless of what
 backend you actually intended to run it against, and a sqlite target would
@@ -12,10 +12,10 @@ sqlite and Postgres spell completely differently, not just as a feature
 toggle — a place to render the right thing for each.
 
 This is deliberately *not* a full visitor/compiler rewrite the way
-SQLAlchemy's real dialect system is: sqlom still renders one dialect-*less*
+SQLAlchemy's real dialect system is: rowform still renders one dialect-*less*
 string by default (every existing caller of `to_sql()` is unaffected), and a
 `Dialect` only comes into play where a caller opts in with `to_sql(dialect=
-SQLITE)`/`to_sql(dialect=POSTGRES)`. That is the right scope for what sqlom
+SQLITE)`/`to_sql(dialect=POSTGRES)`. That is the right scope for what rowform
 actually needs two dialects for today; see `query.py`/`dml.py` for how the
 handful of dialect-sensitive spots consult `current_dialect()`.
 
@@ -36,7 +36,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-_CURRENT_DIALECT: ContextVar[Any] = ContextVar("sqlom_current_dialect", default=None)
+_CURRENT_DIALECT: ContextVar[Any] = ContextVar("rowform_current_dialect", default=None)
 
 
 def current_dialect() -> "Dialect | None":
@@ -105,7 +105,7 @@ class Dialect:
 
 
 class PostgresDialect(Dialect):
-    """Postgres: supports everything sqlom models a difference for."""
+    """Postgres: supports everything rowform models a difference for."""
 
     name = "postgres"
     default_placeholder = "$"
@@ -134,7 +134,7 @@ class SqliteDialect(Dialect):
         return f"{left_sql} {keyword} {right_sql}"
 
 
-#: Singletons — one instance per dialect is all sqlom ever needs, and sharing
+#: Singletons — one instance per dialect is all rowform ever needs, and sharing
 #: them means `dialect is SQLITE` is a valid identity check.
 POSTGRES = PostgresDialect()
 SQLITE = SqliteDialect()

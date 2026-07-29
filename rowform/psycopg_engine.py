@@ -1,4 +1,4 @@
-"""psycopg3-backed engine, so sqlom and SQLAlchemy can be compared on one driver.
+"""psycopg3-backed engine, so rowform and SQLAlchemy can be compared on one driver.
 
 The asyncpg engine in `engine.py` is the faster backend, but SQLAlchemy cannot
 use it and psycopg3 at the same time, and comparing two mappers across two
@@ -68,7 +68,7 @@ class PsycopgTransaction(Transaction):
         row = await cur.fetchone()
         return row[0] if row else None
 
-    async def execute(self, sql, *args):
+    async def _execute_raw(self, sql, *args):
         # psycopg binds a sequence, not varargs; None means "no parameters",
         # which matters because passing () makes psycopg use the extended
         # protocol and reject multi-statement strings.
@@ -247,14 +247,28 @@ class PsycopgEngine:
             rows = await cur.fetchall()
         return self._hydrator_for(query)(rows)
 
-    async def execute(self, statement: _Statement, **overrides: Any) -> int:
-        """Run an Insert/Update/Delete that has no RETURNING; returns the rowcount.
+    @overload
+    async def execute(self, statement: _Select[R], **overrides: Any) -> list[R]: ...
 
-        psycopg reports an integer here where asyncpg reports a status string; both
-        are the driver's own answer rather than a normalisation across them.
+    @overload
+    async def execute(self, statement: _Statement, **overrides: Any) -> int: ...
+
+    async def execute(self, statement: Any, **overrides: Any) -> Any:
+        """The SQLAlchemy-style single entry point: `execute(select(...))` (or
+        any other `Query`/`CompoundSelect`) hydrates and returns its rows,
+        exactly as `fetch_all()` does. An Insert/Update/Delete with no
+        RETURNING runs and returns the rowcount instead — psycopg reports an
+        integer here where asyncpg reports a status string; both are the
+        driver's own answer rather than a normalisation across them.
+
+        Calling this on an Insert/Update/Delete *with* `returning()` still
+        raises, asking you to use `fetch_all()` so you get the rows back
+        rather than silently discarding them.
 
         `**overrides` — see `fetch_all()`.
         """
+        if isinstance(statement, (Query, CompoundSelect)):
+            return await self.fetch_all(statement, **overrides)
         if getattr(statement, "returns_rows", False):
             raise ValueError(
                 "this statement has RETURNING, so it produces rows — use "

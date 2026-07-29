@@ -1,7 +1,7 @@
 cores: uvicorn 0   locust/generator 1   postgres 2,3
 command: benchmarks/verify_concurrency.sh
 
-server pid 22343 on core 0    generator on core 1   path /psy-sqlom
+server pid 22343 on core 0    generator on core 1   path /psy-rowform
 baseline established sockets on :8000 (before load): 0
 
 conns  sockets           rps    mean ms    in flight

@@ -24,11 +24,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlom import Column, ModelMeta, model  # noqa: E402
+from rowform import Column, ModelMeta, model  # noqa: E402
 
 PG_DSN = os.environ.get(
-    "SQLOM_TEST_DSN",
-    "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable",
+    "ROWFORM_TEST_DSN",
+    "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable",
 )
 
 
@@ -105,7 +105,7 @@ TAGS = [
 
 @pytest.fixture(scope="session")
 def sqlite_path(tmp_path_factory):
-    path = tmp_path_factory.mktemp("sqlom") / "test.sqlite3"
+    path = tmp_path_factory.mktemp("rowform") / "test.sqlite3"
     conn = sqlite3.connect(path)
     for statement in DDL:
         conn.execute(statement)
@@ -129,11 +129,11 @@ def db(sqlite_path):
 def run_query(db):
     """Execute a Query against sqlite and hydrate it, the way an engine would.
 
-    sqlom has no sqlite engine class — the benchmarks drive `to_sql()` plus a
+    rowform has no sqlite engine class — the benchmarks drive `to_sql()` plus a
     compiled hydrator directly — so this mirrors exactly that, which means these
     tests exercise the real generated code rather than a test-only path.
     """
-    from sqlom import SQLITE_CONVERTERS, compile_batch_hydrator, compile_join_hydrator
+    from rowform import SQLITE_CONVERTERS, compile_batch_hydrator, compile_join_hydrator
 
     def _run(query):
         sql, params = query.to_sql(placeholder="?")
@@ -228,10 +228,10 @@ def assert_dialect_sql(built, *, sqlite=None, postgres=None, params=None):
     `CompoundSelect`, an Insert/Update/Delete) renders as expected under one
     or both dialects — pass whichever of `sqlite=`/`postgres=` you want
     checked. `params`, if given, is asserted identically for every dialect
-    checked: sqlom's dialects only ever differ in keyword spelling, never in
+    checked: rowform's dialects only ever differ in keyword spelling, never in
     which values get bound or in what order.
     """
-    from sqlom import POSTGRES, SQLITE
+    from rowform import POSTGRES, SQLITE
 
     if sqlite is not None:
         sql, bound = built.to_sql(dialect=SQLITE)

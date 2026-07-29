@@ -5,7 +5,7 @@ Execution against a real server is in test_dml_pg.py; these need no database.
 
 import pytest
 
-from sqlom import (
+from rowform import (
     MAX_PARAMETERS,
     Alias,
     Delete,
@@ -23,7 +23,7 @@ class TestStatementBase:
     own direct test."""
 
     def test_render_is_not_implemented(self):
-        from sqlom.dml import _Statement
+        from rowform.dml import _Statement
 
         with pytest.raises(NotImplementedError):
             _Statement(Author)._render()
@@ -254,7 +254,7 @@ class TestReturningValidation:
             Insert(Author).values(id=1).returning("id")
 
     def test_returning_an_unknown_column_of_the_right_table_is_refused(self):
-        from sqlom import ColumnExpr
+        from rowform import ColumnExpr
 
         # Passes the "is this table being written to" check (it is Author),
         # then fails the deeper "does that table actually have this column"

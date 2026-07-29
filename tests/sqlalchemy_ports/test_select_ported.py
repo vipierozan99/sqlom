@@ -1,17 +1,17 @@
 """Ported from SQLAlchemy's test/sql/test_select.py and test_selectable.py
-(generative Select methods), adapted to sqlom's model-based query builder.
+(generative Select methods), adapted to rowform's model-based query builder.
 
-sqlom has no `Table`/`MetaData`/column-collection object graph: a source is
+rowform has no `Table`/`MetaData`/column-collection object graph: a source is
 always a model class (or an `Alias`/`Subquery`/`CTE` of one), joins always
 need an explicit ON predicate, and there is no ORM layer above Core. So this
 file translates *intent*, not source: each test below is inspired by a
 SQLAlchemy scenario but rebuilt against `Query`, `Author`/`Book`/`Tag`.
 
-Skipped entirely (no sqlom equivalent, or the concept does not exist here):
-  * `Table`/`Column`/`ForeignKey`/`MetaData`/schema=/DDL/reflection — sqlom
+Skipped entirely (no rowform equivalent, or the concept does not exist here):
+  * `Table`/`Column`/`ForeignKey`/`MetaData`/schema=/DDL/reflection — rowform
     has no Table object; a source is a model class.
   * `join_from()` and implicit-FK `join(child)` (inferring the ON clause
-    from a declared `ForeignKey`) — sqlom's `join()` always requires an
+    from a declared `ForeignKey`) — rowform's `join()` always requires an
     explicit ON predicate; there is no FK metadata to infer one from.
   * `select(table.c)`, `.c[0:2]`, `.c["x", "y"]`, keyed `Column(key=...)`
     mapping — no `Table.c` column-collection object.
@@ -21,18 +21,18 @@ Skipped entirely (no sqlom equivalent, or the concept does not exist here):
     are supported (see below) and don't change that.
   * Anonymous-label / column-correspondence machinery: `corresponding_column`,
     `proxy_set`, `_clone()`/`_copy_internals()`, `anon_1`-style auto-labels.
-    sqlom has no clause-element graph to clone or re-correspond; every
+    rowform has no clause-element graph to clone or re-correspond; every
     non-trivial expression needs an explicit `.label()` to be addressable
     from outside, and unlabelled aggregates are refused by `cte()`/
     `subquery()` rather than given a guessed name.
   * `with_hint()`/`with_statement_hint()`, and other dialect-hint or
     ORM-mapper-specific tests — not applicable to a Core-only builder.
-  * `correlate(None, ...)` / `correlate_except(...)` — sqlom's `correlate()`
+  * `correlate(None, ...)` / `correlate_except(...)` — rowform's `correlate()`
     only adds explicit outer sources; there is no "correlate everything
     except" or "clear correlation" spelling.
   * SQLAlchemy's generative-immutability contract (`test_methods_generative`,
     asserting `s1 is not s2` after each builder call) is the *opposite* of
-    sqlom's contract, which mutates in place and returns `self` — see
+    rowform's contract, which mutates in place and returns `self` — see
     `test_query_methods_mutate_in_place_and_return_self` below, which pins
     down the actual (inverted) behaviour instead of skipping it.
 
@@ -48,7 +48,7 @@ Both API gaps originally noticed while porting have since been fixed centrally
     `test_scalar_subquery_as_a_selected_column`.
 """
 
-from sqlom import (
+from rowform import (
     Alias,
     CompoundSelect,
     Query,
@@ -66,26 +66,26 @@ from tests.conftest import Author, Book, Tag
 # --------------------------------------------------------------------------
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_select_function_matches_query_constructor():
-    # SQLAlchemy's select() and Select() are the same object; sqlom's
+    # SQLAlchemy's select() and Select() are the same object; rowform's
     # select() is a thin wrapper around Query() for the same reason.
     assert select(Author).to_sql() == Query(Author).to_sql()
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_select_specific_columns_preserves_order():
     sql, _ = Query(Book.title, Book.id, Book.author_id).to_sql()
     assert sql == "SELECT title, id, author_id FROM t_books"
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_select_model_and_expression_together():
     sql, _ = Query(Book.author_id, count()).to_sql()
     assert sql == "SELECT author_id, count(*) FROM t_books"
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_filter_is_a_synonym_for_where():
     sql, params = Query(Author).filter(Author.id > 1).to_sql()
     assert sql == Query(Author).where(Author.id > 1).to_sql()[0]
@@ -126,9 +126,9 @@ def test_filter_by_rejects_an_unknown_column():
         Query(Author).filter_by(nope=1)
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_exists_method_matches_the_free_function():
-    from sqlom import exists
+    from rowform import exists
 
     inner = Query(Book).correlate(Author).where(Book.author_id == Author.id)
     method_form, method_params = Query(Author).where(inner.exists()).to_sql(placeholder="$")
@@ -174,9 +174,9 @@ def test_join_three_level_chain_renders_in_order():
     )
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_join_isouter_keyword_matches_outer_join_method():
-    # SQLAlchemy's join(..., isouter=True) vs .outerjoin(...); sqlom spells
+    # SQLAlchemy's join(..., isouter=True) vs .outerjoin(...); rowform spells
     # the same choice as a keyword on join() or a dedicated method.
     via_keyword = Query(Author, Book).join(
         Book, Book.author_id == Author.id, isouter=True
@@ -185,7 +185,7 @@ def test_join_isouter_keyword_matches_outer_join_method():
     assert via_keyword.to_sql() == via_method.to_sql()
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_join_full_keyword_matches_full_join_method():
     via_keyword = Query(Author, Book).join(
         Book, Book.author_id == Author.id, full=True
@@ -194,10 +194,10 @@ def test_join_full_keyword_matches_full_join_method():
     assert via_keyword.to_sql() == via_method.to_sql()
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_join_can_run_in_the_direction_opposite_the_foreign_key():
     # SQLAlchemy infers ON from the ForeignKey regardless of which table is
-    # "left"; sqlom takes an explicit predicate, so the same freedom just
+    # "left"; rowform takes an explicit predicate, so the same freedom just
     # falls out of writing Author second and joining to it.
     sql, _ = (
         Query(Book, Author)
@@ -229,7 +229,7 @@ def test_repeated_join_and_where_calls_compose_across_three_tables():
     assert params == ("compilers", "classic")
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_join_on_clause_link_can_be_anywhere_in_a_compound_predicate():
     # The linking comparison need not be the first term of an and_()'d ON
     # clause; the cross-join check walks the whole tree.
@@ -239,7 +239,7 @@ def test_join_on_clause_link_can_be_anywhere_in_a_compound_predicate():
     assert "ON (t_books.title = ? AND t_books.author_id = t_authors.id)" in stmt.to_sql()[0]
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_join_on_clause_without_any_linking_condition_is_a_cross_join():
     import pytest
 
@@ -268,7 +268,7 @@ def test_union_of_two_joined_selects():
 # --------------------------------------------------------------------------
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_self_join_two_levels_deep_with_two_aliases():
     # A chain of self-joins: Author -> mgr -> mgr2, each alias distinguished
     # from the model and from each other purely by identity.
@@ -287,7 +287,7 @@ def test_self_join_two_levels_deep_with_two_aliases():
     ) in sql
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_join_target_must_already_be_a_known_source_or_the_new_one():
     import pytest
 
@@ -345,7 +345,7 @@ def test_mixing_operators_nests_rather_than_flattening():
     assert isinstance(stmt.operands[0], CompoundSelect)
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_compound_select_needs_a_query_not_a_string():
     import pytest
 
@@ -353,7 +353,7 @@ def test_compound_select_needs_a_query_not_a_string():
         Query(Author).union("SELECT 1")
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_intersect_all_and_except_all_chain_on_a_compound():
     # Fixed: CompoundSelect now has intersect_all()/except_all(), so a
     # *second* INTERSECT ALL/EXCEPT ALL chains onto an existing compound the
@@ -373,7 +373,7 @@ def test_intersect_all_and_except_all_chain_on_a_compound():
 # --------------------------------------------------------------------------
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_correlated_scalar_subquery_in_a_comparison():
     # A comparison needs an Expression on its left, so the correlated
     # subquery goes on the right: "books above the average id for that
@@ -398,7 +398,7 @@ def test_correlated_scalar_subquery_in_a_comparison():
     assert params == ()
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_scalar_subquery_as_a_selected_column():
     # Fixed: scalar_subquery() now returns a real Expression, so — labelled,
     # the same rule as any other unnamed expression selected on its own —
@@ -418,7 +418,7 @@ def test_scalar_subquery_as_a_selected_column():
     assert params == ()
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_unlabelled_scalar_subquery_in_a_select_list_still_needs_a_label_to_be_wrapped():
     # Selecting an unlabelled scalar subquery directly still works (it
     # renders as "expr", same default as any other unnamed expression) —
@@ -435,12 +435,12 @@ def test_unlabelled_scalar_subquery_in_a_select_list_still_needs_a_label_to_be_w
         outer.cte("author_counts")
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_correlation_must_be_declared_or_the_reference_is_rejected():
     import pytest
 
     # Without correlate(Author), referencing Author from inside the
-    # subquery is indistinguishable from a typo — sqlom refuses it outright
+    # subquery is indistinguishable from a typo — rowform refuses it outright
     # rather than silently emitting a cross join.
     with pytest.raises(ValueError, match="not part of this query"):
         Query(Book.id).where(Book.author_id == Author.id).scalar_subquery()
@@ -451,7 +451,7 @@ def test_correlation_must_be_declared_or_the_reference_is_rejected():
 # --------------------------------------------------------------------------
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_select_from_a_cte_with_a_where_clause():
     active_authors = Query(Author).where(Author.active == True).cte("active_authors")  # noqa: E712
     sql, params = Query(active_authors.name).where(active_authors.id > 1).to_sql(placeholder="$")
@@ -463,7 +463,7 @@ def test_select_from_a_cte_with_a_where_clause():
     assert params == (True, 1)
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_cte_joined_to_a_plain_table():
     book_counts = (
         Query(Book.author_id, count().label("n"))
@@ -483,7 +483,7 @@ def test_cte_joined_to_a_plain_table():
 # --------------------------------------------------------------------------
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_distinct_order_by_and_limit_chained():
     sql, params = (
         Query(Book.author_id)
@@ -499,7 +499,7 @@ def test_distinct_order_by_and_limit_chained():
     assert params == (2,)
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_order_by_several_columns_with_per_column_direction():
     sql, _ = (
         Query(Book)
@@ -509,7 +509,7 @@ def test_order_by_several_columns_with_per_column_direction():
     assert sql.endswith("ORDER BY author_id, title DESC")
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_order_by_a_labelled_aggregate_renders_the_expression_not_the_label():
     # order_by() takes the expression object directly here, not a bare
     # string, so it renders the aggregate itself rather than "ORDER BY n".
@@ -523,7 +523,7 @@ def test_order_by_a_labelled_aggregate_renders_the_expression_not_the_label():
     assert sql.endswith("ORDER BY count(*) DESC")
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_group_by_two_columns_after_a_join_with_having():
     sql, params = (
         Query(Book.author_id, Tag.label, count())
@@ -537,7 +537,7 @@ def test_group_by_two_columns_after_a_join_with_having():
     assert params == (0, 100)
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_group_by_a_bare_string_only_resolves_against_the_primary_source():
     import pytest
 
@@ -548,7 +548,7 @@ def test_group_by_a_bare_string_only_resolves_against_the_primary_source():
         Query(Author).join(Book, Book.author_id == Author.id).group_by("title")
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_offset_without_limit_is_still_valid_sql():
     sql, params = Query(Author).order_by(Author.id).offset(2).to_sql(placeholder="$")
     assert sql.endswith("ORDER BY id OFFSET $1")
@@ -560,7 +560,7 @@ def test_offset_without_limit_is_still_valid_sql():
 # --------------------------------------------------------------------------
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_where_combines_or_across_two_joined_tables():
     sql, params = (
         Query(Author)
@@ -574,7 +574,7 @@ def test_where_combines_or_across_two_joined_tables():
     assert params == ("ada", "compilers")
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_where_combines_and_of_or_across_a_three_way_join():
     sql, _ = (
         Query(Author)
@@ -599,7 +599,7 @@ def test_where_combines_and_of_or_across_a_three_way_join():
 # --------------------------------------------------------------------------
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_label_a_joined_column_alongside_the_primary_model():
     sql, _ = (
         Query(Author, Book.title.label("book_title"))
@@ -612,7 +612,7 @@ def test_label_a_joined_column_alongside_the_primary_model():
     )
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_subquery_output_columns_are_named_after_their_labels():
     sub = (
         Query(Book.author_id, count().label("total"))
@@ -628,7 +628,7 @@ def test_subquery_output_columns_are_named_after_their_labels():
 # --------------------------------------------------------------------------
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_three_way_join_end_to_end(run_query):
     rows = run_query(
         Query(Author.name, Book.title, Tag.label)
@@ -639,7 +639,7 @@ def test_three_way_join_end_to_end(run_query):
     assert rows == [("ada", "structures", "classic"), ("brian", "compilers", "classic")]
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_correlated_scalar_subquery_end_to_end(run_query):
     # ada's books are 10 ("structures") and 11 ("algorithms"); the average
     # id for her is 10.5, so only the higher-id book clears the bar. Every
@@ -657,7 +657,7 @@ def test_correlated_scalar_subquery_end_to_end(run_query):
     assert rows == [("algorithms",)]
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_cte_end_to_end(run_query):
     active_authors = Query(Author).where(Author.active == True).cte("active_authors")  # noqa: E712
     rows = run_query(
@@ -674,13 +674,13 @@ def test_cte_end_to_end(run_query):
 # --------------------------------------------------------------------------
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_add_columns_appends_to_the_select_list():
     sql, _ = Query(Author.id).add_columns(Author.name).to_sql()
     assert sql == "SELECT id, name FROM t_authors"
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_add_columns_can_reference_a_source_joined_afterward():
     # Builder order doesn't matter, same as where()/order_by()/group_by():
     # validation happens at render time, not at the add_columns() call.
@@ -693,7 +693,7 @@ def test_add_columns_can_reference_a_source_joined_afterward():
     )
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_add_columns_of_an_unjoined_source_is_rejected_at_render():
     import pytest
 
@@ -702,7 +702,7 @@ def test_add_columns_of_an_unjoined_source_is_rejected_at_render():
         stmt.to_sql()
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_with_only_columns_replaces_the_select_list():
     stmt = Query(Author).where(Author.active == True).with_only_columns(  # noqa: E712
         Author.name
@@ -712,7 +712,7 @@ def test_with_only_columns_replaces_the_select_list():
     assert params == (True,)
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_with_only_columns_keeps_froms_and_joins_intact():
     # The FROM/JOIN graph is untouched — only which columns come back
     # changes, so a column from a table no longer selected still renders
@@ -727,7 +727,7 @@ def test_with_only_columns_keeps_froms_and_joins_intact():
     )
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_with_only_columns_updates_is_multi_entity():
     stmt = Query(Author, Book).join(Book, Book.author_id == Author.id)
     assert stmt.is_multi_entity
@@ -735,7 +735,7 @@ def test_with_only_columns_updates_is_multi_entity():
     assert not stmt.is_multi_entity
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_with_only_columns_needs_at_least_one_entity():
     import pytest
 
@@ -743,7 +743,7 @@ def test_with_only_columns_needs_at_least_one_entity():
         Query(Author).with_only_columns()
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_add_columns_and_with_only_columns_end_to_end(run_query):
     rows = run_query(
         Query(Author.id)
@@ -766,7 +766,7 @@ def test_add_columns_and_with_only_columns_end_to_end(run_query):
 # select_from() — an explicit FROM source needing no ON clause, the one
 # sanctioned exception to "join() always requires a real linking condition"
 # (README §12). Ported from test/sql/test_compiler.py::CompileTest, scoped
-# down: sqlom's select_from() only ever *adds* a source (see its docstring
+# down: rowform's select_from() only ever *adds* a source (see its docstring
 # for the SQLAlchemy behaviours this deliberately doesn't replicate: naming
 # the *sole* FROM table with nothing else selected, and re-ordering/
 # re-asserting a source already implied elsewhere).
@@ -796,7 +796,7 @@ def test_select_from_accepts_several_sources_at_once():
     )
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_select_from_end_to_end_cross_join(run_query):
     rows = run_query(
         Query(Author.id, Book.id).select_from(Book).order_by(Author.id, Book.id)
@@ -805,7 +805,7 @@ def test_select_from_end_to_end_cross_join(run_query):
     assert len(rows) == 16
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_select_from_rejects_a_source_already_in_the_query():
     import pytest
 
@@ -813,7 +813,7 @@ def test_select_from_rejects_a_source_already_in_the_query():
         Query(Author, Book).select_from(Author)
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_select_from_still_requires_a_columns_source_or_model_alias_subquery():
     import pytest
 
@@ -821,7 +821,7 @@ def test_select_from_still_requires_a_columns_source_or_model_alias_subquery():
         Query(Author).select_from(Book.id)
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_joins_cross_join_guard_is_unaffected_by_select_from_existing():
     import pytest
 
@@ -831,7 +831,7 @@ def test_joins_cross_join_guard_is_unaffected_by_select_from_existing():
         Query(Author).join(Book, Author.active == True)  # noqa: E712
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_select_from_combined_with_a_real_join():
     # select_from() adds an unrelated table; join() still needs a real ON
     # clause for anything joined normally alongside it.

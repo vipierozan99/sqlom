@@ -38,7 +38,7 @@ import orjson
 
 from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User
-from sqlom import SQLITE_CONVERTERS, compile_batch_hydrator, compile_json_default
+from rowform import SQLITE_CONVERTERS, compile_batch_hydrator, compile_json_default
 
 COLS = ["id", "name", "email", "is_active"]
 
@@ -183,7 +183,7 @@ def main():
 
         # Measured anchor: shaping and encoding entirely below Python, same row
         # count. This is what "no Python object per row" actually costs.
-        from sqlom import Query as _Q
+        from rowform import Query as _Q
 
         json_sql, json_params = (
             _Q(User).where(User.is_active == 1).where(User.id > 100).limit(L)

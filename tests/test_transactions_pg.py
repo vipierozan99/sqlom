@@ -6,7 +6,7 @@ asserted by pytest instead of a script that printed PASS/FAIL and needed reading
 
 import pytest
 
-from sqlom import DatabaseEngine, PsycopgEngine, Query, active_transaction
+from rowform import DatabaseEngine, PsycopgEngine, Query, active_transaction
 from tests.conftest import Author
 
 pytestmark = pytest.mark.postgres

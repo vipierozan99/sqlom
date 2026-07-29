@@ -2,7 +2,7 @@
 
 import pytest
 
-from sqlom import Alias, ColumnExpr, Query
+from rowform import Alias, ColumnExpr, Query
 from tests.conftest import Author, Book
 
 

@@ -7,7 +7,7 @@ hydrator that disagree on column order or width.
 
 import pytest
 
-from sqlom import Query
+from rowform import Query
 from tests.conftest import Author, Book, Tag
 
 
@@ -103,7 +103,7 @@ class TestFilteringJoin:
         assert rows[0].name == "carol"
 
     def test_duplicates_appear_once_per_match(self, run_query):
-        # ada has two books, so an inner join yields her twice. sqlom does not
+        # ada has two books, so an inner join yields her twice. rowform does not
         # de-duplicate; SQLAlchemy's ORM would via the identity map.
         rows = run_query(Query(Author).join(Book, Book.author_id == Author.id))
         assert [a.name for a in rows].count("ada") == 2

@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""sqlom vs SQLAlchemy on one driver, both with default pool behaviour.
+"""rowform vs SQLAlchemy on one driver, both with default pool behaviour.
 
-The comparison in §13 tuned both sides and ran sqlom on asyncpg — which
+The comparison in §13 tuned both sides and ran rowform on asyncpg — which
 SQLAlchemy cannot use simultaneously, so mapper and driver were confounded, and
 the tuning included a behavioural change (skipping the pool's session reset).
 
 Here everything is held constant except the mapper:
 
 * **Same driver.** psycopg3 async for both: `psycopg_pool.AsyncConnectionPool`
-  for sqlom, `postgresql+psycopg` for SQLAlchemy.
+  for rowform, `postgresql+psycopg` for SQLAlchemy.
 * **Default pool behaviour on both sides.** No `reset=` override, no
   `conditional_reset`, no `AUTOCOMMIT`, no `pool_reset_on_return`. Verified with
   `log_statement=all` that both send the same three statements per request:
-  sqlom `BEGIN`/`SELECT`/`COMMIT`, SQLAlchemy `BEGIN`/`SELECT`/`ROLLBACK`.
+  rowform `BEGIN`/`SELECT`/`COMMIT`, SQLAlchemy `BEGIN`/`SELECT`/`ROLLBACK`.
 * Same serializer (orjson), same query, byte-identical output.
 
-What remains different is only the mapping layer: sqlom's compiled hydrator and
+What remains different is only the mapping layer: rowform's compiled hydrator and
 compiled orjson hook against SQLAlchemy Core's `RowMapping` and the ORM's
 identity map and instrumented attributes.
 
@@ -44,13 +44,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from benchmarks.benchargs import validate
 from benchmarks.models import User, UserORM, users_table
-from sqlom import PsycopgEngine, Query, compile_json_default
+from rowform import PsycopgEngine, Query, compile_json_default
 
-CONNINFO = "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
-SA_DSN = "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
+CONNINFO = "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
+SA_DSN = "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
 
 
-async def make_sqlom(limit, pool_size):
+async def make_rowform(limit, pool_size):
     db = PsycopgEngine(CONNINFO, min_size=pool_size, max_size=pool_size)
     await db.connect()
     q = Query(User).where(User.is_active == True).where(User.id > 100).limit(limit)
@@ -122,7 +122,7 @@ async def make_orm(limit, pool_size):
 
 
 CONTENDERS = [
-    ("sqlom (psycopg, default pool)", make_sqlom),
+    ("rowform (psycopg, default pool)", make_rowform),
     ("SQLAlchemy Core (psycopg, default)", make_core),
     ("SQLAlchemy Core positional (psycopg, default)", make_core_fast),
     ("SQLAlchemy ORM (psycopg, default)", make_orm),
@@ -185,9 +185,9 @@ async def run_all(args, label):
         results[name] = rps
         print(f"{name:<38}{rps:>8.0f}{cpu:>12.4f}{util:>7.2f}")
 
-    s = results["sqlom (psycopg, default pool)"]
-    print(f"\n  sqlom vs Core  {s / results['SQLAlchemy Core (psycopg, default)']:>6.2f}x"
-          f"      sqlom vs ORM  {s / results['SQLAlchemy ORM (psycopg, default)']:>6.2f}x")
+    s = results["rowform (psycopg, default pool)"]
+    print(f"\n  rowform vs Core  {s / results['SQLAlchemy Core (psycopg, default)']:>6.2f}x"
+          f"      rowform vs ORM  {s / results['SQLAlchemy ORM (psycopg, default)']:>6.2f}x")
     return results
 
 

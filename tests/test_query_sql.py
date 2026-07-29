@@ -2,7 +2,7 @@
 
 import pytest
 
-from sqlom import Query
+from rowform import Query
 from tests.conftest import Author, AuthorDC, Book, Tag
 
 
@@ -77,7 +77,7 @@ class TestValidation:
             Query(Author).where(Book.title == "x")
 
     def test_where_rejects_an_unknown_column(self):
-        from sqlom import ColumnExpr
+        from rowform import ColumnExpr
 
         # Reaching a column that the model does not declare can only happen by
         # constructing the expression by hand, but the guard is what keeps a
@@ -107,7 +107,7 @@ class TestValidation:
             Query(Author).group_by(5)
 
     def test_group_by_rejects_an_unknown_column_reached_by_expression(self):
-        from sqlom import ColumnExpr
+        from rowform import ColumnExpr
 
         # Same trick as test_where_rejects_an_unknown_column above, but through
         # _check_expression()/_as_expression() rather than _check(): group_by
@@ -315,23 +315,23 @@ class TestJsonBytesHelper:
     since they depend on driver behaviour that is awkward to force from here."""
 
     def test_bytes_pass_through_unchanged(self):
-        from sqlom import json_bytes
+        from rowform import json_bytes
 
         payload = b'[{"id": 1}]'
         assert json_bytes(payload) is payload
 
     def test_str_is_encoded(self):
-        from sqlom import json_bytes
+        from rowform import json_bytes
 
         assert json_bytes('[{"id": 1}]') == b'[{"id": 1}]'
 
     def test_none_becomes_an_empty_json_array(self):
-        from sqlom import json_bytes
+        from rowform import json_bytes
 
         assert json_bytes(None) == b"[]"
 
     def test_anything_else_is_refused_with_a_pointer_to_the_fix(self):
-        from sqlom import json_bytes
+        from rowform import json_bytes
 
         # A driver that decoded json/jsonb into a Python object would land here;
         # failing loudly beats silently returning the wrong type.

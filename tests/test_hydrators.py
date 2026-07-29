@@ -2,7 +2,7 @@
 
 import pytest
 
-from sqlom import (
+from rowform import (
     SQLITE_CONVERTERS,
     Query,
     as_dict,
@@ -47,7 +47,7 @@ class TestSingleModelHydrators:
     def test_a_single_column_model_is_not_nested(self):
         """Same trailing-comma trap as the join hydrator: a one-column model used
         to hydrate its only field from the whole row tuple."""
-        from sqlom import Column, ModelMeta
+        from rowform import Column, ModelMeta
 
         class Single(metaclass=ModelMeta):
             __tablename__ = "single"

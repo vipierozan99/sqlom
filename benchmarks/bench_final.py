@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Bottom line: sqlom vs SQLAlchemy 2.0, both fully tuned. Postgres, one core.
+"""Bottom line: rowform vs SQLAlchemy 2.0, both fully tuned. Postgres, one core.
 
-Every optimization found in docs/BENCHMARKS.md is applied to sqlom *and* the
+Every optimization found in docs/BENCHMARKS.md is applied to rowform *and* the
 equivalent applied to SQLAlchemy, because a comparison where only one side is
 tuned is not a comparison.
 
 What SQLAlchemy gets, and why it matters:
 
 * `isolation_level="AUTOCOMMIT"`. By default SQLAlchemy wraps every request in
-  `BEGIN ... ROLLBACK`, so it sends **3 statements per request** against sqlom's
+  `BEGIN ... ROLLBACK`, so it sends **3 statements per request** against rowform's
   1 (verified with `log_statement=all`). A read-only endpoint does not need a
   transaction, and billing those two extra round trips as "ORM overhead" would be
-  dishonest. With AUTOCOMMIT it sends exactly 1, same as sqlom.
-* `pool_reset_on_return=None` — the analogue of sqlom's conditional reset.
-* uvloop, the same as sqlom gets.
+  dishonest. With AUTOCOMMIT it sends exactly 1, same as rowform.
+* `pool_reset_on_return=None` — the analogue of rowform's conditional reset.
+* uvloop, the same as rowform gets.
 * A statement object built once and reused, so SQLAlchemy's compiled-SQL cache
   hits every time.
-* `orjson` for serialization, the same encoder sqlom uses.
+* `orjson` for serialization, the same encoder rowform uses.
 
-sqlom gets: compiled batch hydrator, compiled orjson hook, conditional session
+rowform gets: compiled batch hydrator, compiled orjson hook, conditional session
 reset, uvloop.
 
 Both default and tuned configurations are reported, because "what you get if you
@@ -47,10 +47,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from benchmarks.benchargs import validate
 from benchmarks.models import UserORM, users_table
 from benchmarks.models import User
-from sqlom import DatabaseEngine, Query, compile_json_default
+from rowform import DatabaseEngine, Query, compile_json_default
 
-DSN = "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
-SA_DSN = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/sqlom_bench"
+DSN = "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
+SA_DSN = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/rowform_bench"
 
 
 def sa_engine(pool_size, tuned):
@@ -63,7 +63,7 @@ def sa_engine(pool_size, tuned):
     return create_async_engine(SA_DSN, **kwargs)
 
 
-async def make_sqlom(limit, pool_size, tuned):
+async def make_rowform(limit, pool_size, tuned):
     db = DatabaseEngine(dsn=DSN, conditional_reset=tuned,
                         min_size=pool_size, max_size=pool_size)
     await db.connect()
@@ -136,8 +136,8 @@ async def make_orm(limit, pool_size, tuned):
 
 
 CONTENDERS = [
-    ("sqlom (all optimizations)", make_sqlom, True),
-    ("sqlom (unoptimized engine)", make_sqlom, False),
+    ("rowform (all optimizations)", make_rowform, True),
+    ("rowform (unoptimized engine)", make_rowform, False),
     ("SQLAlchemy Core (tuned)", make_core, True),
     ("SQLAlchemy Core (default)", make_core, False),
     ("SQLAlchemy Core positional (tuned)", make_core_fast, True),
@@ -212,8 +212,8 @@ async def run_all(args):
     for base_name in ("SQLAlchemy ORM (tuned)", "SQLAlchemy ORM (default)",
                       "SQLAlchemy Core (tuned)"):
         b = results[base_name][0]
-        s = results["sqlom (all optimizations)"][0]
-        print(f"  sqlom vs {base_name:<28}{s / b:>6.2f}x")
+        s = results["rowform (all optimizations)"][0]
+        print(f"  rowform vs {base_name:<28}{s / b:>6.2f}x")
     return 0
 
 

@@ -1,7 +1,7 @@
 Why the absolute sqlite numbers moved, and why the ratios did not.
 
 Re-running the sqlite suite after the connection-hoisting fairness fix produced
-absolutes ~1.35x higher across EVERY contender -- including the sqlom paths,
+absolutes ~1.35x higher across EVERY contender -- including the rowform paths,
 whose timed code that fix does not touch. Two candidate causes: the change, or
 the machine. To distinguish them, the entire pre-change tree (library AND
 harness, via git stash) was checked out and run again on the same box in the same
@@ -14,7 +14,7 @@ originally published numbers. It does not: it reproduces today's.
   contender                     published    pre-change tree    post-fix
                               (earlier box)   (today's box)   (today's box)
   ------------------------------------------------------------------------
-  sqlom compiled (batch)         1.060 ms       1.389 ms        1.543 ms
+  rowform compiled (batch)         1.060 ms       1.389 ms        1.543 ms
   SQLAlchemy Core                4.252          5.196           5.240
   SQLAlchemy ORM                 6.647          9.127           9.132
   (means, median across trials)
@@ -46,11 +46,11 @@ Environment:
 
 approach                            mean ms   median      p95  resp/sec   vs ORM
 --------------------------------------------------------------------------------
-sqlom DB-side JSON                    0.530    0.519    0.608    1886.3   17.22x
-sqlom compiled (batch)                1.389    1.298    1.462     719.8    6.57x
+rowform DB-side JSON                    0.530    0.519    0.608    1886.3   17.22x
+rowform compiled (batch)                1.389    1.298    1.462     719.8    6.57x
 dataclass slots (passthrough)         1.445    1.297    1.787     691.8    6.31x
-sqlom compiled (per-row)              1.462    1.358    1.660     684.0    6.24x
+rowform compiled (per-row)              1.462    1.358    1.660     684.0    6.24x
 dataclass slots (orjson native)       1.839    1.636    2.420     543.9    4.96x
-sqlom reflective (hydrate)            3.455    3.231    4.371     289.5    2.64x
+rowform reflective (hydrate)            3.455    3.231    4.371     289.5    2.64x
 SQLAlchemy Core                       5.196    5.102    5.553     192.5    1.76x
 SQLAlchemy ORM                        9.127    7.080   28.025     109.6    1.00x

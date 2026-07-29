@@ -2,7 +2,7 @@
 
 import pytest
 
-from sqlom import Alias, Query, avg, count, max_, min_, sum_
+from rowform import Alias, Query, avg, count, max_, min_, sum_
 from tests.conftest import Author, Book, Tag
 
 

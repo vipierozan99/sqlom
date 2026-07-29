@@ -5,7 +5,7 @@ client pinned to cores [0]; postgres (pid 4578) -> cores 2,3
 rows/request: 100, pool: 10
 
 ==============================================================================
-sqlom (compiled)
+rowform (compiled)
 ==============================================================================
   sequential (c=1):  0.447 ms wall/req, 0.289 ms CPU/req, utilization 0.65
       -> 35% of a lone request's wall time is waiting on Postgres, not running Python
@@ -20,7 +20,7 @@ sqlom (compiled)
     library                  share    flat
     --------------------------------------
     asyncio / loop           44.4%   33.7%
-    sqlom (codegen)          28.8%   19.7%
+    rowform (codegen)          28.8%   19.7%
     asyncpg                  13.1%   12.4%
     orjson                    7.9%    7.9%
     stdlib / other            3.6%   24.1%
@@ -32,7 +32,7 @@ sqlom (compiled)
      /_//_/// /_\ / //_// / //_'/ //     Duration: 0.440     CPU time: 0.440
     /   _/                      v5.1.2
     
-    Profile at /home/user/sqlom/benchmarks/profile_pg.py:207
+    Profile at /home/user/rowform/benchmarks/profile_pg.py:207
     
     0.4398 _UnixSelectorEventLoop.run_forever  asyncio/base_events.py:594
     └─ 0.4393 _UnixSelectorEventLoop._run_once  asyncio/base_events.py:1859
@@ -101,7 +101,7 @@ SQLAlchemy async ORM
      /_//_/// /_\ / //_// / //_'/ //     Duration: 1.897     CPU time: 1.897
     /   _/                      v5.1.2
     
-    Profile at /home/user/sqlom/benchmarks/profile_pg.py:207
+    Profile at /home/user/rowform/benchmarks/profile_pg.py:207
     
     1.8966 MainThread  <thread>:140269334143104
     ├─ 0.9412 <module>  profile_pg.py:1
@@ -143,7 +143,7 @@ SQLAlchemy async ORM
 ==============================================================================
 WHERE THE DIFFERENCE GOES
 ==============================================================================
-  library                sqlom (compiled) SQLAlchemy async      delta
+  library                rowform (compiled) SQLAlchemy async      delta
   -------------------------------------------------------------------
   SQLAlchemy ORM                    0.000            0.608     +0.608
   benchmark harness                 0.005            0.258     +0.253
@@ -154,7 +154,7 @@ WHERE THE DIFFERENCE GOES
   SQLAlchemy codegen                0.000            0.017     +0.017
   asyncpg                           0.029            0.032     +0.003
   orjson                            0.018            0.003     -0.015
-  sqlom (codegen)                   0.065            0.000     -0.065
+  rowform (codegen)                   0.065            0.000     -0.065
   -------------------------------------------------------------------
   TOTAL CPU ms/req                  0.225            1.293     +1.068
   throughput (rps)                   4428              773      -3655
@@ -167,7 +167,7 @@ client pinned to cores [0]; postgres (pid 4578) -> cores 2,3
 rows/request: 100, pool: 10
 
 ==============================================================================
-sqlom (compiled)
+rowform (compiled)
 ==============================================================================
   sequential (c=1):  0.434 ms wall/req, 0.243 ms CPU/req, utilization 0.56
       -> 44% of a lone request's wall time is waiting on Postgres, not running Python
@@ -182,7 +182,7 @@ sqlom (compiled)
     library                  share    flat
     --------------------------------------
     asyncio / loop           39.9%   29.1%
-    sqlom (codegen)          33.3%   22.6%
+    rowform (codegen)          33.3%   22.6%
     asyncpg                  14.7%   13.9%
     orjson                    8.8%    8.8%
     benchmark harness         2.6%    2.6%

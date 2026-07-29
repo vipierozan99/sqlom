@@ -661,7 +661,7 @@ class Expression(Generic[T]):
         """`CAST(self AS type_name)` — SQLAlchemy's `col.cast(Type)`.
 
         `type_name` is a plain SQL type name (`"numeric"`, `"integer"`,
-        `"numeric(12, 9)"`), not a type *object* — sqlom has no type system to
+        `"numeric(12, 9)"`), not a type *object* — rowform has no type system to
         instantiate one from (see README). Pass `py_type` to also declare the
         Python type of the result, the role SQLAlchemy's type object plays for
         hydration/typing purposes.
@@ -769,7 +769,7 @@ class ScalarSubquery(Expression[T]):
     comparison, an arithmetic operand, a function argument, an `UPDATE`
     assignment, or — once `.label()`d, same rule as any other unnamed
     expression — a `SELECT`-list entry. The one-row, one-column requirement is
-    the database's to enforce, not sqlom's.
+    the database's to enforce, not rowform's.
     """
 
     __slots__ = ("query",)
@@ -922,7 +922,7 @@ class LiteralColumn(Expression[T]):
     Deliberately **not** validated the way `cast()`'s type name or
     `sql_function()`'s function name are: this is the explicit "I know what
     I'm doing" escape hatch, so whatever text it's given goes straight into
-    the SQL. It costs the one thing every other sqlom construct gives for
+    the SQL. It costs the one thing every other rowform construct gives for
     free — `sources()` returns nothing, so a fragment that happens to
     reference a table not actually joined in is never caught, unlike an
     ordinary column reference. That's the deliberate trade of using it.
@@ -1261,7 +1261,7 @@ class IsDistinctFrom(Predicate):
     `DISTINCT FROM` keyword at all, using its own null-safe `IS`/`IS NOT`
     instead — so, unlike everything else in this library (which stays
     permissive and dialect-less by default), this raises rather than
-    guessing if rendered with no dialect in effect. See `sqlom/dialects.py`.
+    guessing if rendered with no dialect in effect. See `rowform/dialects.py`.
     """
 
     __slots__ = ("left", "right", "negated")
@@ -1324,7 +1324,7 @@ class TextClause(Predicate):
     pattern requires a `:` not itself preceded by one.
 
     Like `literal_column()`, `sources()` returns nothing: raw SQL is exactly
-    that, and sqlom cannot know what it references.
+    that, and rowform cannot know what it references.
     """
 
     __slots__ = ("text", "_bindparams")
@@ -1429,7 +1429,7 @@ class BindParameter(Expression[T]):
 
     Not supported: `Query.limit()`/`.offset()` reject anything that isn't a
     plain `int` immediately, so a `bindparam()` cannot back either — there is
-    no deferred row count/offset in sqlom.
+    no deferred row count/offset in rowform.
     """
 
     __slots__ = ("key", "value", "py_type")

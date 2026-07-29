@@ -17,7 +17,7 @@ import sqlite3
 
 import pytest
 
-from sqlom import Alias, Column, Delete, ModelMeta, Query, Update, count
+from rowform import Alias, Column, Delete, ModelMeta, Query, Update, count
 
 from tests.conftest import Author, Book, Tag
 

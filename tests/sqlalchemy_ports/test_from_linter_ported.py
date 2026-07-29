@@ -8,18 +8,18 @@ transitively connected to the others by an equality (or a join's ON clause) — 
 an accidental cartesian product — and warns (or, with `assert_no_cartesian`,
 errors).
 
-sqlom has no post hoc linter and needs none: the same class of mistake is a
+rowform has no post hoc linter and needs none: the same class of mistake is a
 `ValueError` raised immediately at the *builder call* that introduces the
 disconnected reference, not discovered later by walking the finished SQL. That
 means most of the shapes `test_from_linter.py` constructs in order to lint them
-are not constructible in sqlom in the first place — `Query(a).where(b.col == 5)`
+are not constructible in rowform in the first place — `Query(a).where(b.col == 5)`
 with `b` never joined in raises on the spot (this is `test_plain_cartesian`'s
 shape); there is no `select_from()` that silently accepts an unrelated second
 table the way SQLAlchemy's does. So rather than porting the linter's internals
-(there is nothing here to port — sqlom's equivalent behaviour is already
+(there is nothing here to port — rowform's equivalent behaviour is already
 exercised throughout tests/test_query_sql.py, tests/test_aliases.py and this
 package's test_select_ported.py), this file pairs each of the linter's meaningful
-*scenarios* with sqlom's build-time equivalent, so the coverage is provable rather
+*scenarios* with rowform's build-time equivalent, so the coverage is provable rather
 than assumed.
 
 Writing that pairing surfaced a real bug, since `test_plain_cartesian`'s exact
@@ -30,29 +30,29 @@ other reference to an unjoined source already did. Fixed by
 `Query._check_entities()` (called once per render, alongside the existing
 `where()`/`order_by()`/`group_by()`/`join()` checks) — see the dedicated section
 below, which is the one part of this file that is a genuine regression test
-rather than a "SQLAlchemy would warn, sqlom already refuses" pairing.
+rather than a "SQLAlchemy would warn, rowform already refuses" pairing.
 
-One scenario has no sqlom equivalent at all, by design: `test_join_on_true` /
+One scenario has no rowform equivalent at all, by design: `test_join_on_true` /
 `test_join_on_true_muti_levels` show SQLAlchemy deliberately allowing an
 *explicit* cartesian product via `.join(b, true())` — an escape hatch for "yes, I
-really mean this". sqlom's `join()` always requires an ON clause that actually
+really mean this". rowform's `join()` always requires an ON clause that actually
 links the new source to one already in the query (see README §12, "the ON clause
 links no two tables, so it is a cross join"), and there is no way to spell "link
 them anyway" — not a gap, a deliberate design decision, pinned down below as a
 `ValueError` rather than silently left untested.
 
-Skipped entirely: `test_lateral_subqueries*` (sqlom has no LATERAL support, see
+Skipped entirely: `test_lateral_subqueries*` (rowform has no LATERAL support, see
 test_case_labels_windows_ported.py), `test_fn_valued` (table-valued functions,
-no sqlom equivalent), `test_dml` (the linter running over UPDATE/DELETE FROM —
+no rowform equivalent), `test_dml` (the linter running over UPDATE/DELETE FROM —
 already covered by tests/test_update_from.py's own qualification-rule tests),
 `TestLinterRoundTrip` (asserting the linter is wired into the real compiler and
 does not alter the SQL it lints — an internal SQLAlchemy compiler-pipeline
-concern with no sqlom analogue, since there is no separate lint pass to wire in).
+concern with no rowform analogue, since there is no separate lint pass to wire in).
 """
 
 import pytest
 
-from sqlom import Alias, Query, count
+from rowform import Alias, Query, count
 from tests.conftest import Author, Book, Tag
 
 
@@ -70,7 +70,7 @@ def sql_of(query, placeholder="$"):
 def test_where_reference_to_an_unjoined_table_is_rejected_immediately():
     # SQLAlchemy's test_plain_cartesian builds `select(a).where(b.col == 5)`
     # and only *later* discovers, by linting the compiled SQL, that `b` is
-    # disconnected from `a`. sqlom raises at the where() call itself.
+    # disconnected from `a`. rowform raises at the where() call itself.
     with pytest.raises(ValueError, match="not part of this query"):
         Query(Author).where(Book.title == "x")
 
@@ -90,7 +90,7 @@ def test_group_by_reference_to_an_unjoined_table_is_also_rejected():
 # Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_c_and_d_both_disconnected (SQLAlchemy 2.0.51)
 def test_a_second_join_still_disconnected_from_a_third_table_is_rejected():
     # Mirrors test_c_and_d_both_disconnected's shape (a joined to b, c and d
-    # both floating free) — but sqlom catches it at the join() call for
+    # both floating free) — but rowform catches it at the join() call for
     # whichever of c/d is added second, rather than after the fact: Tag's ON
     # clause links no source already in the query, so it is a cross join.
     with pytest.raises(ValueError, match="cross join"):
@@ -109,26 +109,26 @@ def test_a_second_join_still_disconnected_from_a_third_table_is_rejected():
 # --------------------------------------------------------------------------
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_selecting_two_unjoined_models_is_rejected():
     with pytest.raises(ValueError, match="not part of this query's FROM/JOIN"):
         Query(Author, Book).to_sql()
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_selecting_columns_from_two_unjoined_tables_is_rejected():
     with pytest.raises(ValueError, match="not part of this query"):
         Query(Author.name, Book.title).to_sql()
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_selecting_two_models_after_joining_them_still_works():
     # The fix must not disturb the ordinary, already-well-tested case.
     sql, _ = Query(Author, Book).join(Book, Book.author_id == Author.id).to_sql()
     assert "t_books.id" in sql and "t_authors.id" in sql
 
 
-# sqlom-original test (no SQLAlchemy equivalent)
+# rowform-original test (no SQLAlchemy equivalent)
 def test_count_of_a_model_still_supplies_its_own_from_with_nothing_else_selected():
     # count(Model) is meant to work with no join at all — it names its own
     # table (see README §6) — and must not be caught by the new check.
@@ -216,15 +216,15 @@ def test_a_fourth_disconnected_table_is_rejected_even_after_a_valid_chain():
 
 # --------------------------------------------------------------------------
 # test_join_on_true / test_join_on_true_muti_levels: SQLAlchemy's explicit
-# "yes, cartesian product, on purpose" escape hatch. sqlom has none.
+# "yes, cartesian product, on purpose" escape hatch. rowform has none.
 # --------------------------------------------------------------------------
 
 
 # Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_join_on_true (SQLAlchemy 2.0.51)
 def test_there_is_no_escape_hatch_for_an_intentional_cartesian_product():
-    # Unlike SQLAlchemy's join(b, true()), sqlom's join() always requires an
+    # Unlike SQLAlchemy's join(b, true()), rowform's join() always requires an
     # ON clause that actually links the new source to one already present —
     # a deliberate design decision (README §12), not an oversight. There is
-    # no sqlom spelling of "cross join, and I mean it".
+    # no rowform spelling of "cross join, and I mean it".
     with pytest.raises(ValueError, match="cross join"):
         Query(Author).join(Book, Author.active == True)  # noqa: E712

@@ -51,10 +51,10 @@ from typing import TYPE_CHECKING, Any, TypeVar, Union, overload
 
 from .dialects import POSTGRES
 from .expr import bind_params, has_deferred_params
+from .query import CompoundSelect, Query
 
 if TYPE_CHECKING:
     from .dml import _Statement
-    from .query import CompoundSelect, Query
 
 R = TypeVar("R")
 _Select = Union["Query[R]", "CompoundSelect[R]"]
@@ -64,7 +64,7 @@ _Select = Union["Query[R]", "CompoundSelect[R]"]
 # own answer. Reading it costs ~30 ns, which is why the guard on the hot path is
 # affordable at all.
 _ACTIVE: contextvars.ContextVar[Transaction | None] = contextvars.ContextVar(
-    "sqlom_active_transaction", default=None
+    "rowform_active_transaction", default=None
 )
 
 
@@ -110,8 +110,8 @@ class Transaction:
     async def _fetch_value(self, sql, params):
         raise NotImplementedError
 
-    async def execute(self, sql, *args):
-        """Run a statement on this transaction's connection.
+    async def _execute_raw(self, sql, *args):
+        """Run a raw SQL string on this transaction's connection.
 
         Positional `args` are bound as parameters — pass them rather than
         interpolating into `sql`.
@@ -123,6 +123,44 @@ class Transaction:
     ) -> AbstractAsyncContextManager[Transaction]:
         """A nested block, implemented as a savepoint."""
         raise NotImplementedError
+
+    # --- the unified entry point, shared -------------------------------------
+
+    @overload
+    async def execute(self, target: str, *args: Any) -> Any: ...
+
+    @overload
+    async def execute(self, target: _Select[R], **overrides: Any) -> list[R]: ...
+
+    @overload
+    async def execute(self, target: _Statement, **overrides: Any) -> Any: ...
+
+    async def execute(self, target: Any, *args: Any, **overrides: Any) -> Any:
+        """The same single entry point `engine.execute()` provides, on this
+        transaction's connection: a `select()`/`Query`/`CompoundSelect` (or a
+        RETURNING Insert/Update/Delete) hydrates and returns its rows — same
+        as `fetch_all()`. Calling this on an Insert/Update/Delete *with*
+        `returning()` still raises, asking you to use `fetch_all()` instead so
+        you get the rows back rather than silently discarding them.
+
+        A bare SQL string with positional `args` runs exactly as it always
+        has (`tx.execute("UPDATE ... WHERE id = $1", payer)`) — `**overrides`
+        is ignored in that form, since there is no `Query`/`Statement` to
+        resolve `bindparam()`s against.
+        """
+        if isinstance(target, str):
+            return await self._execute_raw(target, *args)
+        if isinstance(target, (Query, CompoundSelect)):
+            return await self.fetch_all(target, **overrides)
+        if getattr(target, "returns_rows", False):
+            raise ValueError(
+                "this statement has RETURNING, so it produces rows — use "
+                "fetch_all() to get them"
+            )
+        sql, params = target.to_sql(placeholder=self._placeholder, dialect=POSTGRES)
+        if has_deferred_params(params):
+            params = bind_params(params, **overrides)
+        return await self._execute_raw(sql, *params)
 
     # --- the read API, shared -----------------------------------------------
 

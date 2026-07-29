@@ -5,7 +5,7 @@ in. No database needed — these are the pieces that don't touch a connection.
 
 import pytest
 
-from sqlom.transaction import Transaction
+from rowform.transaction import Transaction
 
 
 @pytest.fixture

@@ -25,11 +25,11 @@
 # Cores: server 0, generator 1, Postgres 2-3.
 #
 # Usage:
-#   benchmarks/verify_concurrency.sh [--path /psy-sqlom] [--levels 1,2,4,8,16]
+#   benchmarks/verify_concurrency.sh [--path /psy-rowform] [--levels 1,2,4,8,16]
 
 set -euo pipefail
 
-PATH_UNDER_TEST="/psy-sqlom"
+PATH_UNDER_TEST="/psy-rowform"
 LEVELS="1,2,4,8,16"
 DURATION=6
 PORT=8000

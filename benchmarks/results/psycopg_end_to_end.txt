@@ -15,7 +15,7 @@ rps, median of the run's trials, ± (max-min)/median across them:
 endpoint       published       3 trials       7 trials  7, fresh proc
 ---------------------------------------------------------------------
 /noop               8419       8225 ±6%      7913 ±25%      8200 ±20%
-/psy-sqlom          1319       1377 ±5%      1151 ±11%      1321 ±48%
+/psy-rowform          1319       1377 ±5%      1151 ±11%      1321 ±48%
 /psy-core            638        677 ±4%       596 ±14%       617 ±14%
 /psy-orm             396       402 ±15%       356 ±17%       328 ±18%
 
@@ -30,7 +30,7 @@ either direction — and note that two of the six re-run ratios came out *higher
 than published, which is exactly why the range matters more than the best cell.
 
 Caveats specific to this re-run, all of which argue for reading the range:
-  * '7, fresh proc' had one /psy-sqlom trial at 727 rps against a median of
+  * '7, fresh proc' had one /psy-rowform trial at 727 rps against a median of
     1321 — a 48% spread. Kept rather than dropped: an outlier removed because
     it is inconvenient is a thumb on the scale, and its effect is visible in
     the ±48% rather than hidden.
@@ -46,7 +46,7 @@ Caveats specific to this re-run, all of which argue for reading the range:
 SEE ALSO: core_idiom.txt
 ------------------------
 Every "vs Core" figure in this file uses the `.mappings()` idiom that was later found
-to charge Core for a per-key `str()` cast sqlom never pays. Re-measured on the same
+to charge Core for a per-key `str()` cast rowform never pays. Re-measured on the same
 box with the positional idiom and byte-identical output, Core's throughput rises 42%
 (psycopg: 582 -> 825 rps) to 49% (asyncpg: 914 -> 1359 rps), and the corrected ratios
 are 1.57x (psycopg via FastAPI) and 1.79x (asyncpg via FastAPI). The tables above are

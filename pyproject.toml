@@ -1,5 +1,5 @@
 [project]
-name = "sqlom"
+name = "rowform"
 version = "0.1.0"
 description = "Zero-overhead async data layer for Python: a statically-typed query builder over asyncpg/psycopg, with compiled hydration and orjson serialization."
 readme = "README.md"
@@ -40,7 +40,7 @@ ignore_missing_imports = true
 # The library body is not annotated end to end yet; the public surface is. These
 # keep mypy from demanding annotations on internals while still checking the calls
 # that tests/typing/ makes against them.
-module = "sqlom.*"
+module = "rowform.*"
 disallow_untyped_defs = false
 check_untyped_defs = false
 
@@ -55,7 +55,7 @@ reportUnnecessaryTypeIgnoreComment = "error"
 enableTypeIgnoreComments = false
 # tests/typing/negative.py is deliberately a list of bare expressions.
 reportUnusedExpression = "none"
-include = ["sqlom", "tests/typing"]
+include = ["rowform", "tests/typing"]
 extraPaths = ["."]
 
 [dependency-groups]

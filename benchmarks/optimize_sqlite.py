@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """What is left to optimize once transport is gone?
 
-The sqlite profile (docs/BENCHMARKS.md §7) puts ~50% of the request in sqlom's
+The sqlite profile (docs/BENCHMARKS.md §7) puts ~50% of the request in rowform's
 generated code, ~30% in the sqlite3 driver and ~15% in orjson, and names three
 specific costs:
 
@@ -34,7 +34,7 @@ import orjson
 
 from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User
-from sqlom import (
+from rowform import (
     DATACLASS_DUMP_OPTION,
     SQLITE_CONVERTERS,
     Query,
@@ -49,7 +49,7 @@ COLS = ["id", "name", "email", "is_active"]
 # A slotted model whose hydrator uses a tuple lookup instead of calling bool().
 class UserTupleBool(metaclass=type(User)):
     __tablename__ = TABLE_NAME
-    from sqlom import Column as _C
+    from rowform import Column as _C
 
     id = _C(int)
     name = _C(str)

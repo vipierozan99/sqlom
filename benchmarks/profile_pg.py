@@ -19,8 +19,8 @@ Both are pointed at the same `request()` coroutine the load benchmark uses, so
 the breakdown corresponds to the throughput numbers in docs/BENCHMARKS.md.
 
 Usage:
-    python3 benchmarks/profile_pg.py --only sqlom --requests 2000
-    python3 benchmarks/profile_pg.py --compare            # sqlom vs async ORM
+    python3 benchmarks/profile_pg.py --only rowform --requests 2000
+    python3 benchmarks/profile_pg.py --compare            # rowform vs async ORM
 """
 
 import argparse
@@ -263,8 +263,8 @@ def compare(a, b):
 async def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dsn", default=DEFAULT_DSN)
-    p.add_argument("--only", default="sqlom")
-    p.add_argument("--compare", action="store_true", help="profile sqlom and the async ORM")
+    p.add_argument("--only", default="rowform")
+    p.add_argument("--compare", action="store_true", help="profile rowform and the async ORM")
     p.add_argument("--limit", type=int, default=100)
     p.add_argument("--pool-size", type=int, default=10)
     p.add_argument("--requests", type=int, default=2000, help="unprofiled timing requests")
@@ -297,7 +297,7 @@ async def main():
         print(f"client cores: {sorted(os.sched_getaffinity(0))} (not pinned by this script)")
     print(f"rows/request: {args.limit}, pool: {args.pool_size}")
 
-    names = ["sqlom", "async ORM"] if args.compare else [args.only]
+    names = ["rowform", "async ORM"] if args.compare else [args.only]
     results = []
     for n in names:
         results.append(await profile_one(n, args))

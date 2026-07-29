@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure the three optimizations the profile in docs/BENCHMARKS.md §5 points at.
 
-The profile said sqlom's own generated code is only ~15% of client CPU. The rest
+The profile said rowform's own generated code is only ~15% of client CPU. The rest
 is the event loop (38%), the asyncpg fetch (19%) and pool acquire/release (15%),
 so those are where the remaining throughput is. Each flag here targets one:
 
@@ -52,7 +52,7 @@ import orjson
 from benchmarks.benchargs import validate
 from benchmarks.bench_pg_load import DEFAULT_DSN
 from benchmarks.models import TABLE_NAME, User
-from sqlom import ASYNCPG_CONVERTERS, Query, compile_batch_hydrator, compile_json_default
+from rowform import ASYNCPG_CONVERTERS, Query, compile_batch_hydrator, compile_json_default
 
 
 async def noop_reset(con):

@@ -8,7 +8,7 @@ backwards produces objects whose every field is None, handed back as real rows.
 
 import pytest
 
-from sqlom import Query
+from rowform import Query
 from tests.conftest import Author, Book
 
 

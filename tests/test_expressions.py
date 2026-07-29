@@ -2,7 +2,7 @@
 
 import pytest
 
-from sqlom import (
+from rowform import (
     Query,
     case,
     count,

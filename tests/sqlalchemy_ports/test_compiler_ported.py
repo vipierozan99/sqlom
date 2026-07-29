@@ -1,10 +1,10 @@
 """Ported from SQLAlchemy's test/sql/test_compiler.py (SQL-generation subset
-relevant to query building), adapted to sqlom.
+relevant to query building), adapted to rowform.
 
 SQLAlchemy's `test_compiler.py` is ~8200 lines and covers far more than SELECT
 generation: DDL/CREATE TABLE, custom type compilation, per-dialect quoting for a
 dozen backends, sequences and column defaults, ORM-flavoured label styles, and
-the raw bind-parameter machinery behind all of it. sqlom has none of that surface
+the raw bind-parameter machinery behind all of it. rowform has none of that surface
 — no Table/MetaData/DDL, no reflection, no custom types, and only sqlite +
 postgres to worry about — so most of the file does not apply.
 
@@ -13,47 +13,47 @@ What follows targets the same *ideas* `SelectTest` in that file exercises
 `test_nested_conjunctions_short_circuit`, `test_joins`, `test_full_outer_join`,
 `test_from_subquery`, `test_where_subquery`, `test_exists`, `test_scalar_select`,
 `test_alias`, `test_distinct`, `test_limit_offset`, `test_calculated_columns`,
-`test_compound_selects`, `test_orderby_groupby`), re-expressed against sqlom's
+`test_compound_selects`, `test_orderby_groupby`), re-expressed against rowform's
 `Query`/`Alias`/`Subquery`/predicate API and asserted against exact `.to_sql()`
-output, sqlom house style.
+output, rowform house style.
 
 Skipped entirely, and why:
-  * DDLTest, SchemaTest — CREATE TABLE / constraint / index DDL. sqlom has no
+  * DDLTest, SchemaTest — CREATE TABLE / constraint / index DDL. rowform has no
     schema management at all.
   * CoercionTest, ResultMapTest — SQLAlchemy's internal type-coercion and
     result-column-name mapping machinery; there is no equivalent layer here.
   * test_cast*, custom-type sections — Numeric/Enum/etc. type compilation.
-    sqlom columns carry a plain `py_type`, not a compiled SQL type.
+    rowform columns carry a plain `py_type`, not a compiled SQL type.
   * Dialect-specific quoting of reserved identifiers, Oracle/MSSQL/Firebird
-    spellings, `test_paramstyles`, `test_anon_param_name_on_keys` — sqlom only
+    spellings, `test_paramstyles`, `test_anon_param_name_on_keys` — rowform only
     ever renders sqlite `?`, psycopg `%s`, or asyncpg `$n`, with no identifier
     quoting or anonymous-label generation.
   * LABEL_STYLE_* / `test_use_labels*` / `test_dupe_columns*` /
     `test_overlapping_labels*` — SQLAlchemy's auto-disambiguating label styles
-    for ORM row mapping. sqlom has no such mode; a caller names collisions away
+    for ORM row mapping. rowform has no such mode; a caller names collisions away
     with `.label()`.
   * `test_for_update`, `test_hints`, `test_statement_hints`, `prefix_with` —
     locking clauses, optimizer hints and statement prefixes: no equivalent API.
   * BindParameterTest, CrudParamOverlapTest — SQLAlchemy's named/expanding
-    bindparam mechanics and INSERT/UPDATE param-overlap handling; sqlom binds
+    bindparam mechanics and INSERT/UPDATE param-overlap handling; rowform binds
     everything positionally and DML is out of scope for this file (see
     test_dml.py).
   * KwargPropagationTest, ExecutionOptionsTest, StringifySpecialTest,
     UnsupportedTest, OmitFromStatementsTest — compiler-internals plumbing with
-    no user-facing sqlom equivalent.
+    no user-facing rowform equivalent.
   * `test_over_framespec`/`test_over_invalid_framespecs`/`test_over_within_group`
     and most window-function detail — already covered thoroughly in
     tests/test_expressions.py, not re-ported here.
   * CTE-specific compilation — already covered in tests/test_ctes.py.
   * `select(table1, table2)` with no join (an implicit cross join via a comma
-    in FROM) — sqlom's `join()` always requires an explicit ON clause linking
+    in FROM) — rowform's `join()` always requires an explicit ON clause linking
     the new source to one already in the query; there is no way to express an
     unconditional cross join, so that shape of test_table_select has no port.
 """
 
 import pytest
 
-from sqlom import (
+from rowform import (
     Alias,
     Query,
     and_,
@@ -160,15 +160,15 @@ class TestWhereClause:
         assert sql.endswith("WHERE id IN ($1, $2, $3)")
         assert params == (10, 11, 12)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_in_empty_list_renders_false_rather_than_invalid_sql(self):
         sql, params = Query(Book).where(Book.id.in_([])).to_sql()
         assert sql.endswith("WHERE FALSE")
         assert params == ()
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_between_equivalent_using_and_of_two_comparisons(self):
-        # sqlom has no dedicated BETWEEN operator; the equivalent is spelled with
+        # rowform has no dedicated BETWEEN operator; the equivalent is spelled with
         # and_() over two range comparisons.
         sql, params = (Query(Book).where(and_(Book.id >= 10, Book.id <= 12))
                        .to_sql(placeholder="$"))
@@ -230,7 +230,7 @@ class TestBooleanComposition:
         sql, _ = Query(Book).where(~(Book.id == 1)).to_sql(placeholder="$")
         assert sql.endswith("WHERE NOT (id = $1)")
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_python_bitwise_precedence_trap_without_parens(self):
         # `&`/`|` bind tighter than the comparison operators in Python, so an
         # un-parenthesised `Book.id > 1 & Book.id < 9` does not compare and then
@@ -393,13 +393,13 @@ class TestSubqueries:
 
 # --------------------------------------------------------------------------
 # CASE expressions — no direct test_compiler.py section covers CASE (its
-# grammar is exercised via ORM/type tests there); ported against sqlom's own
+# grammar is exercised via ORM/type tests there); ported against rowform's own
 # `case()` since it is squarely SQL-generation.
 # --------------------------------------------------------------------------
 
 
 class TestCaseExpression:
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_case_when_then_else(self):
         sql, params = (
             Query(Book.id, case((Book.author_id == 1, "ada"), else_="other"))
@@ -410,7 +410,7 @@ class TestCaseExpression:
         )
         assert params == (1, "ada", "other")
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_case_multiple_whens_no_else(self):
         sql, params = (
             Query(Book.id, case((Book.author_id == 1, "a"), (Book.author_id == 2, "b")))
@@ -422,7 +422,7 @@ class TestCaseExpression:
         )
         assert params == (1, "a", 2, "b")
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_case_with_column_values(self):
         sql, params = (
             Query(Book.id, case((Book.author_id == 1, Book.title), else_=Book.id))
@@ -625,9 +625,9 @@ class TestArithmeticExpressions:
 
 
 class TestCast:
-    """Ported from test_compiler.py's test_cast: sqlom's `cast()` takes a
+    """Ported from test_compiler.py's test_cast: rowform's `cast()` takes a
     plain SQL type-name string rather than a type object (see cast()'s
-    docstring), since sqlom has no type system to instantiate one from."""
+    docstring), since rowform has no type system to instantiate one from."""
 
     # Ported from test/sql/test_compiler.py::SelectTest.test_cast (SQLAlchemy 2.0.51)
     def test_cast_function_form(self):
@@ -648,7 +648,7 @@ class TestCast:
 
     # Ported from test/sql/test_compiler.py::SelectTest.test_cast (SQLAlchemy 2.0.51)
     def test_cast_a_literal_value(self):
-        # Unlike SQLAlchemy's select(cast(1234, Text)), sqlom always needs a
+        # Unlike SQLAlchemy's select(cast(1234, Text)), rowform always needs a
         # real table in FROM (see Query()'s own "no table to select from"
         # error) — there is no bare-value SELECT with no source.
         sql, params = Query(Book.id, cast(1234, "text")).to_sql(placeholder="$")
@@ -663,12 +663,12 @@ class TestCast:
         assert sql.endswith('WHERE CAST(id AS text) = $1')
         assert params == ("7",)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_cast_rejects_a_fragment_as_the_type_name(self):
         with pytest.raises(ValueError, match="not a valid SQL type name"):
             cast(Book.id, "text); DROP TABLE t_books; --")
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_cast_end_to_end(self, run_query):
         rows = run_query(Query(cast(Book.id, "text")).where(Book.id == 10))
         assert rows == [("10",)]
@@ -685,24 +685,24 @@ class TestLiteralsAndKeywords:
         assert sql == "SELECT id, $1 FROM t_books"
         assert params == (1,)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_literal_declares_its_py_type_from_the_value_by_default(self):
         assert literal("x").py_type is str
         assert literal(1).py_type is int
         assert literal(1, py_type=float).py_type is float
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_true_false_null_render_as_bare_keywords(self):
         sql, params = Query(Book.id, true(), false(), null()).to_sql()
         assert sql == "SELECT id, TRUE, FALSE, NULL FROM t_books"
         assert params == ()
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_true_and_false_end_to_end(self, run_query):
         rows = run_query(Query(Book.id, true(), false()).where(Book.id == 10))
         assert rows == [(10, 1, 0)]  # sqlite has no bool type; 1/0 on the wire
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_null_used_in_a_case_arm(self):
         sql, params = Query(case((Book.id > 10, null()), else_="x")).to_sql(
             placeholder="$"
@@ -717,19 +717,19 @@ class TestLiteralColumn:
     `sql_function()`'s identifier regex, there is no validation at all
     here). Ported from test/sql/test_compiler.py's general usage of
     literal_column() as a plain value/column stand-in throughout that file
-    (e.g. lines 322-481), adapted to sqlom idiom rather than any single test
+    (e.g. lines 322-481), adapted to rowform idiom rather than any single test
     function — SQLAlchemy has no isolated "test literal_column renders
     verbatim" test of its own, since it is used as a building block
     everywhere else in that file instead.
     """
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_renders_verbatim_in_a_select_list(self):
         sql, params = Query(Book.id, literal_column("count(*) + 1")).to_sql()
         assert sql == "SELECT id, count(*) + 1 FROM t_books"
         assert params == ()
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_composes_with_ordinary_comparison_operators(self):
         sql, params = (
             Query(Book).where(literal_column("1") == Book.id).to_sql(placeholder="$")
@@ -737,7 +737,7 @@ class TestLiteralColumn:
         assert sql == "SELECT id, author_id, title FROM t_books WHERE 1 = id"
         assert params == ()
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_composes_with_arithmetic(self):
         # literal_column() alone selects nothing to name a FROM table from
         # (sources() is empty) — pair it with a real column, same as any
@@ -745,12 +745,12 @@ class TestLiteralColumn:
         sql, _ = Query(Book.id, literal_column("1") + literal_column("2")).to_sql()
         assert sql == "SELECT id, (1 + 2) FROM t_books"
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_py_type_is_declarable(self):
         assert literal_column("count(*)", py_type=int).py_type is int
         assert literal_column("count(*)").py_type is None
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_no_validation_at_all_unlike_cast_or_sql_function(self):
         # Deliberately accepts anything, including something that would be
         # rejected everywhere else in this library that takes a fragment.
@@ -758,7 +758,7 @@ class TestLiteralColumn:
         sql, _ = Query(Book.id, weird).to_sql()
         assert "DROP TABLE" in sql  # exactly the point: nothing stops this
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_an_unjoined_table_reference_is_not_caught(self):
         # The deliberate cost of the escape hatch: sources() returns nothing,
         # so unlike a real ColumnExpr this is never validated against the

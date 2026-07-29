@@ -4,15 +4,15 @@ tree — proven here to actually reach deeply nested positions, since the
 naive "hang it off the placeholder callable" alternative design does not
 (`Query._render()` re-wraps the placeholder generator in a bare closure on
 every render, which would silently lose an attribute at the very first
-WHERE/JOIN/GROUP BY/ORDER BY hop — see sqlom/dialects.py's module docstring).
+WHERE/JOIN/GROUP BY/ORDER BY hop — see rowform/dialects.py's module docstring).
 
-sqlom-original tests (no SQLAlchemy equivalent) — this is sqlom's own
+rowform-original tests (no SQLAlchemy equivalent) — this is rowform's own
 propagation mechanism, not a SQLAlchemy-ported behaviour.
 """
 
-from sqlom import POSTGRES, Query, SQLITE, exists
-from sqlom.dialects import current_dialect
-from sqlom.expr import Expression, _bare
+from rowform import POSTGRES, Query, SQLITE, exists
+from rowform.dialects import current_dialect
+from rowform.expr import Expression, _bare
 from tests.conftest import Author, Book
 
 
@@ -55,28 +55,28 @@ def _build_query(sink):
 
 
 class TestPropagation:
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_dialect_reaches_every_nested_position(self):
         sink = []
         _build_query(sink).to_sql(dialect=POSTGRES)
         assert len(sink) == 5
         assert all(dialect is POSTGRES for dialect in sink)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_a_different_dialect_reaches_every_position_too(self):
         sink = []
         _build_query(sink).to_sql(dialect=SQLITE)
         assert len(sink) == 5
         assert all(dialect is SQLITE for dialect in sink)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_no_dialect_means_current_dialect_is_none_everywhere(self):
         sink = []
         _build_query(sink).to_sql()
         assert len(sink) == 5
         assert all(dialect is None for dialect in sink)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_current_dialect_is_none_again_after_the_render_finishes(self):
         sink = []
         query = _build_query(sink)
@@ -85,7 +85,7 @@ class TestPropagation:
 
 
 class TestCaching:
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_different_dialects_do_not_collide_in_the_cache(self):
         query = Query(Author).where(Author.id == 1)
         default_sql, _ = query.to_sql()
@@ -96,7 +96,7 @@ class TestCaching:
         assert sqlite_sql == default_sql
         assert len(query._sql_cache) == 3
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_repeat_calls_hit_the_cache_rather_than_growing_it(self):
         query = Query(Author).where(Author.id == 1)
         query.to_sql(dialect=POSTGRES)
@@ -105,7 +105,7 @@ class TestCaching:
         query.to_sql(dialect=SQLITE)
         assert len(query._sql_cache) == 2
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_explicit_placeholder_overrides_the_dialect_default(self):
         # dialect=POSTGRES defaults to "$", but an explicit placeholder wins.
         query = Query(Author).where(Author.id == 1)

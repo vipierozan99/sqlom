@@ -39,7 +39,7 @@ import psycopg
 
 from benchmarks.benchargs import validate
 
-DSN = "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
+DSN = "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
 SQL = "SELECT id,name,email,is_active FROM users WHERE is_active=%s AND id>%s LIMIT %s"
 MULTI = "SELECT pg_advisory_unlock_all(); CLOSE ALL; UNLISTEN *; RESET ALL;"
 SPLIT = ["SELECT pg_advisory_unlock_all()", "CLOSE ALL", "UNLISTEN *", "RESET ALL"]

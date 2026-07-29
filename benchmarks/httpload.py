@@ -11,7 +11,7 @@ Pin the generator away from the server, or you are measuring the two competing
 for CPU rather than the server's throughput.
 
 Usage:
-    taskset -c 1 python3 benchmarks/httpload.py --path /sqlom --connections 8 --duration 5
+    taskset -c 1 python3 benchmarks/httpload.py --path /rowform --connections 8 --duration 5
 """
 
 import argparse
@@ -144,7 +144,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
-    p.add_argument("--path", default="/sqlom")
+    p.add_argument("--path", default="/rowform")
     p.add_argument("--connections", type=int, default=8)
     p.add_argument("--duration", type=float, default=5.0)
     p.add_argument("--warmup", type=float, default=1.0)

@@ -33,7 +33,7 @@ Usage (server on core 0, locust on core 1, Postgres on cores 2-3):
         --host http://127.0.0.1:8000 -u 8 -r 8 -t 15s --only-summary
 
 Environment:
-    LOCUST_PATH       endpoint to hit (default /psy-sqlom)
+    LOCUST_PATH       endpoint to hit (default /psy-rowform)
     LOCUST_EXPECT     expected response body length; 0 disables the check
 """
 
@@ -41,7 +41,7 @@ import os
 
 from locust import FastHttpUser, constant, events, task
 
-PATH = os.environ.get("LOCUST_PATH", "/psy-sqlom")
+PATH = os.environ.get("LOCUST_PATH", "/psy-rowform")
 EXPECT = int(os.environ.get("LOCUST_EXPECT", "0"))
 
 

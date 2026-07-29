@@ -7,7 +7,7 @@ every other assertion pass.
 
 from typing import Any, assert_type
 
-from sqlom import (
+from rowform import (
     CTE,
     Aggregate,
     Alias,
@@ -51,6 +51,7 @@ from sqlom import (
     rank,
     recursive_cte,
     row_number,
+    select,
     sql_function,
     sum_,
 )
@@ -190,6 +191,14 @@ async def fetching(db: DatabaseEngine) -> None:
     assert_type(await db.fetch_json(Query(Author)), bytes)
 
 
+async def executing_sqlalchemy_style(db: DatabaseEngine) -> None:
+    # execute() is the single entry point: a select(), like SQLAlchemy's
+    # `conn.execute(stmt)`, hydrates and returns its rows.
+    authors = await db.execute(select(Author))
+    assert_type(authors, list[Author])
+    assert_type(authors[0].name, str)
+
+
 async def in_a_transaction(db: DatabaseEngine) -> None:
     async with db.transaction() as tx:
         assert_type(await tx.fetch_all(Query(Author)), list[Author])
@@ -199,6 +208,7 @@ async def in_a_transaction(db: DatabaseEngine) -> None:
             list[tuple[Author, str]],
         )
         assert_type(await tx.fetch_json(Query(Author)), bytes)
+        assert_type(await tx.execute(select(Author)), list[Author])
         async with tx.transaction() as savepoint:
             assert_type(await savepoint.fetch_all(Query(Book)), list[Book])
 

@@ -133,7 +133,7 @@ def compile_join_hydrator(entities, converters=None, wrap=True):
     all-NULL columns for a missing match. Those become `None` rather than an
     object with every field set to None, which is what SQLAlchemy does and what
     calling code expects from a left join. The test is "every selected column of
-    this entity is NULL", since sqlom models declare no primary key to test
+    this entity is NULL", since rowform models declare no primary key to test
     instead — so an entity whose columns are *all* genuinely NULL in the data
     hydrates as None. Give such a query at least one NOT NULL column, or select
     it without the outer join.
@@ -217,7 +217,7 @@ def compile_join_hydrator(entities, converters=None, wrap=True):
 def compile_json_default(model_cls):
     """Build a specialized `orjson(default=...)` hook for `model_cls`.
 
-    sqlom models aren't stdlib dataclasses, so orjson can't introspect them
+    rowform models aren't stdlib dataclasses, so orjson can't introspect them
     and calls back into Python once per object. Making that callback a
     straight-line dict literal is meaningfully cheaper than a comprehension
     over the column map.

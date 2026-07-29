@@ -18,7 +18,7 @@ Results: benchmarks/results/row_access.txt
 """
 import asyncio, sqlite3, statistics, sys, tempfile, time
 from pathlib import Path
-sys.path.insert(0, "/home/user/sqlom")
+sys.path.insert(0, "/home/user/rowform")
 
 ROWS, N = 1000, 300
 FIELDS = ["id", "name", "email", "is_active"]
@@ -59,7 +59,7 @@ with tempfile.TemporaryDirectory() as tmp:
           lambda: [(r[0], r[1], r[2], r[3]) for r in rowobjs])
     c.close()
 
-DSN = "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
+DSN = "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
 SQL = f"SELECT id, name, email, is_active FROM users LIMIT {ROWS}"
 
 

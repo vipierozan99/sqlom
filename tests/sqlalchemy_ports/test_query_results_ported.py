@@ -2,7 +2,7 @@
 specifically the parts that execute a query against a real database and
 assert the *correct objects come back*, not the ORM machinery around them.
 
-sqlom has no ORM: no `Session`, no identity map, no unit of work, no
+rowform has no ORM: no `Session`, no identity map, no unit of work, no
 `relationship()`/lazy or eager loading, no mapper configuration. It compiles
 a per-model `row -> object` function once and hydrates rows positionally
 (README "Architecture Under the Hood") — closer to a dataclass row-mapper
@@ -14,21 +14,21 @@ configuration — is out of scope by design, not an oversight.
 
 `test_query.py`'s fixtures (`User`/`Address`/`Order`, from `_fixtures.py`)
 are related via `relationship()` and joined in these tests via
-`User.addresses` (relationship-based join syntax). sqlom has no such syntax
-— every join here is translated to sqlom's explicit `.join(Book, Book.
+`User.addresses` (relationship-based join syntax). rowform has no such syntax
+— every join here is translated to rowform's explicit `.join(Book, Book.
 author_id == Author.id)` form, using the existing `Author`/`Book`/`Tag`
 fixtures (tests/conftest.py) — a one-to-many chain, same shape as User/
 Address, just smaller (4 authors, 4 books, 2 tags).
 
 Skipped entirely, and why:
   * `GetTest` — every test in it is `Session.get(Model, pk)`, an identity-map
-    primary-key lookup (including composite-PK variants). sqlom has no
+    primary-key lookup (including composite-PK variants). rowform has no
     session and no `.get()` shortcut at all; every query is built explicitly
     via `Query(Model).where(...)`.
   * `RowTupleTest`, most of `RowLabelingTest` — custom column keys via
     imperative mapper configuration (`properties={"uname": ...}`), legacy
     `Row`/`LegacyRow` distinctions, and mapper `column_descriptions`
-    introspection. sqlom's models are plain `ModelMeta`/`@model` classes with
+    introspection. rowform's models are plain `ModelMeta`/`@model` classes with
     no separate "mapped attribute name" vs. "column name" concept to test.
   * `OperatorTest`, `ExpressionTest`, `ComparatorTest` — pure SQL-generation
     tests already covered by tests/sqlalchemy_ports/test_operators_functions_ported.py
@@ -37,24 +37,24 @@ Skipped entirely, and why:
   * `ExistsTest` — all SQL-compilation assertions (`self.assert_compile`),
     no execution/result-correctness content to port.
   * `test_select_with_bindparam_offset_limit*` (FilterTest) — `bindparam()`
-    cannot back `Query.limit()`/`.offset()` in sqlom (see
+    cannot back `Query.limit()`/`.offset()` in rowform (see
     tests/sqlalchemy_ports/test_bindparam_ported.py's `TestOutOfScope`);
     both reject anything that isn't a plain `int` immediately.
   * `CountTest.test_count_char`/`test_loader_options_ignored` — asserts
     exact nested-subquery SQL text for `.count()`, an ORM `Query`-specific
-    method sqlom doesn't have (sqlom counts via `count()`/`count(Model)`
+    method rowform doesn't have (rowform counts via `count()`/`count(Model)`
     directly), and loader-options are an eager-loading concept.
-  * `SetOpsWDeferredTest` — deferred-column loading, no sqlom equivalent.
+  * `SetOpsWDeferredTest` — deferred-column loading, no rowform equivalent.
 """
 
-from sqlom import Query, count, literal, literal_column
+from rowform import Query, count, literal, literal_column
 from tests.conftest import Author, Book
 
 
 # --------------------------------------------------------------------------
 # Single entity vs. multiple entities/columns — test_query.py's
 # OnlyReturnTuplesTest tests an ORM Query's `.only_return_tuples()`/`.tuples()`
-# toggle; sqlom has no such toggle because it isn't needed — the shape is
+# toggle; rowform has no such toggle because it isn't needed — the shape is
 # already exactly determined by what was selected (Query.is_multi_entity),
 # and this is what that distinction looks like end to end.
 # --------------------------------------------------------------------------
@@ -112,7 +112,7 @@ class TestFilterResults:
         authors = run_query(Query(Author).where(Author.id > 2).order_by(Author.id))
         assert [a.name for a in authors] == ["carol", "dan"]
 
-    # sqlom-original test (no SQLAlchemy equivalent) — the boolean-column
+    # rowform-original test (no SQLAlchemy equivalent) — the boolean-column
     # counterpart of the id-comparison filter above.
     def test_a_boolean_column_filter_returns_exactly_the_matching_instances(
         self, run_query
@@ -122,7 +122,7 @@ class TestFilterResults:
 
 
 # --------------------------------------------------------------------------
-# Counting rows — test_query.py::CountTest. sqlom has no ORM Query.count();
+# Counting rows — test_query.py::CountTest. rowform has no ORM Query.count();
 # the equivalent is executing count()/count(Model) and reading the scalar
 # back, which is what these check.
 # --------------------------------------------------------------------------
@@ -142,7 +142,7 @@ class TestCountResults:
     def test_count_of_an_unconditional_cross_join_is_the_full_product(
         self, run_query
     ):
-        # select_from() is sqlom's equivalent of SQLAlchemy's
+        # select_from() is rowform's equivalent of SQLAlchemy's
         # `.join(Address, true())` unconditional-join escape hatch (see
         # test_select_ported.py's select_from() section).
         rows = run_query(Query(count(Author)).select_from(Book))

@@ -15,7 +15,7 @@ These prove Postgres agrees — which is not a formality for this batch:
 
 import pytest
 
-from sqlom import (
+from rowform import (
     Column,
     Delete,
     Insert,
@@ -53,7 +53,7 @@ class Other(metaclass=ModelMeta):
 
 @pytest.fixture(params=["asyncpg", "psycopg"])
 async def engine(request, pg_schema):
-    from sqlom import DatabaseEngine, PsycopgEngine
+    from rowform import DatabaseEngine, PsycopgEngine
 
     if request.param == "asyncpg":
         eng = DatabaseEngine(dsn=pg_schema, min_size=1, max_size=4)

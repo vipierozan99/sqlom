@@ -1,6 +1,6 @@
-# ⚡ sqlom: Zero-Overhead Async Data Layer for Python
+# ⚡ rowform: Zero-Overhead Async Data Layer for Python
 
-`sqlom` is a data access library concept for Python built for high-throughput HTTP services (FastAPI, Sanic, Granian). It aims to reduce ORM overhead by skipping session tracking, identity maps, and dynamic class reflection, pairing a **descriptor-driven query builder** with an **`asyncpg`-backed execution engine** that hydrates rows into `@dataclass(slots=True)`-style objects and serializes them via `orjson`.
+`rowform` is a data access library concept for Python built for high-throughput HTTP services (FastAPI, Sanic, Granian). It aims to reduce ORM overhead by skipping session tracking, identity maps, and dynamic class reflection, pairing a **descriptor-driven query builder** with an **`asyncpg`-backed execution engine** that hydrates rows into `@dataclass(slots=True)`-style objects and serializes them via `orjson`.
 
 It relies on pure Python plus existing C-extensions (`asyncpg` + `orjson`) rather than a custom Rust/FFI layer.
 
@@ -36,7 +36,7 @@ generation, validation, and joins end-to-end against sqlite — so most of the s
 runs anywhere in about a tenth of a second. Engine and transaction tests need
 PostgreSQL and **skip with a reason** when it is unreachable; pass `--pg-required`
 to turn that skip into a failure where a server is expected. Point them elsewhere
-with `SQLOM_TEST_DSN`.
+with `ROWFORM_TEST_DSN`.
 
 Both PostgreSQL engines are parameterised in the engine and transaction tests, so
 a feature cannot end up quietly asyncpg-only — `PsycopgEngine` began life with no
@@ -126,20 +126,20 @@ python3 -m pytest tests/test_typing.py
 
 ## 📦 Installation
 
-Not packaged and not on PyPI — `pip install sqlom` installs something else, or
+Not packaged and not on PyPI — `pip install rowform` installs something else, or
 nothing. This is a benchmarked concept, so the only supported way to run it is from
 a clone:
 
 ```bash
-git clone https://github.com/vipierozan99/sqlom && cd sqlom
+git clone https://github.com/vipierozan99/rowform && cd rowform
 uv sync --extra asyncpg --extra psycopg --extra orjson   # or --all-extras
-uv run python -c "from sqlom import Query; print('ok')"
+uv run python -c "from rowform import Query; print('ok')"
 ```
 
 Without `uv`: `pip install orjson` (required for JSON serialization), `pip install
 asyncpg` (for `DatabaseEngine`), `pip install "psycopg[binary]" psycopg-pool` (for
-`PsycopgEngine`) — each is an optional extra (`sqlom[orjson]`, `sqlom[asyncpg]`,
-`sqlom[psycopg]`) once installed from a clone.
+`PsycopgEngine`) — each is an optional extra (`rowform[orjson]`, `rowform[asyncpg]`,
+`rowform[psycopg]`) once installed from a clone.
 
 To reproduce the benchmarks as well, see
 [docs/METHODOLOGY.md](docs/METHODOLOGY.md#reproducing).
@@ -151,10 +151,28 @@ To reproduce the benchmarks as well, see
 ### 0. If you already know SQLAlchemy
 
 The query-building surface is deliberately named after SQLAlchemy Core, so most of
-what you already know transfers directly:
+what you already know transfers directly — including the two-letter import and the
+single `execute()` entry point:
 
 ```python
-from sqlom import select, insert, update, delete, and_, or_, not_, func
+import rowform as rf
+
+q = rf.select(User).where(User.active == True)
+results = await conn.execute(q)   # list[User] — same call for reads and writes
+```
+
+`conn` is a `DatabaseEngine`/`PsycopgEngine` (or a `Transaction` from
+`db.transaction()`) — see [§2](#2-query--serialization-fastapi) for the full
+setup. `execute()` hydrates and returns rows for a `select()`/`Query` or a
+RETURNING `insert()`/`update()`/`delete()`, exactly as `fetch_all()` does (still
+available, if you'd rather name the row-returning case explicitly); anything else
+— a write with no `returning()` — runs and returns the driver's own status
+report instead.
+
+The rest of the builder surface, spelled out:
+
+```python
+from rowform import select, insert, update, delete, and_, or_, not_, func
 
 select(User).where(User.active == True).order_by(User.id.desc())
 insert(User).values(name="ada")
@@ -197,16 +215,16 @@ tuple_(User.id, User.name) == (1, "ada")                # row-value comparison
 tuple_(User.id, User.name).in_(select(Post.user_id, Post.title))  # ...against a subquery too
 ```
 
-`select`/`insert`/`update`/`delete` are plain function aliases for `Query`/`Insert`/`Update`/`Delete` — construct with whichever reads better; `Query(User)` and `select(User)` are the exact same object. `Update.values()` is an alias for `.set()` (SQLAlchemy spells both `Insert` and `Update`'s assignment method `.values()`); `.outerjoin()`/`outer_join()` and `.join(..., isouter=True, full=True)` are equivalent spellings of the same four join kinds described in [§3](#3-joins-and-selecting-more-than-one-model); `add_cte()` is SQLAlchemy's name for `with_()` (its `nest_here=` isn't supported — sqlom always hoists every CTE to the outermost statement, and passing it raises rather than silently doing something else). `CompoundSelect` (what `union()`/`intersect()`/etc. return) has the same `.cte()`/`.subquery()`/`.with_()`/`.add_cte()` and every one of the six set operators, including chaining a further `intersect_all`/`except_all`. What doesn't carry over: there is no `Table`/`MetaData`/reflection/DDL layer underneath — columns come from a model class (§1 below), not a schema object, which is the one deliberate divergence the rest of this README explains.
+`select`/`insert`/`update`/`delete` are plain function aliases for `Query`/`Insert`/`Update`/`Delete` — construct with whichever reads better; `Query(User)` and `select(User)` are the exact same object. `Update.values()` is an alias for `.set()` (SQLAlchemy spells both `Insert` and `Update`'s assignment method `.values()`); `.outerjoin()`/`outer_join()` and `.join(..., isouter=True, full=True)` are equivalent spellings of the same four join kinds described in [§3](#3-joins-and-selecting-more-than-one-model); `add_cte()` is SQLAlchemy's name for `with_()` (its `nest_here=` isn't supported — rowform always hoists every CTE to the outermost statement, and passing it raises rather than silently doing something else). `CompoundSelect` (what `union()`/`intersect()`/etc. return) has the same `.cte()`/`.subquery()`/`.with_()`/`.add_cte()` and every one of the six set operators, including chaining a further `intersect_all`/`except_all`. What doesn't carry over: there is no `Table`/`MetaData`/reflection/DDL layer underneath — columns come from a model class (§1 below), not a schema object, which is the one deliberate divergence the rest of this README explains.
 
-One further real difference worth calling out because it was a bug until it wasn't: **every selected entity's source is checked against the join graph, same as `where()`/`order_by()`/`group_by()`/`join()` already were.** `Query(User, Post)` with no `.join()` at all now raises `ValueError` rather than silently rendering a `FROM` clause that dropped `Post` — SQLAlchemy would technically accept the implicit-cross-join reading of that shape (with its own linter only *warning*, and only if you opt in), sqlom refuses it outright, consistent with never allowing an unconditional cross join (§12).
+One further real difference worth calling out because it was a bug until it wasn't: **every selected entity's source is checked against the join graph, same as `where()`/`order_by()`/`group_by()`/`join()` already were.** `Query(User, Post)` with no `.join()` at all now raises `ValueError` rather than silently rendering a `FROM` clause that dropped `Post` — SQLAlchemy would technically accept the implicit-cross-join reading of that shape (with its own linter only *warning*, and only if you opt in), rowform refuses it outright, consistent with never allowing an unconditional cross join (§12).
 
 ### 0b. Dialects: a common core, and Postgres/sqlite override what actually differs
 
-Like SQLAlchemy, sqlom now has a real (if much smaller) dialect system — `sqlom.dialects.Dialect` is the common core, `SqliteDialect`/`PostgresDialect` (singletons `SQLITE`/`POSTGRES`) override only what genuinely differs between the two:
+Like SQLAlchemy, rowform now has a real (if much smaller) dialect system — `rowform.dialects.Dialect` is the common core, `SqliteDialect`/`PostgresDialect` (singletons `SQLITE`/`POSTGRES`) override only what genuinely differs between the two:
 
 ```python
-from sqlom import SQLITE, POSTGRES
+from rowform import SQLITE, POSTGRES
 
 select(User).where(User.email.is_distinct_from(None)).to_sql(dialect=POSTGRES)
 # -> "... WHERE email IS DISTINCT FROM $1"
@@ -220,28 +238,28 @@ select(User).with_for_update().to_sql(dialect=SQLITE)
 
 `to_sql(dialect=...)` is fully additive — every existing call with no `dialect=` renders exactly as it always has (this is not a breaking change, it's how the whole existing test suite still passes unchanged). Passing a dialect does two things: picks a sensible default placeholder style (an explicit `placeholder=` still wins), and makes dialect-sensitive nodes aware of what they're rendering for. Four previously-silent "Postgres-only" claims are now enforced rather than just documented: `ilike()`, `with_for_update()`, `Delete.using()`, and `on_conflict_do_nothing()`/`on_conflict_do_update()`'s `constraint=` all raise a clear error when rendered with `dialect=SQLITE`, instead of producing SQL sqlite's parser would reject. `IS DISTINCT FROM`/`is_distinct_from()`/`is_not_distinct_from()` need a dialect to render at all — there is no dialect-less default, since sqlite and Postgres spell null-safe comparison completely differently and guessing one would be silently wrong for the other.
 
-This is deliberately not a full visitor/compiler rewrite — sqlom doesn't need a dozen dialects, it needs Postgres and sqlite to each get the handful of things they actually disagree on right.
+This is deliberately not a full visitor/compiler rewrite — rowform doesn't need a dozen dialects, it needs Postgres and sqlite to each get the handful of things they actually disagree on right.
 
 ### 0c. Raw SQL escape hatches, and the one sanctioned cross join
 
-Three constructs sqlom didn't have until now, each an explicit "I know what I'm doing" opt-out from the validation everything else gets:
+Three constructs rowform didn't have until now, each an explicit "I know what I'm doing" opt-out from the validation everything else gets:
 
 ```python
-from sqlom import text, literal_column, literal, bindparam
+from rowform import text, literal_column, literal, bindparam
 
 select(User).where(text("email = :addr").bindparams(addr="a@b.c"))  # raw SQL, :name substitution
 select(literal_column("count(*) + 1"), User.id)                     # raw fragment, no validation at all
 select(literal(1), User.id)                                         # a bare value, standalone
 
 # bindparam() is genuinely deferred — build once, execute many times with
-# different bound values, unlike every other value in sqlom (which binds
+# different bound values, unlike every other value in rowform (which binds
 # immediately at build time):
 stmt = select(User.name).where(User.id == bindparam("id"))
 await db.fetch_all(stmt, id=1)
 await db.fetch_all(stmt, id=2)      # same compiled SQL, reused
 ```
 
-`text()`/`literal_column()` both give up sqlom's usual guarantee that every reference is checked against the join graph — `sources()` returns nothing for either, the same trade `.operate()`/`sql_function()` already made for a fragment. `bindparam()` cannot back `Query.limit()`/`.offset()` (both reject anything that isn't a plain `int` immediately); everywhere else it composes normally.
+`text()`/`literal_column()` both give up rowform's usual guarantee that every reference is checked against the join graph — `sources()` returns nothing for either, the same trade `.operate()`/`sql_function()` already made for a fragment. `bindparam()` cannot back `Query.limit()`/`.offset()` (both reject anything that isn't a plain `int` immediately); everywhere else it composes normally.
 
 `select_from()` is the one explicit, by-name exception to "a join always needs a real linking condition" (§12) — SQLAlchemy allows the same thing (its own linter only warns about the resulting cartesian product, and only if you opt in):
 
@@ -249,7 +267,7 @@ await db.fetch_all(stmt, id=2)      # same compiled SQL, reused
 select(User, Post).select_from(Post)   # an explicit, deliberate cross join
 ```
 
-`.join()` itself is completely unaffected — it still always refuses an ON clause that doesn't link two sources. Unlike SQLAlchemy's `select_from()`, sqlom's can only ever *add* a source: `Query()`'s constructor already requires a real source at construction time (there's no way to reach `select_from()` with none established, so `count(Model)` remains the way to name a lone `FROM` table with nothing else selected), and it doesn't re-order or re-assert a source already implied elsewhere the way repeated `select_from()` calls do in SQLAlchemy.
+`.join()` itself is completely unaffected — it still always refuses an ON clause that doesn't link two sources. Unlike SQLAlchemy's `select_from()`, rowform's can only ever *add* a source: `Query()`'s constructor already requires a real source at construction time (there's no way to reach `select_from()` with none established, so `count(Model)` remains the way to name a lone `FROM` table with nothing else selected), and it doesn't re-order or re-assert a source already implied elsewhere the way repeated `select_from()` calls do in SQLAlchemy.
 
 ### 1. Define Your Schema
 
@@ -261,7 +279,7 @@ There are two real constraints when combining `@dataclass(slots=True)` with a qu
 The default model style sidesteps both by having the metaclass own slot generation *and* the descriptor protocol, storing instance values under a shadow name:
 
 ```python
-from sqlom import Column, ModelMeta
+from rowform import Column, ModelMeta
 
 class User(metaclass=ModelMeta):
     __tablename__ = "users"
@@ -324,10 +342,10 @@ Verified against **both mypy and pyright** in `tests/typing/`, run from `pytest`
 
 ### 1b. Or use real stdlib dataclasses
 
-An earlier version of this README claimed the two *couldn't* be combined at all. That was wrong, and [`sqlom/dataclass_model.py`](sqlom/dataclass_model.py) is the working counterexample. The `__slots__`-vs-class-variable collision only bites because both names live on **the class**. Attribute lookup on a class consults `type(cls).__mro__` first, and a **data descriptor found on the metaclass wins over the class's own entry** — so putting the column descriptors on a per-model metaclass gives you both halves:
+An earlier version of this README claimed the two *couldn't* be combined at all. That was wrong, and [`rowform/dataclass_model.py`](rowform/dataclass_model.py) is the working counterexample. The `__slots__`-vs-class-variable collision only bites because both names live on **the class**. Attribute lookup on a class consults `type(cls).__mro__` first, and a **data descriptor found on the metaclass wins over the class's own entry** — so putting the column descriptors on a per-model metaclass gives you both halves:
 
 ```python
-from sqlom import model
+from rowform import model
 
 @model
 class User:
@@ -349,7 +367,7 @@ dataclasses.asdict(user)         # works; so do replace(), ==, repr(), match
 
 `@dataclass(slots=True)` rebuilds the class via `cls.__class__(...)`, which preserves a custom metaclass, so the two compose cleanly. Both styles cost the same (72 B/object, and see the table below).
 
-⚠️ **If you use this style, pass `sqlom.DATACLASS_DUMP_OPTION` to `orjson.dumps`.** orjson recognizes dataclasses natively and will silently *ignore* your `default=` hook for them — and its native path is slow for slotted classes ([details](docs/FINDINGS.md#the-orjson-dataclass-trap)). That flag (`orjson.OPT_PASSTHROUGH_DATACLASS`) routes them back to sqlom's compiled hook and is worth ~30% end-to-end.
+⚠️ **If you use this style, pass `rowform.DATACLASS_DUMP_OPTION` to `orjson.dumps`.** orjson recognizes dataclasses natively and will silently *ignore* your `default=` hook for them — and its native path is slow for slotted classes ([details](docs/FINDINGS.md#the-orjson-dataclass-trap)). That flag (`orjson.OPT_PASSTHROUGH_DATACLASS`) routes them back to rowform's compiled hook and is worth ~30% end-to-end.
 
 ### 2. Query & Serialization (FastAPI)
 
@@ -357,10 +375,10 @@ dataclasses.asdict(user)         # works; so do replace(), ==, repr(), match
 from fastapi import FastAPI
 from fastapi.responses import Response
 import orjson
-from sqlom import Query, DatabaseEngine
+from rowform import Query, DatabaseEngine
 
 from myapp.models import User   # your model, declared as in step 1 above
-                                # (sqlom exports framework primitives only)
+                                # (rowform exports framework primitives only)
 
 app = FastAPI()
 db = DatabaseEngine(dsn="postgresql://user:pass@localhost/db")
@@ -384,7 +402,7 @@ async def get_users():
         .limit(100)
     )
 
-    users: list[User] = await db.fetch_all(query)
+    users: list[User] = await db.execute(query)   # fetch_all(query) works too
 
     # ModelMeta models aren't stdlib dataclasses, so orjson needs a hook.
     # compile_json_default(User) generates a straight-line dict literal for
@@ -439,7 +457,7 @@ Once a join is present, every column is rendered table-qualified (`users.id`), b
 **Aliases and self-joins.** Once the same table appears twice, the model class no longer identifies which side a column came from, so alias one of them. Columns reached off the alias carry the alias as their source, all the way through rendering:
 
 ```python
-from sqlom import Alias
+from rowform import Alias
 
 mgr = Alias(Employee, "mgr")
 rows = await db.fetch_all(
@@ -467,7 +485,7 @@ So `Query(User, Post).right_join(Post, ...)` can yield `(None, post)`. Nullabili
 `where()` AND-s its arguments — several arguments or several calls are the same thing. Anything else is explicit:
 
 ```python
-from sqlom import and_, not_, or_
+from rowform import and_, not_, or_
 
 Query(User).where(
     or_(User.name == "ada",
@@ -484,7 +502,7 @@ Groups always render their own brackets, since `AND` binds tighter than `OR` in 
 ### 5. GROUP BY, aggregates, subqueries
 
 ```python
-from sqlom import avg, count, exists, max_, min_, sum_
+from rowform import avg, count, exists, max_, min_, sum_
 
 # aggregate per group, filtered after grouping
 Query(Post.user_id, count().label("posts"), avg(Post.score))
@@ -519,7 +537,7 @@ Nothing checks that every non-aggregated selected column is grouped. That is the
 Anything that produces a value can go in a select list, a predicate, `GROUP BY`, `ORDER BY` or an `UPDATE ... SET`:
 
 ```python
-from sqlom import case, func, row_number, sum_
+from rowform import case, func, row_number, sum_
 
 Query(Post.id, Post.score * 2, Post.title.concat(" (draft)"))
 Query(Post).where(Post.score * 2 > 100)
@@ -562,7 +580,7 @@ Operand column counts are checked when you build it — a mismatch is otherwise 
 ### 8. Writes: INSERT, UPDATE, DELETE, RETURNING
 
 ```python
-from sqlom import Delete, Insert, Update
+from rowform import Delete, Insert, Update
 
 await db.execute(Insert(User).values(name="ada", email="a@b.c"))
 
@@ -592,7 +610,7 @@ Writes outside `transaction()` commit on their own: a lone statement runs in aut
 ### 9. Upserts: ON CONFLICT
 
 ```python
-from sqlom import Insert, excluded
+from rowform import Insert, excluded
 
 # Skip the row if it would violate a unique index
 await db.execute(Insert(User).values(email="a@b.c").on_conflict_do_nothing(User.email))
@@ -633,7 +651,7 @@ One non-obvious portability point, found by running these against a real server 
 ### 10. CTEs, including recursive
 
 ```python
-from sqlom import Query, count, recursive_cte
+from rowform import Query, count, recursive_cte
 
 busy = Query(Post.user_id, count(Post.id).label("n")).group_by(Post.user_id).cte("busy")
 
@@ -651,11 +669,11 @@ tree = recursive_cte(
 await db.fetch_all(Query(tree.id, tree.parent_id).order_by("id"))
 ```
 
-**There is nothing to register.** References are collected from wherever they appear — `FROM`, `JOIN`, an `ON` clause, a `WHERE` subquery, an `EXISTS`, a `CASE` arm, another CTE's body — and emitted once, in dependency order, in a single `WITH` clause owned by the outermost statement. That collection is a reflective walk over the node graph rather than a visitor per node type, precisely so that an expression type added later cannot silently drop its CTEs and produce SQL that fails at the server with *relation does not exist*. `with_(cte)` forces one in for the case where the reference is somewhere sqlom cannot see (raw SQL via `sql_function`).
+**There is nothing to register.** References are collected from wherever they appear — `FROM`, `JOIN`, an `ON` clause, a `WHERE` subquery, an `EXISTS`, a `CASE` arm, another CTE's body — and emitted once, in dependency order, in a single `WITH` clause owned by the outermost statement. That collection is a reflective walk over the node graph rather than a visitor per node type, precisely so that an expression type added later cannot silently drop its CTEs and produce SQL that fails at the server with *relation does not exist*. `with_(cte)` forces one in for the case where the reference is somewhere rowform cannot see (raw SQL via `sql_function`).
 
 `recursive_cte` takes the recursive term as a **callable** because that term has to reference a CTE that does not exist until its own column names are known — and those come from the base query. A lambda resolves the ordering without a two-phase API. `UNION ALL` by default; pass `union_all=False` for `UNION`, which de-duplicates and so terminates on cycles.
 
-**A cycle under `UNION ALL` is an infinite loop inside the database**, not an error sqlom can catch — it has no idea whether your data is acyclic. This is not theoretical: the first version of one of these tests pointed a row at itself and hung Postgres until the backend was terminated by hand. Both behaviours have tests now, including that `union_all=False` terminates on the same data.
+**A cycle under `UNION ALL` is an infinite loop inside the database**, not an error rowform can catch — it has no idea whether your data is acyclic. This is not theoretical: the first version of one of these tests pointed a row at itself and hung Postgres until the backend was terminated by hand. Both behaviours have tests now, including that `union_all=False` terminates on the same data.
 
 Two things a recursive CTE forced into the design, both worth knowing about:
 
@@ -717,7 +735,7 @@ The ON check looks for a comparison linking the joined table to one already pres
 
 **Still not supported:** relationship declarations, so no lazy loading and no `selectinload` equivalent — you write the join. `INSERT ... SELECT`, and therefore the data-modifying CTE built on it. Schema management: there is no DDL, no migrations, and no reflection. `to_json_sql()` handles a single-model query with no joins or grouping and raises otherwise, rather than guessing at a nested shape.
 
-There is no de-duplication: an inner join to a one-to-many yields the left row once per match, as SQL does. SQLAlchemy's ORM collapses those via its identity map — which is precisely the machinery sqlom skips to be fast, so this is a real behavioural difference and not an oversight.
+There is no de-duplication: an inner join to a one-to-many yields the left row once per match, as SQL does. SQLAlchemy's ORM collapses those via its identity map — which is precisely the machinery rowform skips to be fast, so this is a real behavioural difference and not an oversight.
 
 ### 13. Transactions
 
@@ -728,10 +746,11 @@ async with db.transaction() as tx:
     await tx.execute("UPDATE accounts SET balance = balance - $1 WHERE id = $2", 100, payer)
     await tx.execute("UPDATE accounts SET balance = balance + $1 WHERE id = $2", 100, payee)
 
-    # Query objects work here too, on the transaction's connection, reusing the
-    # same compiled hydrator — so a read inside a transaction costs what a read
-    # outside it costs.
-    rows = await tx.fetch_all(Query(Account).where(Account.id == payer))
+    # select()/Query objects work here too, on the transaction's connection,
+    # reusing the same compiled hydrator — so a read inside a transaction costs
+    # what a read outside it costs. tx.execute(...) and tx.fetch_all(...) are
+    # the same call for a read; execute() also still takes a bare SQL string.
+    rows = await tx.execute(select(Account).where(Account.id == payer))
 ```
 
 Nesting gives savepoints, so an expected inner failure doesn't discard the outer work:
@@ -782,13 +801,13 @@ Two paths, depending on whether you need Python objects at all:
 ```
 
 1. **Descriptor expressions.** `User.id > 100` evaluates a descriptor at class scope, returning a `ColumnExpr` node rather than doing a Python-level comparison — this gives the query builder a queryable AST without needing SQLAlchemy-style instrumentation.
-2. **Compiled hydration, and it is entirely positional.** A model's column layout is fixed and known once, so sqlom generates a specialized `rows -> [instance]` function per model (inspect it via `fn.__source__`). Field stores are plain attribute assignments so CPython 3.11's specializing interpreter can quicken them to `STORE_ATTR_SLOT`, and rows are read by **tuple unpacking** — `for f0, f1, f2, f3, in rows:` — with no column names in the generated code at all.
+2. **Compiled hydration, and it is entirely positional.** A model's column layout is fixed and known once, so rowform generates a specialized `rows -> [instance]` function per model (inspect it via `fn.__source__`). Field stores are plain attribute assignments so CPython 3.11's specializing interpreter can quicken them to `STORE_ATTR_SLOT`, and rows are read by **tuple unpacking** — `for f0, f1, f2, f3, in rows:` — with no column names in the generated code at all.
 
-   That is available only because sqlom writes the `SELECT` list, so it knows every column's ordinal at codegen time; there is no `SELECT *` in the builder, which is what makes positional safe rather than reckless. Measured, positional access beats key access by **1.97x** (asyncpg `Record`) to **4.76x** (`sqlite3.Row`), and building a dict per row costs 5–7x and dominates both — see [`row_access.txt`](benchmarks/results/row_access.txt). It is also why a two-model join is a non-event here: two `id` columns collide by *name*, never by ordinal, which is exactly what broke SQLAlchemy Core's `.mappings()` idiom in [correction 8](docs/METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x).
+   That is available only because rowform writes the `SELECT` list, so it knows every column's ordinal at codegen time; there is no `SELECT *` in the builder, which is what makes positional safe rather than reckless. Measured, positional access beats key access by **1.97x** (asyncpg `Record`) to **4.76x** (`sqlite3.Row`), and building a dict per row costs 5–7x and dominates both — see [`row_access.txt`](benchmarks/results/row_access.txt). It is also why a two-model join is a non-event here: two `id` columns collide by *name*, never by ordinal, which is exactly what broke SQLAlchemy Core's `.mappings()` idiom in [correction 8](docs/METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x).
 3. **Slotted storage.** Instances use `__slots__`, so attribute storage is a fixed-size array rather than a `__dict__` — 72 vs 113 bytes per object here. Note the tradeoff: this is also what forces orjson off its native dataclass fast path (see [the orjson dataclass trap](docs/FINDINGS.md#the-orjson-dataclass-trap)).
 4. **Path (B) skips 2 and 3 entirely** by shaping in SQL. Implemented but parked; path (A) is the focus.
 
-None of this makes the pipeline "zero-copy" — data still moves from the C-level tuple into Python object storage into JSON bytes. The claim to make is "fewer intermediate Python-level allocations than an ORM identity-map path," not "no copying happens." And per the profile, path (A)'s remaining cost is dominated by the driver materializing Python values, not by sqlom.
+None of this makes the pipeline "zero-copy" — data still moves from the C-level tuple into Python object storage into JSON bytes. The claim to make is "fewer intermediate Python-level allocations than an ORM identity-map path," not "no copying happens." And per the profile, path (A)'s remaining cost is dominated by the driver materializing Python values, not by rowform.
 
 ---
 
@@ -808,7 +827,7 @@ request, and all endpoints return byte-identical 7701-byte payloads.
 | endpoint (FastAPI, one core) | rps | p50 | p99 |
 |---|---|---|---|
 | `/noop` — framework floor, no database | 8419 | 0.91 ms | 1.56 ms |
-| **sqlom** | **1319** | **5.93 ms** | **9.21 ms** |
+| **rowform** | **1319** | **5.93 ms** | **9.21 ms** |
 | SQLAlchemy Core | 825 | 9.19 ms | 15.61 ms |
 | SQLAlchemy ORM | 396 | 16.09 ms | 77.57 ms |
 
@@ -824,7 +843,7 @@ to change:
 | sqlite, single table, no transport | 1.49x | 5.22x |
 | sqlite, **two models across a join** | 1.17x | 4.05x |
 
-Two independent effects, each worth about a third, compounding: sqlom's advantage
+Two independent effects, each worth about a third, compounding: rowform's advantage
 partly *was* asyncpg plus a skipped session reset (7.18x → 4.28x on the same driver at
 defaults), and the web layer adds ~119 µs/request that every route pays equally
 (4.28x → 3.33x). **Quote 3.3x**; the 7.18x needed asyncpg *and* a behavioural change.
@@ -836,27 +855,27 @@ defaults), and the web layer adds ~119 µs/request that every route pays equally
 > 62% of Core's whole time on sqlite. Zipping the flat row against names captured once
 > is equally idiomatic and produces identical bytes. Found only by adding the join
 > benchmark, where `.mappings()` is unusable because both tables have an `id`; Core
-> then came out *closer* to sqlom on more work, which is impossible and was the tip-off.
+> then came out *closer* to rowform on more work, which is impossible and was the tip-off.
 > The ORM figures are unaffected (that path uses `getattr`). Full write-up:
 > [METHODOLOGY correction 8](docs/METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x).
 
 **On a two-model join the Core advantage nearly disappears** — 1.17x at 1000 rows,
-1.32x at 100 — because both libraries then do almost the same cheap thing, and sqlom
+1.32x at 100 — because both libraries then do almost the same cheap thing, and rowform
 additionally builds two Python objects per row. The ORM advantage largely survives
 (4.05x). Without the orjson `default=` hook, shaping the same objects with `getattr`
 is *slower* than Core on a join. See
 [`sqlite_join.txt`](benchmarks/results/sqlite_join.txt).
 
-What holds across every configuration is the tail: sqlom's p99 is consistently ~8x
+What holds across every configuration is the tail: rowform's p99 is consistently ~8x
 tighter than the ORM's (9.2 ms vs 77.6 ms here). Details, including the statement
 counts and why SQLAlchemy's own tuning is worth only 1.10-1.15x, in
-[§13](docs/BENCHMARKS.md#13-bottom-line-sqlom-vs-sqlalchemy-both-tuned-with-and-without-fastapi)
+[§13](docs/BENCHMARKS.md#13-bottom-line-rowform-vs-sqlalchemy-both-tuned-with-and-without-fastapi)
 and [§14](docs/BENCHMARKS.md#14-the-strictest-comparison-same-driver-both-libraries-at-their-defaults).
 
 Those figures come from a load generator written for this repo, so
 [§15](docs/BENCHMARKS.md#15-auditing-the-load-generator-itself) audits it: socket
 counts read from `/proc/net/tcp`, Little's Law, and a re-run under **locust**, which
-reproduces sqlom's throughput to 0.1% and brackets both ratios within 7% (2.13x Core,
+reproduces rowform's throughput to 0.1% and brackets both ratios within 7% (2.13x Core,
 3.29x ORM). Locust cannot measure the `/noop` floor — on one core it saturates first,
 and Little's Law catches it — which is why the cheaper generator exists. That locust
 run predates [correction 8](docs/METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x),
@@ -869,13 +888,13 @@ No event loop, no pool, no TLS — the mapper's own cost:
 
 | approach | CPU ms/req | req/s (1 thread) | vs. ORM |
 |---|---|---|---|
-| **sqlom** | **0.100** | **9997** | **7.4x** |
+| **rowform** | **0.100** | **9997** | **7.4x** |
 | SQLAlchemy Core | 0.437 | 2286 | 1.70x |
 | SQLAlchemy ORM | 0.742 | 1346 | 1.0x |
 
 ⚠️ The Core row uses the `.mappings()` idiom that
 [correction 8](docs/METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x)
-found to be unfair, so **sqlom's margin over Core here is overstated** — at 1000 rows
+found to be unfair, so **rowform's margin over Core here is overstated** — at 1000 rows
 the same correction took 3.87x down to 1.49x. This specific 100-row cell has not been
 re-measured, and no number is invented for it; the ORM row is unaffected.
 
@@ -892,15 +911,15 @@ asserted to emit byte-identical JSON *and* to be stable across repeated calls:
 
 | approach | median | vs. ORM |
 |---|---|---|
-| sqlom compiled (per-row / batch) and `@model` + passthrough | 1.39–1.55 ms | **~5.9x** |
+| rowform compiled (per-row / batch) and `@model` + passthrough | 1.39–1.55 ms | **~5.9x** |
 | `@model` dataclass, orjson native path | 1.90 ms | 4.8x |
-| sqlom reflective (unoptimized) | 3.56 ms | 2.6x |
+| rowform reflective (unoptimized) | 3.56 ms | 2.6x |
 | SQLAlchemy 2.0 Core | 5.24 ms | 1.7x |
 | SQLAlchemy 2.0 ORM | 9.13 ms | 1.0x |
 
 ⚠️ These replace an earlier version of this table, for two reasons — both in
 [§1](docs/BENCHMARKS.md#1-sqlite-micro-benchmark-single-request-latency). The old
-comparison timed SQLAlchemy's connection setup but not sqlom's, which overstated the
+comparison timed SQLAlchemy's connection setup but not rowform's, which overstated the
 Core ratio by ~8%; and the measurement box became ~1.35x slower between runs, which
 moved every absolute figure without changing the ranking.
 
@@ -909,9 +928,9 @@ moved every absolute figure without changing the ranking.
 No corrected absolute is spliced in here, because the re-measurement ran on a
 different box and mixing conditions in one table is
 [correction 4](docs/METHODOLOGY.md#4-mixing-measurement-conditions-in-one-table).
-Measured together in one isolated run today: sqlom's best **1.26 ms**, Core
+Measured together in one isolated run today: rowform's best **1.26 ms**, Core
 positional **1.88 ms**, Core `.mappings()` **4.92 ms**, ORM **7.01 ms** — so the
-honest reading of this row is **sqlom ≈1.5x Core**, and Core is nearly a tie with
+honest reading of this row is **rowform ≈1.5x Core**, and Core is nearly a tie with
 `@model` + orjson native rather than 3x behind it. Raw:
 [`core_idiom.txt`](benchmarks/results/core_idiom.txt).
 
@@ -922,14 +941,14 @@ agree).
 
 ### Read this before believing the 6x
 
-- **It is a core-count claim, not a latency claim.** A sqlom client is one asyncio
+- **It is a core-count claim, not a latency claim.** A rowform client is one asyncio
   loop under the GIL and saturates exactly one core (measured CPU utilization
   0.91–1.00, always). Scaling is by process and is linear (2 workers → 1.99x). The
   useful reading is *cores needed for a target throughput*: ~4,400 req/s takes 1 core
-  with sqlom, roughly 6 with the async ORM.
+  with rowform, roughly 6 with the async ORM.
 - **The comparison is against SQLAlchemy's ORM, not against writing it yourself.**
-  Hand-written asyncpg + `dict(record)` reaches 3877 rps vs sqlom's 3168 in the same
-  configuration. sqlom costs **+10–25% CPU** over building no objects at all. The
+  Hand-written asyncpg + `dict(record)` reaches 3877 rps vs rowform's 3168 in the same
+  configuration. rowform costs **+10–25% CPU** over building no objects at all. The
   pitch is ergonomics at near-hand-written cost.
 - **The client is the bottleneck here and Postgres is barely loaded.** That is why
   the mapper's CPU cost is visible. A query heavy enough to make the database the
@@ -940,10 +959,10 @@ agree).
   `jsonable_encoder`. A route doing Pydantic validation would add cost to every
   contender equally and compress these ratios further. Multi-worker scaling through
   FastAPI is unmeasured.
-- **Against Postgres, sqlom's generated code is only ~15% of client CPU** — 38% is the
+- **Against Postgres, rowform's generated code is only ~15% of client CPU** — 38% is the
   asyncio event loop, 19% the asyncpg fetch, 15% pool acquire/release. But that is a
   fact about *sockets*, not the mapper: profiled against in-process sqlite, transport
-  turns out to be **53% of the Postgres cost** and sqlom's share rises to ~50%. Fix
+  turns out to be **53% of the Postgres cost** and rowform's share rises to ~50%. Fix
   transport first for a remote DB; the mapper pays back directly for a local one.
 - **The benchmark's loopback connection negotiates TLSv1.3**, which costs ~20% of
   client CPU. Ratios are unaffected (both sides pay it) but absolute throughput is
@@ -961,7 +980,7 @@ agree).
   returning objects with Python fields pays that regardless of implementation
   language, capping a native builder at **≤1.42x**. Tested empirically: `psqlpy`
   (Rust/tokio-postgres) constructing our slotted dataclasses *from Rust* runs at
-  **0.57x** of asyncpg + sqlom's Python hydrator, once pool policy and TLS are
+  **0.57x** of asyncpg + rowform's Python hydrator, once pool policy and TLS are
   controlled. See [§9](docs/BENCHMARKS.md#9-two-hypotheticals-a-native-object-builder-and-rust).
 - **Most of the remaining throughput is outside the mapper.** asyncpg's pool runs
   `RESET ALL` as a *second round trip* on every release (2.01 queries sent per request,
@@ -976,7 +995,7 @@ agree).
 
 `Query.to_json_sql` / `DatabaseEngine.fetch_json` push shaping and encoding into
 Postgres and beat every object path by ~2.2x. Implemented but **parked** — it isn't
-an object mapper. If that fits your endpoint, sqlom's object path is the wrong tool.
+an object mapper. If that fits your endpoint, rowform's object path is the wrong tool.
 
 ---
 

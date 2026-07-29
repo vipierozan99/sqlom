@@ -6,7 +6,7 @@ Parameterised over both engines so a feature cannot be quietly asyncpg-only —
 
 import pytest
 
-from sqlom import DatabaseEngine, PsycopgEngine, Query
+from rowform import DatabaseEngine, PsycopgEngine, Query
 from tests.conftest import Author, Book, Tag
 
 pytestmark = pytest.mark.postgres
@@ -96,7 +96,7 @@ class TestFetchJson:
     async def test_content_matches_fetch_all(self, engine):
         import orjson
 
-        from sqlom import compile_json_default
+        from rowform import compile_json_default
 
         query = Query(Author).order_by("id")
         objects = await engine.fetch_all(query)
@@ -183,7 +183,7 @@ class TestNewQueryFeaturesOnPostgres:
     server — sqlite is permissive about some of this and Postgres is not."""
 
     async def test_self_join_via_alias(self, engine):
-        from sqlom import Alias
+        from rowform import Alias
 
         other = Alias(Book, "other")
         rows = await engine.fetch_all(
@@ -216,7 +216,7 @@ class TestNewQueryFeaturesOnPostgres:
         assert any(book is None for _, book in rows)
 
     async def test_or_and_not(self, engine):
-        from sqlom import and_, or_
+        from rowform import and_, or_
 
         rows = await engine.fetch_all(
             Query(Author)
@@ -245,7 +245,7 @@ class TestNewQueryFeaturesOnPostgres:
         assert [a.name for a in rows] == ["brian"]
 
     async def test_correlated_exists(self, engine):
-        from sqlom import exists
+        from rowform import exists
 
         rows = await engine.fetch_all(
             Query(Author)
@@ -255,7 +255,7 @@ class TestNewQueryFeaturesOnPostgres:
         assert [a.name for a in rows] == ["dan"]
 
     async def test_group_by_with_having(self, engine):
-        from sqlom import count
+        from rowform import count
 
         rows = await engine.fetch_all(
             Query(Book.author_id, count())
@@ -265,7 +265,7 @@ class TestNewQueryFeaturesOnPostgres:
         assert rows == [(1, 2)]
 
     async def test_aggregates(self, engine):
-        from sqlom import count, max_, min_
+        from rowform import count, max_, min_
 
         rows = await engine.fetch_all(
             Query(count(), min_(Book.id), max_(Book.id))
@@ -273,7 +273,7 @@ class TestNewQueryFeaturesOnPostgres:
         assert rows == [(4, 10, 13)]
 
     async def test_derived_table(self, engine):
-        from sqlom import count
+        from rowform import count
 
         sub = (Query(Book.author_id, count().label("n"))
                .group_by(Book.author_id)
@@ -295,7 +295,7 @@ class TestNewQueryFeaturesOnPostgres:
         rows = await engine.fetch_all(Query(Author.name).order_by(Author.name).limit(2))
         assert rows == [("ada",), ("brian",)]
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     async def test_with_for_update_executes(self, engine):
         # FOR UPDATE/FOR SHARE are Postgres-only (sqlite has no locking
         # clause), so this can only be exercised here. A single fetch_all
@@ -306,7 +306,7 @@ class TestNewQueryFeaturesOnPostgres:
         )
         assert len(rows) == 1 and rows[0].name == "ada"
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     async def test_with_for_update_of_a_specific_table_across_a_join(self, engine):
         rows = await engine.fetch_all(
             Query(Author, Book)
@@ -337,23 +337,23 @@ class TestNewQueryFeaturesOnPostgres:
         )
         assert rows == [("dan", None)]
 
-    # sqlom-original test (no SQLAlchemy equivalent) — proves bindparam()
+    # rowform-original test (no SQLAlchemy equivalent) — proves bindparam()
     # reuse works through a real driver, on both engine.fetch_all() and
     # tx.fetch_all() inside engine.transaction() (the gap a review pass
     # flagged: Transaction.fetch_all() needed the same **overrides
     # threading as the two bare engine classes, or bindparam() would
     # silently stop working inside a transaction block).
     async def test_bindparam_reuse_through_the_engine(self, engine):
-        from sqlom import bindparam
+        from rowform import bindparam
 
         query = Query(Author.name).where(Author.id == bindparam("id"))
         assert await engine.fetch_all(query, id=1) == [("ada",)]
         assert await engine.fetch_all(query, id=2) == [("brian",)]
 
-    # sqlom-original test (no SQLAlchemy equivalent) — same premise as
+    # rowform-original test (no SQLAlchemy equivalent) — same premise as
     # test_bindparam_reuse_through_the_engine, but through tx.fetch_all().
     async def test_bindparam_reuse_through_a_transaction(self, engine):
-        from sqlom import bindparam
+        from rowform import bindparam
 
         query = Query(Author.name).where(Author.id == bindparam("id"))
         async with engine.transaction() as tx:

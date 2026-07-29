@@ -1,4 +1,4 @@
-# sqlom benchmark results
+# rowform benchmark results
 
 Every number here was produced by a script in [`benchmarks/`](../benchmarks/), on the
 machine described in each section. Raw output artifacts are checked in under
@@ -28,10 +28,10 @@ JSON** before timing.
 ⚠️ **Two corrections were applied to this section after review.** Both are detailed
 below; read them before quoting anything here.
 
-1. **The comparison was unfair, in sqlom's favour.** SQLAlchemy's connection and
-   `Session` were created *inside* the timed closure while the sqlom paths got a
+1. **The comparison was unfair, in rowform's favour.** SQLAlchemy's connection and
+   `Session` were created *inside* the timed closure while the rowform paths got a
    connection made once outside it, so SQLAlchemy was charged for pool checkout
-   that sqlom never paid. Fixed; worth **8% of the Core ratio**.
+   that rowform never paid. Fixed; worth **8% of the Core ratio**.
 2. **The machine got ~1.35x slower** between the original run and the re-run, so
    the absolute milliseconds below are all higher than previously published. This
    is not the fix — the pre-change tree reproduces today's numbers, not the old
@@ -42,10 +42,10 @@ below; read them before quoting anything here.
 | approach | median | min | max | spread | vs. ORM |
 |---|---|---|---|---|---|
 | `@model` dataclass + `OPT_PASSTHROUGH_DATACLASS` | 1.393 ms | 1.371 | 1.530 | 11% | 6.55x |
-| sqlom compiled, batch hydrator | 1.543 ms | 1.440 | 1.581 | 9% | 5.92x |
-| sqlom compiled, per-row hydrator | 1.553 ms | 1.452 | 1.597 | 9% | 5.88x |
+| rowform compiled, batch hydrator | 1.543 ms | 1.440 | 1.581 | 9% | 5.92x |
+| rowform compiled, per-row hydrator | 1.553 ms | 1.452 | 1.597 | 9% | 5.88x |
 | `@model` dataclass, orjson native path | 1.896 ms | 1.787 | 2.407 | 33% | 4.82x |
-| sqlom reflective (`hydrate()` + `as_dict()`) | 3.559 ms | 3.460 | 4.040 | 16% | 2.57x |
+| rowform reflective (`hydrate()` + `as_dict()`) | 3.559 ms | 3.460 | 4.040 | 16% | 2.57x |
 | SQLAlchemy 2.0 Core | 5.240 ms | 5.126 | 5.349 | 4% | 1.74x |
 | SQLAlchemy 2.0 ORM | 9.132 ms | 8.834 | 9.177 | 4% | 1.00x (baseline) |
 | *(DB-side JSON, `json_group_array` — parked)* | *0.561 ms* | *0.543* | *0.570* | *5%* | *16.28x* |
@@ -60,12 +60,12 @@ isolation (123 vs 148 ns/object, §3), but 25 ns/object over 1,000 rows is 0.025
 What *is* consistent across every run: the tier structure. DB-side JSON ≪ compiled
 object paths < dataclass-native ≪ reflective < SQLAlchemy Core < SQLAlchemy ORM.
 
-### Correction 1: the connection was hoisted for sqlom but not for SQLAlchemy
+### Correction 1: the connection was hoisted for rowform but not for SQLAlchemy
 
-The sqlom runners received a `sqlite3.Connection` created once before timing, while
+The rowform runners received a `sqlite3.Connection` created once before timing, while
 `run_sqlalchemy_core` and `run_sqlalchemy_orm` opened `engine.connect()` /
 `Session(engine)` **inside** the timed function. SQLAlchemy therefore paid a pool
-checkout on every measured iteration that sqlom did not, and that cost was reported
+checkout on every measured iteration that rowform did not, and that cost was reported
 as object-mapping overhead. Found in review; it is the same class of error as
 [correction 1](METHODOLOGY.md#1-comparing-different-payloads-inflated-35x-26x).
 
@@ -77,8 +77,8 @@ times all variants in one process, alternating between them each round:
 |---|---|---|
 | setup cost charged only to Core | 76 µs (13.8% of Core) | 466 µs (9.0%) |
 | setup cost charged only to the ORM | 26 µs (2.5%) | −93 µs (≈0, noise) |
-| **sqlom vs Core** | 4.74x → **4.16x** (−12.1%) | 4.01x → **3.68x** (−8.3%) |
-| **sqlom vs ORM** | 8.08x → **7.88x** (−2.5%) | 6.48x → **6.54x** (+1.0%) |
+| **rowform vs Core** | 4.74x → **4.16x** (−12.1%) | 4.01x → **3.68x** (−8.3%) |
+| **rowform vs ORM** | 8.08x → **7.88x** (−2.5%) | 6.48x → **6.54x** (+1.0%) |
 
 The A/B's "before" figure at 1000 rows — 4.01x vs Core — reproduces the previously
 published 4.01x exactly, which is what makes it trustworthy as the instrument: it
@@ -98,13 +98,13 @@ the only variant that is both realistic and measures hydration every time.
 ### Correction 2: absolute times moved with the machine, not with the code
 
 Re-running after the fix gave ~1.35x higher absolutes for *every* contender —
-including the sqlom paths, whose timed code the fix does not touch. Rather than
+including the rowform paths, whose timed code the fix does not touch. Rather than
 assume, the entire pre-change tree (library and harness, via `git stash`) was
 checked out and re-run on the same box:
 
 | contender | published (earlier box) | pre-change tree, today | post-fix, today |
 |---|---|---|---|
-| sqlom compiled (batch) | 1.060 ms | 1.389 ms | 1.543 ms |
+| rowform compiled (batch) | 1.060 ms | 1.389 ms | 1.543 ms |
 | SQLAlchemy Core | 4.252 ms | 5.196 ms | 5.240 ms |
 | SQLAlchemy ORM | 6.647 ms | 9.127 ms | 9.132 ms |
 
@@ -112,7 +112,7 @@ checked out and re-run on the same box:
 > `.mappings()` idiom that
 > [correction 8](METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x)
 > later showed to be unfair. Written the cheap way, Core measures **1.88 ms** against
-> sqlom's **1.26 ms** in one isolated run at 1000 rows: a 1.49x gap, not the ~3.9x
+> rowform's **1.26 ms** in one isolated run at 1000 rows: a 1.49x gap, not the ~3.9x
 > these rows imply. The rows are left as recorded rather than retro-fitted, because
 > splicing a figure from a different box into a table would be
 > [correction 4](METHODOLOGY.md#4-mixing-measurement-conditions-in-one-table).
@@ -130,10 +130,10 @@ approach in its own process, both reproduce the same figures:
 
 | approach | forward suite | reversed suite | isolated (median of 3) |
 |---|---|---|---|
-| sqlom compiled (batch) | 1.019–1.131 | 1.032 | 1.050 |
-| sqlom compiled (per-row) | 1.066–1.095 | 1.056 | 1.050 |
+| rowform compiled (batch) | 1.019–1.131 | 1.032 | 1.050 |
+| rowform compiled (per-row) | 1.066–1.095 | 1.056 | 1.050 |
 | dataclass + passthrough | 1.049–1.073 | 1.091 | 1.111 |
-| sqlom reflective | 2.517–2.550 | 2.431 | 2.536 |
+| rowform reflective | 2.517–2.550 | 2.431 | 2.536 |
 | SQLAlchemy Core | 3.919–4.129 | 4.060 | 3.819 |
 | SQLAlchemy ORM | 6.629–6.802 | 6.505 | 6.552 |
 
@@ -233,14 +233,14 @@ use more. Measured `cpu_utilization` (CPU-seconds per wall-second) is
 Consequently, giving one client process a second core does not help — it *hurts*,
 because the loop migrates and loses cache locality:
 
-| sqlom, c=8 | CPU ms/req | throughput |
+| rowform, c=8 | CPU ms/req | throughput |
 |---|---|---|
 | client pinned to 1 core | **0.217** | 4560 rps |
 | client pinned to 2 cores | 0.308 | 3168 rps |
 
 ### 4b. Ratio vs. Postgres core count (client pinned to 1 core)
 
-| Postgres cores | sqlom | async ORM | ratio |
+| Postgres cores | rowform | async ORM | ratio |
 |---|---|---|---|
 | 1 | 4560 rps (0.217 ms CPU) | 741 rps (1.346) | 6.15x |
 | 2 | 4111 rps (0.242) | 672 rps (1.484) | 6.12x |
@@ -264,11 +264,11 @@ isolated at two concurrency levels.
 |---|---|---|---|---|
 | raw asyncpg + `dict(Record)` | 1309 | 0.433 | 3877 | 0.257 |
 | raw asyncpg + codegen dict *(floor)* | 1237 | 0.441 | 4039 | 0.247 |
-| **sqlom (compiled)** | **848** | **0.604** | **3168** | **0.308** |
+| **rowform (compiled)** | **848** | **0.604** | **3168** | **0.308** |
 | SQLAlchemy async Core | 730 | 0.982 | 1112 | 0.889 |
 | SQLAlchemy async ORM | 472 | 1.593 | 759 | 1.310 |
 
-Against a hand-written no-object loop, sqlom costs **+10% CPU** with cores shared
+Against a hand-written no-object loop, rowform costs **+10% CPU** with cores shared
 (0.237 vs 0.215 at 4 cores unpinned) and **+25%** here. Cheap for what it buys,
 but not free — and note the hand-written baselines beat it, as they must.
 
@@ -277,19 +277,19 @@ but not free — and note the hand-written baselines beat it, as they must.
 Processes are the only way a GIL-bound mapper uses more cores. Postgres pinned to
 cores 2,3; each worker pinned to its own core.
 
-| sqlom workers | per-worker | total |
+| rowform workers | per-worker | total |
 |---|---|---|
 | 1 | 4398 rps | 4398 rps |
 | 2 | 4415, 4324 rps | **8739 rps (1.99x)** |
 
 Per-worker throughput is unchanged when a second worker joins, so the practical
 reading is **cores required for a target throughput**: ~4,400 req/s needs 1 core
-with sqlom and roughly 6 with SQLAlchemy's async ORM.
+with rowform and roughly 6 with SQLAlchemy's async ORM.
 
 ```bash
 python3 benchmarks/bench_pg_load.py --seed-only
 bash benchmarks/pin_and_run.sh --db-cores 1,2,3 --client-cores 0 -- \
-     --only sqlom --concurrency 8 --duration 4 --repeat 3
+     --only rowform --concurrency 8 --duration 4 --repeat 3
 ```
 
 Artifacts: [`core_sweep_1core_client.txt`](../benchmarks/results/core_sweep_1core_client.txt),
@@ -310,7 +310,7 @@ Artifact: [`results/profile_pg_1core.txt`](../benchmarks/results/profile_pg_1cor
 
 ### 5a. Latency-bound vs throughput-bound, in one measurement
 
-| | sqlom | async ORM |
+| | rowform | async ORM |
 |---|---|---|
 | sequential (c=1), wall/req | 0.447 ms | 1.719 ms |
 | sequential, CPU/req | 0.289 ms | 1.400 ms |
@@ -320,30 +320,30 @@ Artifact: [`results/profile_pg_1core.txt`](../benchmarks/results/profile_pg_1cor
 | saturated utilization | 1.00 | 1.00 |
 | throughput | 4428 rps | 773 rps |
 
-A lone sqlom request spends 35% of its wall time waiting on Postgres; the ORM only
+A lone rowform request spends 35% of its wall time waiting on Postgres; the ORM only
 19%, not because its queries are faster but because its Python work is so much
 larger that the same wait is a smaller share. At c=8 that wait is fully hidden
 behind other requests, utilization hits 1.00 for both, and CPU/req alone sets
 throughput.
 
-### 5b. Where sqlom's 0.225 ms/req goes (sampled)
+### 5b. Where rowform's 0.225 ms/req goes (sampled)
 
 | component | share |
 |---|---|
 | asyncio event loop dispatch + protocol/TLS, outside the request coroutine | **38%** |
 | asyncpg `Connection.fetch` | 19% |
 | asyncpg pool acquire/release | **15%** |
-| sqlom `_hydrate_all` (generated hydrator) | 11% |
+| rowform `_hydrate_all` (generated hydrator) | 11% |
 | `orjson.dumps` | 7% |
-| sqlom `_default` (generated dict builder) | 4% |
+| rowform `_default` (generated dict builder) | 4% |
 
-**sqlom's own generated code is ~15% of client CPU.** Roughly 72% is asyncio plus
+**rowform's own generated code is ~15% of client CPU.** Roughly 72% is asyncio plus
 asyncpg plus pool bookkeeping, and pool acquire/release alone (15%) costs as much as
 hydration. That puts a hard ceiling on further mapper micro-optimization: making
 hydration free would buy ~15%, whereas the event loop and pool handling are the
 larger targets.
 
-(cProfile's instrumented view puts sqlom codegen at 29% rather than 15%. The
+(cProfile's instrumented view puts rowform codegen at 29% rather than 15%. The
 discrepancy is exactly what instrumentation bias predicts: `_default` is called
 80,000 times per 800 requests, so per-call overhead lands hardest on it. Trust the
 sampler for absolute shares, cProfile for call counts.)
@@ -352,7 +352,7 @@ sampler for absolute shares, cProfile for call counts.)
 
 Shares rescaled onto each side's measured CPU/req, so columns are comparable:
 
-| library | sqlom | async ORM | delta |
+| library | rowform | async ORM | delta |
 |---|---|---|---|
 | SQLAlchemy ORM internals | 0.000 | 0.634 | **+0.634** |
 | attribute reads while building the payload dict | 0.005 | 0.256 | **+0.251** |
@@ -361,7 +361,7 @@ Shares rescaled onto each side's measured CPU/req, so columns are comparable:
 | asyncio / loop | 0.094 | 0.168 | +0.074 |
 | asyncpg | 0.027 | 0.033 | +0.006 |
 | orjson | 0.016 | 0.003 | −0.013 |
-| sqlom (codegen) | 0.061 | 0.000 | −0.061 |
+| rowform (codegen) | 0.061 | 0.000 | −0.061 |
 | **TOTAL CPU ms/req** | **0.225** | **1.293** | **+1.068** |
 
 The top ORM frames name the mechanism precisely — this is the identity-map and
@@ -390,10 +390,10 @@ descriptors. A different serialization strategy would shift this term.
 ### 5d. The loopback connection was using TLS
 
 Discovered while reading the profile: `sslproto.py` and `_ssl._SSLSocket.read`
-appear in sqlom's top frames. This Postgres has `ssl = on`, and asyncpg's default
+appear in rowform's top frames. This Postgres has `ssl = on`, and asyncpg's default
 `sslmode=prefer` negotiates **TLSv1.3 / AES-256-GCM even over 127.0.0.1**.
 
-| sqlom, c=8 | CPU/req | throughput |
+| rowform, c=8 | CPU/req | throughput |
 |---|---|---|
 | default (TLS on) | 0.225 ms | 4428 rps |
 | `?sslmode=disable` | **0.180 ms** | **5536 rps** |
@@ -406,15 +406,15 @@ makes is still apples-to-apples — but the absolute numbers are not the ceiling
 
 ```bash
 python3 benchmarks/profile_pg.py --pin 0:2,3 --compare --sampler
-python3 benchmarks/profile_pg.py --pin 0:2,3 --only sqlom \
-    --dsn "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
+python3 benchmarks/profile_pg.py --pin 0:2,3 --only rowform \
+    --dsn "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
 ```
 
 ---
 
 ## 6. Acting on the profile: 2.4x more throughput outside the mapper
 
-`benchmarks/optimize_pg.py`. §5 said sqlom's own code is ~15% of client CPU, so the
+`benchmarks/optimize_pg.py`. §5 said rowform's own code is ~15% of client CPU, so the
 remaining throughput has to come from the other 85%. Each flag targets one component
 the profile named. Client on core 0, Postgres on cores 2,3, c=8, 100 rows/request,
 median of 3, one configuration per process.
@@ -482,7 +482,7 @@ that.
 
 ### What this means for the mapper
 
-The best deployable configuration reaches 7593 rps at 0.13 ms CPU/req. sqlom's
+The best deployable configuration reaches 7593 rps at 0.13 ms CPU/req. rowform's
 generated code was ~15% of the *baseline's* 0.21 ms — roughly 0.032 ms — so it is now
 close to a quarter of the remaining budget. **The order of work is: fix the pool,
 adopt uvloop, then optimize the mapper** — and by then the mapper is the largest
@@ -490,24 +490,24 @@ single remaining item, which it was not before.
 
 Against the async ORM's 773 rps in the same configuration, the best deployable stack
 is ~9.8x and the connection-holding upper bound ~14.4x. Those numbers belong to the
-*stack*, not to sqlom: the ORM would gain from uvloop and the pool fix too, and this
+*stack*, not to rowform: the ORM would gain from uvloop and the pool fix too, and this
 has not been measured for it. **Do not read 14.4x as a mapper comparison.**
 
 ---
 
 ## 7. Profiled sqlite run: the mapper with transport removed
 
-`benchmarks/profile_sqlite.py`. §5 found sqlom's own code to be only ~15% of client
+`benchmarks/profile_sqlite.py`. §5 found rowform's own code to be only ~15% of client
 CPU against Postgres, with 38% in the asyncio loop, 19% in the asyncpg fetch and 15%
 in pool acquire/release. All three are **transport** — they exist because the database
 is another process on the far side of a socket. sqlite deletes them: in-process C
-driver, no pool, no TLS, no event loop. What remains is the cost sqlom is actually
+driver, no pool, no TLS, no event loop. What remains is the cost rowform is actually
 responsible for.
 
 Single-threaded, pinned to core 0, 100 rows/request from a 200,000-row table — the
 same request shape as §5.
 
-| | sqlom | SQLAlchemy Core | SQLAlchemy ORM |
+| | rowform | SQLAlchemy Core | SQLAlchemy ORM |
 |---|---|---|---|
 | CPU ms/req | **0.100** | 0.437 | 0.742 |
 | req/s (1 thread) | **9997** | 2286 | 1346 |
@@ -521,7 +521,7 @@ Artifact: [`results/profile_sqlite.txt`](../benchmarks/results/profile_sqlite.tx
 
 ### Transport is more than half the Postgres cost
 
-| sqlom, 100 rows/request | CPU/req |
+| rowform, 100 rows/request | CPU/req |
 |---|---|
 | Postgres (asyncpg, pooled, TLS, c=8, 1 core) | 0.215 ms |
 | sqlite (in-process) | 0.100 ms |
@@ -531,18 +531,18 @@ Loop, socket, protocol, TLS and pool together cost slightly *more* than an entir
 sqlite request. That is the same conclusion §6 reached from the other direction: the
 2.36x found there came from attacking this 0.115 ms, not the mapper.
 
-### Where sqlom's 0.100 ms goes — and where the profilers disagree
+### Where rowform's 0.100 ms goes — and where the profilers disagree
 
 | component | cProfile | sampled |
 |---|---|---|
-| sqlom generated code (`_hydrate_all` + `_default`) | 65% | ~56% |
+| rowform generated code (`_hydrate_all` + `_default`) | 65% | ~56% |
 | sqlite3 driver (`Cursor.fetchall`) | 16% | ~37% |
 | `orjson.dumps` | 17% | ~6% (undercounted) |
 
 **The two disagree, and the disagreement is informative rather than a defect.** Each
 has a blind spot, in opposite directions:
 
-- **cProfile inflates sqlom's share.** Its overhead is per *call*, and `_hydrate_all`
+- **cProfile inflates rowform's share.** Its overhead is per *call*, and `_hydrate_all`
   triggers ~200 instrumented builtin calls per request (100 × `object.__new__`,
   100 × `list.append`) while `Cursor.fetchall` is a single call. So the driver looks
   cheaper than it is.
@@ -551,7 +551,7 @@ has a blind spot, in opposite directions:
   called it. cProfile measures that C function directly, and `orjson.dumps` is one
   call per request so barely inflated — its 17% is the more credible figure.
 
-Reconciled, the honest reading is roughly **half the time in sqlom's generated code,
+Reconciled, the honest reading is roughly **half the time in rowform's generated code,
 ~30% in the sqlite3 driver, ~15% in orjson.** Trust the sampler for the
 hydrate-versus-fetch balance and cProfile for anything implemented in C.
 
@@ -570,7 +570,7 @@ object. That is the cost of not being a stdlib dataclass — and the reason
 
 ### What SQLAlchemy spends it on here
 
-With transport gone, both SQLAlchemy variants remain 4.4x and 7.4x sqlom's cost, and
+With transport gone, both SQLAlchemy variants remain 4.4x and 7.4x rowform's cost, and
 the profile says where:
 
 | | share of own CPU |
@@ -595,7 +595,7 @@ taskset -c 0 python3 benchmarks/profile_sqlite.py --compare --sampler
 
 ## 8. What is left in the sqlite path: essentially nothing
 
-`benchmarks/optimize_sqlite.py`. §7 attributed ~50% of the sqlite request to sqlom's
+`benchmarks/optimize_sqlite.py`. §7 attributed ~50% of the sqlite request to rowform's
 generated code, so this attacks each named cost in turn. 100 rows/request, single
 core, median of 5 × 3000 requests, byte-identical output enforced.
 
@@ -722,7 +722,7 @@ step. Two variants:
 
 [`psqlpy`](https://github.com/psqlpy-python/psqlpy) is built on Rust's
 tokio-postgres, and `QueryResult.as_class()` constructs Python instances **from
-Rust** — precisely ceiling 1. It works with sqlom's `@model` dataclasses unchanged.
+Rust** — precisely ceiling 1. It works with rowform's `@model` dataclasses unchanged.
 
 Two confounds were measured and controlled first, not assumed: with
 `log_statement=all`, asyncpg's default pool emits **6 log lines per request** (query +
@@ -734,9 +734,9 @@ Client on core 0, Postgres on cores 2,3, c=8, median of 3, byte-identical output
 
 | contender | rps | CPU ms/req | vs. fair baseline |
 |---|---|---|---|
-| asyncpg held conn + sqlom | 8805 | 0.1134 | 1.32x |
-| **asyncpg fair + sqlom** (baseline) | **6688** | **0.1495** | **1.00x** |
-| asyncpg default + sqlom (TLS, RESET) | 4612 | 0.2167 | 0.69x |
+| asyncpg held conn + rowform | 8805 | 0.1134 | 1.32x |
+| **asyncpg fair + rowform** (baseline) | **6688** | **0.1495** | **1.00x** |
+| asyncpg default + rowform (TLS, RESET) | 4612 | 0.2167 | 0.69x |
 | psqlpy held conn → dicts | 4769 | 0.2097 | 0.71x |
 | psqlpy pool → dicts | 3977 | 0.2511 | 0.59x |
 | psqlpy pool, `prepared=True` → dicts | 3965 | 0.2519 | 0.59x |
@@ -1009,7 +1009,7 @@ Async single-threaded, c=8, client core 0, Postgres cores 2,3, median of 3:
 |---|---|---|---|---|
 | asyncpg default (always RESET) | 3584 | 0.2773 | n/a | 1.00x |
 | `reset=`no-op (**leaks session state**) | 4433 | 0.2255 | n/a | 1.24x |
-| **conditional, pure sqlom traffic** | **4393** | **0.2275** | **0.00** | **1.23x** |
+| **conditional, pure rowform traffic** | **4393** | **0.2275** | **0.00** | **1.23x** |
 | conditional, 1 request in 10 uses `acquire()` | 4151 | 0.2404 | 0.10 | 1.16x |
 | conditional, 1 request in 2 uses `acquire()` | 3504 | 0.2841 | 0.50 | 0.98x |
 | `conditional_reset=False` | 3644 | 0.2742 | n/a | 1.02x |
@@ -1057,25 +1057,25 @@ Artifacts: [`results/conditional_reset.txt`](../benchmarks/results/conditional_r
 
 ---
 
-## 13. Bottom line: sqlom vs SQLAlchemy, both tuned, with and without FastAPI
+## 13. Bottom line: rowform vs SQLAlchemy, both tuned, with and without FastAPI
 
 Everything above, applied to both sides. `benchmarks/bench_final.py` for the data
 layer, `benchmarks/fastapi_app.py` + `benchmarks/httpload.py` for end to end.
 
 **SQLAlchemy is tuned too, and one of its knobs matters a lot.** By default
 SQLAlchemy wraps each request in `BEGIN … ROLLBACK`, so it sends **3 statements per
-request** against sqlom's 1 (verified with `log_statement=all`). A read-only endpoint
+request** against rowform's 1 (verified with `log_statement=all`). A read-only endpoint
 does not need a transaction, and charging those two extra round trips to "ORM
 overhead" would be dishonest. With `isolation_level="AUTOCOMMIT"` it sends exactly 1.
-It also gets `pool_reset_on_return=None` (the analogue of sqlom's conditional reset),
+It also gets `pool_reset_on_return=None` (the analogue of rowform's conditional reset),
 uvloop, a reused statement object so its compiled-SQL cache hits, and orjson.
 
 ### Data layer, one core, async single-thread c=8
 
 | contender | rps | CPU ms/req | vs. tuned ORM |
 |---|---|---|---|
-| **sqlom (all optimizations)** | **4175** | **0.2395** | **7.18x** |
-| sqlom (unoptimized engine) | 3633 | 0.2736 | 6.25x |
+| **rowform (all optimizations)** | **4175** | **0.2395** | **7.18x** |
+| rowform (unoptimized engine) | 3633 | 0.2736 | 6.25x |
 | SQLAlchemy Core (tuned) | 1043 | 0.9547 | 1.79x |
 | SQLAlchemy Core (default) | 952 | 1.0446 | 1.64x |
 | SQLAlchemy ORM (tuned) | 581 | 1.7080 | 1.00x |
@@ -1097,16 +1097,16 @@ difference between routes is the data layer.
 | endpoint | rps | mean | p50 | p95 | p99 |
 |---|---|---|---|---|---|
 | `/noop` — no database at all | 8297 | 0.96 ms | 0.93 | 1.28 | 1.61 |
-| **`/sqlom`** | **2427** | **3.29 ms** | 3.22 | 3.86 | 4.89 |
+| **`/rowform`** | **2427** | **3.29 ms** | 3.22 | 3.86 | 4.89 |
 | `/core` (tuned) | 890 | 8.98 ms | 8.09 | 11.28 | 16.37 |
 | `/orm` (tuned) | 506 | 15.79 ms | 11.61 | 61.46 | 65.19 |
 | `/orm-default` | 448 | 17.84 ms | 13.00 | 63.34 | 69.33 |
 
 | | data layer | through FastAPI |
 |---|---|---|
-| sqlom vs ORM (tuned) | 7.18x | **4.80x** |
-| sqlom vs ORM (default) | 8.28x | 5.42x |
-| sqlom vs Core (tuned) | 4.00x | 2.73x |
+| rowform vs ORM (tuned) | 7.18x | **4.80x** |
+| rowform vs ORM (default) | 8.28x | 5.42x |
+| rowform vs Core (tuned) | 4.00x | 2.73x |
 
 **The framework floor is 121 µs/request** (`/noop` at 8297 rps) — routing, ASGI and
 HTTP framing, paid identically by every route. Subtracting it gives each data layer's
@@ -1114,7 +1114,7 @@ own cost per request:
 
 | | µs/request above the floor |
 |---|---|
-| sqlom | 292 |
+| rowform | 292 |
 | SQLAlchemy Core (tuned) | 1003 |
 | SQLAlchemy ORM (tuned) | 1856 |
 
@@ -1124,18 +1124,18 @@ So the ratios survive the web layer but shrink by roughly a third — 7.2x becom
 
 Two things worth reading off the latency columns rather than the throughput ones:
 
-- **sqlom's tail is dramatically tighter.** p99 4.9 ms against the ORM's 65 ms, a 13x
+- **rowform's tail is dramatically tighter.** p99 4.9 ms against the ORM's 65 ms, a 13x
   difference on a metric users actually feel. The ORM's p50 (11.6 ms) to p99 (65 ms)
   spread suggests queueing once the single core saturates.
 - **The floor caps everything.** No data layer can exceed 8297 rps here, so as query
-  cost falls the mapper matters less; at 100 rows/request sqlom is already using 71%
+  cost falls the mapper matters less; at 100 rows/request rowform is already using 71%
   of its request budget on the database, the ORM 94%.
 
 ```bash
 taskset -c 0 python3 benchmarks/bench_final.py --repeat 3
 taskset -c 0 python3 -m uvicorn benchmarks.fastapi_app:app --port 8000 \
     --loop uvloop --http httptools --no-access-log &
-taskset -c 1 python3 benchmarks/httpload.py --path /sqlom --connections 8 --duration 4
+taskset -c 1 python3 benchmarks/httpload.py --path /rowform --connections 8 --duration 4
 ```
 
 Artifact: [`results/fastapi_end_to_end.txt`](../benchmarks/results/fastapi_end_to_end.txt)
@@ -1144,28 +1144,28 @@ Artifact: [`results/fastapi_end_to_end.txt`](../benchmarks/results/fastapi_end_t
 
 ## 14. The strictest comparison: same driver, both libraries at their defaults
 
-§13 tuned both sides but ran sqlom on asyncpg, which SQLAlchemy cannot use — so
+§13 tuned both sides but ran rowform on asyncpg, which SQLAlchemy cannot use — so
 mapper and driver were confounded — and its tuning included skipping the pool's
 session reset, a behavioural change. This removes both objections by holding
 everything constant except the mapping layer:
 
-* **psycopg3 async on both sides.** `psycopg_pool.AsyncConnectionPool` for sqlom
-  (new: `sqlom.PsycopgEngine`), `postgresql+psycopg` for SQLAlchemy.
+* **psycopg3 async on both sides.** `psycopg_pool.AsyncConnectionPool` for rowform
+  (new: `rowform.PsycopgEngine`), `postgresql+psycopg` for SQLAlchemy.
 * **Default pool behaviour on both.** No `reset=` override, no
   `conditional_reset`, no `AUTOCOMMIT`, no `pool_reset_on_return`. Verified with
   `log_statement=all` that both now send the same three statements per request —
-  sqlom `BEGIN`/`SELECT`/`COMMIT`, SQLAlchemy `BEGIN`/`SELECT`/`ROLLBACK`.
+  rowform `BEGIN`/`SELECT`/`COMMIT`, SQLAlchemy `BEGIN`/`SELECT`/`ROLLBACK`.
 * Same query, same serializer (orjson), byte-identical output.
 
 ### Data layer, one core, async single-thread c=8
 
 | contender | asyncio rps | uvloop rps | uvloop CPU ms/req |
 |---|---|---|---|
-| **sqlom (psycopg, default pool)** | **1912** | **2135** | **0.4683** |
+| **rowform (psycopg, default pool)** | **1912** | **2135** | **0.4683** |
 | SQLAlchemy Core (psycopg, default) | 766 | 801 | 1.2483 |
 | SQLAlchemy ORM (psycopg, default) | 487 | 499 | 2.0038 |
-| *sqlom vs Core* | *2.50x* | *2.67x* | |
-| *sqlom vs ORM* | *3.93x* | *4.28x* | |
+| *rowform vs Core* | *2.50x* | *2.67x* | |
+| *rowform vs ORM* | *3.93x* | *4.28x* | |
 
 Artifact: [`results/psycopg_both_default.txt`](../benchmarks/results/psycopg_both_default.txt)
 
@@ -1174,16 +1174,16 @@ Artifact: [`results/psycopg_both_default.txt`](../benchmarks/results/psycopg_bot
 | endpoint | rps | mean | p50 | p95 | p99 |
 |---|---|---|---|---|---|
 | `/noop` — framework floor | 8419 | 0.95 ms | 0.91 | 1.26 | 1.56 |
-| **`/psy-sqlom`** | **1319** | **6.06 ms** | 5.93 | 7.55 | **9.21** |
+| **`/psy-rowform`** | **1319** | **6.06 ms** | 5.93 | 7.55 | **9.21** |
 | `/psy-core` | 638 | 12.53 ms | 12.08 | 14.92 | 28.10 |
 | `/psy-orm` | 396 | 20.20 ms | 16.09 | 71.30 | 77.57 |
 
 | | data layer | through FastAPI |
 |---|---|---|
-| sqlom vs Core | 2.67x | **2.07x** |
-| sqlom vs ORM | 4.28x | **3.33x** |
+| rowform vs Core | 2.67x | **2.07x** |
+| rowform vs ORM | 4.28x | **3.33x** |
 
-Per-request cost above the 119 µs framework floor: **639 µs** (sqlom), 1449 µs
+Per-request cost above the 119 µs framework floor: **639 µs** (rowform), 1449 µs
 (Core), 2406 µs (ORM).
 
 Artifact: [`results/psycopg_end_to_end.txt`](../benchmarks/results/psycopg_end_to_end.txt)
@@ -1200,7 +1200,7 @@ Artifact: [`results/psycopg_end_to_end.txt`](../benchmarks/results/psycopg_end_t
 > ⚠️ **Every `vs Core` figure in this table was corrected downward** by
 > [METHODOLOGY correction 8](METHODOLOGY.md#8-charging-one-contender-for-a-workaround-the-others-never-needed-core-ratios-inflated-16-26x).
 > The values originally published — 4.00x, 2.73x, 2.67x and 2.07x — charged Core for a
-> per-key `str()` cast that `.mappings()` forces and sqlom never pays; on sqlite that
+> per-key `str()` cast that `.mappings()` forces and rowform never pays; on sqlite that
 > cast was 62% of Core's entire time. `vs ORM` is unaffected. Every figure elsewhere in
 > this document labelled "vs Core", including in §13 and §14 below, carries the same
 > inflation unless it says otherwise; the corrected values are collected in
@@ -1209,26 +1209,26 @@ Artifact: [`results/psycopg_end_to_end.txt`](../benchmarks/results/psycopg_end_t
 
 Two independent effects, each worth roughly a third, and they compound:
 
-- **Driver and pool policy.** Moving sqlom from tuned asyncpg to default psycopg
-  costs it more than it costs SQLAlchemy, because sqlom's advantage partly *was*
+- **Driver and pool policy.** Moving rowform from tuned asyncpg to default psycopg
+  costs it more than it costs SQLAlchemy, because rowform's advantage partly *was*
   asyncpg plus a skipped reset. On the same driver at the same defaults, 7.18x
   becomes 4.28x.
 - **The web layer.** A further ~119 µs/request that every route pays equally,
   taking 4.28x down to 3.33x.
 
-**So the range to quote depends entirely on what is being claimed.** For "sqlom's
+**So the range to quote depends entirely on what is being claimed.** For "rowform's
 mapping layer against SQLAlchemy's, same driver, nothing tuned, measured through a
 real web framework" the answer is **3.3x over the ORM and 2.1x over Core** — the
 most conservative and most defensible figure in this document. The 7.18x headline
 required asyncpg *and* a behavioural change, and both belong in the caveat rather
 than the claim.
 
-What does not change across any configuration: sqlom's tail. p99 9.2 ms against the
+What does not change across any configuration: rowform's tail. p99 9.2 ms against the
 ORM's 77.6 ms here, 4.9 vs 65.2 ms in §13 — consistently around 8x tighter.
 
 ```bash
 taskset -c 0 python3 benchmarks/bench_psycopg.py --repeat 3
-# end to end: start the app, then hit /psy-sqlom, /psy-core, /psy-orm
+# end to end: start the app, then hit /psy-rowform, /psy-core, /psy-orm
 ```
 
 ### Is the connection-handling shape fair?
@@ -1238,7 +1238,7 @@ SQLAlchemy — there is no connection reuse in the library. But the shapes are n
 identical, and the difference is visible in four lines:
 
 ```python
-# sqlom.PsycopgEngine.fetch_all
+# rowform.PsycopgEngine.fetch_all
 async with pool.connection() as conn:
     rows = await (await conn.execute(sql, params)).fetchall()
 return hydrate(rows)          # connection already back in the pool
@@ -1249,13 +1249,13 @@ async with engine.connect() as conn:
     payload = [...]           # still holding the connection
 ```
 
-So sqlom occupies a pooled connection for less of each request. Measured answer to
+So rowform occupies a pooled connection for less of each request. Measured answer to
 whether that flatters it: **no, in any configuration tested.** 1000 rows, c=8,
 median of 5:
 
 | | pool 10 | pool 2 (fewer connections than workers) |
 |---|---|---|
-| sqlom (releases before hydrating) | 691 rps | 695 rps |
+| rowform (releases before hydrating) | 691 rps | 695 rps |
 | Core, payload inside `async with` | 209 rps | 210 rps |
 | Core, payload after release | 203 rps | 202 rps |
 | *worth to Core* | *−3.0%* | *−3.7%* |
@@ -1274,7 +1274,7 @@ saturated, which is a different benchmark than any in this document.
 ⚠️ **How not to measure this.** The first attempt used `--limit 100 --repeat 3`, and
 two consecutive runs disagreed in *sign* on both pool sizes: −5.4% then +4.5% at
 pool 10, **+13.6% then +0.1%** at pool 2. That +13.6% looked exactly like a real
-starved-pool advantage for sqlom and was pure noise — it was one run away from being
+starved-pool advantage for rowform and was pure noise — it was one run away from being
 written up as a finding. Resolving it took a 10x larger payload, so the work moved
 across the release point is large relative to the jitter, plus more repeats. Same
 lesson as [correction 5](METHODOLOGY.md#5-publishing-a-single-run-and-ranking-a-tie),
@@ -1300,7 +1300,7 @@ is re-run with a tool that shares none of its code.
 ### Is it concurrent? Three checks that fail differently
 
 `benchmarks/verify_concurrency.sh`, server on core 0, generator on core 1,
-Postgres on cores 2-3, `/psy-sqlom`:
+Postgres on cores 2-3, `/psy-rowform`:
 
 | connections | ESTABLISHED sockets on :8000 | rps | mean | in flight |
 |---|---|---|---|---|
@@ -1325,7 +1325,7 @@ matters only for absolute rps; the ratios are taken at a fixed c for all
 contenders.
 
 Applying check 2 retroactively to the §14 table confirms it was concurrent as
-published: `/noop` 8419x0.949, `/psy-sqlom` 1319x6.061, `/psy-core` 638x12.533,
+published: `/noop` 8419x0.949, `/psy-rowform` 1319x6.061, `/psy-core` 638x12.533,
 `/psy-orm` 396x20.196 — all 7.99-8.00 in flight.
 
 Artifact: [`results/concurrency_verification.txt`](../benchmarks/results/concurrency_verification.txt)
@@ -1345,24 +1345,24 @@ u=8, t=10s, median of 3, one discarded warmup per endpoint:
 | endpoint | locust rps | httpload rps | delta | in flight (locust) |
 |---|---|---|---|---|
 | `/noop` | 5417 | 8604 | **-37.0%** | 6.70 |
-| `/psy-sqlom` | 1328 | 1326 | **+0.1%** | 7.81 |
+| `/psy-rowform` | 1328 | 1326 | **+0.1%** | 7.81 |
 | `/psy-core` | 624 | 668 | -6.6% | 7.90 |
 | `/psy-orm` | 404 | 416 | -2.9% | 7.94 |
 
 | ratio | locust | httpload | published in §14 |
 |---|---|---|---|
-| sqlom vs Core | 2.13x | 1.99x | 2.07x |
-| sqlom vs ORM | 3.29x | 3.19x | 3.33x |
+| rowform vs Core | 2.13x | 1.99x | 2.07x |
+| rowform vs ORM | 3.29x | 3.19x | 3.33x |
 
 **The ratios survive an independent generator.** Two tools sharing no code
-bracket the published 2.07x/3.33x within about 7%, and agree on sqlom's absolute
+bracket the published 2.07x/3.33x within about 7%, and agree on rowform's absolute
 throughput to 0.1%.
 
 **But locust cannot measure the framework floor.** `/noop` comes out 37% low, and
 check 2 says why: 6.70 in flight instead of 8. Locust on one core saturates around
 5400 rps, below `/noop`'s real throughput, so there it measures itself rather than
 the server. That is also why the two disagree by a few percent on `/psy-core` and
-`/psy-orm` while agreeing on `/psy-sqlom` — nothing about locust is broken, it is
+`/psy-orm` while agreeing on `/psy-rowform` — nothing about locust is broken, it is
 simply a heavier client, and its residual cost is small but not zero at these
 rates. Which is the argument for `httpload.py` existing: the `/noop` floor of
 119 µs used in §13-14 is only measurable with the cheaper generator.

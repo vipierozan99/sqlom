@@ -24,7 +24,7 @@ import orjson
 
 from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User
-from sqlom import (
+from rowform import (
     SQLITE_CONVERTERS,
     Query,
     compile_batch_hydrator,

@@ -45,7 +45,7 @@ def test_mypy_is_clean():
 
 @pytest.mark.typing
 def test_pyright_is_clean():
-    """pyright over sqlom/ and tests/typing/, with reportUnnecessaryTypeIgnoreComment on."""
+    """pyright over rowform/ and tests/typing/, with reportUnnecessaryTypeIgnoreComment on."""
     if not shutil.which("pyright"):
         pytest.skip("pyright is not installed")
     result = _run(["pyright", "--outputjson"])

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Micro-benchmark: sqlom hydration strategies vs SQLAlchemy 2.0 Core/ORM.
+"""Micro-benchmark: rowform hydration strategies vs SQLAlchemy 2.0 Core/ORM.
 
 Isolates the Python-side hydration + JSON-serialization cost for an API
 response by running every approach against the *same* sqlite file through
@@ -8,8 +8,8 @@ the measured delta is the object-shaping path.
 
 Every approach is checked to emit **byte-identical JSON** before timing
 starts (`--skip-equivalence` to bypass). This matters: an earlier revision
-of this script had sqlom emitting `"is_active":1` while SQLAlchemy emitted
-`"is_active":true`, so sqlom was skipping the int->bool coercion its
+of this script had rowform emitting `"is_active":1` while SQLAlchemy emitted
+`"is_active":true`, so rowform was skipping the int->bool coercion its
 competitors were paying for, which inflated its numbers.
 
 This does NOT exercise asyncpg/Postgres or connection-pool concurrency;
@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session
 
 from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User, UserDC, UserORM, users_table
-from sqlom import (
+from rowform import (
     DATACLASS_DUMP_OPTION,
     SQLITE_CONVERTERS,
     Query,
@@ -68,7 +68,7 @@ def build_query(limit):
     return Query(User).where(User.is_active == 1).where(User.id > 100).limit(limit)
 
 
-def run_sqlom_reflective(conn, limit):
+def run_rowform_reflective(conn, limit):
     """Generic hydrate()/as_dict(): setattr/getattr per field, per row."""
     sql, params = build_query(limit).to_sql()
 
@@ -84,7 +84,7 @@ def run_sqlom_reflective(conn, limit):
     return _iteration
 
 
-def run_sqlom_compiled(conn, limit):
+def run_rowform_compiled(conn, limit):
     """Codegen'd per-row hydrator + codegen'd orjson hook."""
     sql, params = build_query(limit).to_sql()
     hydrate_row = compile_hydrator(User, SQLITE_CONVERTERS)
@@ -97,7 +97,7 @@ def run_sqlom_compiled(conn, limit):
     return _iteration
 
 
-def run_sqlom_compiled_batch(conn, limit):
+def run_rowform_compiled_batch(conn, limit):
     """Codegen'd batch hydrator (tuple unpacked by the `for` statement)."""
     sql, params = build_query(limit).to_sql()
     hydrate_all = compile_batch_hydrator(User, SQLITE_CONVERTERS)
@@ -141,7 +141,7 @@ def run_dataclass_passthrough(conn, limit):
     return _iteration
 
 
-def run_sqlom_db_json(conn, limit):
+def run_rowform_db_json(conn, limit):
     """Let the database shape and encode the JSON; no Python objects at all."""
     sql, params = build_query(limit).to_json_sql(dialect="sqlite")
 
@@ -154,10 +154,10 @@ def run_sqlom_db_json(conn, limit):
 def run_sqlalchemy_core(sa_conn, limit):
     """SQLAlchemy Core against an already-checked-out connection.
 
-    The connection is hoisted out of the timed closure on purpose. The sqlom
+    The connection is hoisted out of the timed closure on purpose. The rowform
     paths above receive a `sqlite3.Connection` created once, so timing
     `engine.connect()` inside the loop would charge Core for a pool checkout
-    that sqlom never pays here and call the difference object mapping. Measured,
+    that rowform never pays here and call the difference object mapping. Measured,
     that was 12% of Core's per-request time at 100 rows — small, but it is
     exactly the kind of asymmetry this suite exists to avoid.
     """
@@ -214,7 +214,7 @@ def run_sqlalchemy_orm(sa_conn, limit):
     Two asymmetries pull in opposite directions here, so neither extreme is fair:
 
     * Creating the `Session` from the *engine* inside the loop also charges a
-      pool checkout, which sqlom does not pay (~5% of the ORM's time).
+      pool checkout, which rowform does not pay (~5% of the ORM's time).
     * Hoisting the `Session` itself out of the loop is worse in the other
       direction: its identity map would survive between iterations, so every
       iteration after the first returns already-hydrated instances and skips the
@@ -321,12 +321,12 @@ def main():
         orm_conn = orm_engine.connect()
 
         cases = [
-            ("sqlom reflective (hydrate)", run_sqlom_reflective(raw_conn, args.limit)),
-            ("sqlom compiled (per-row)", run_sqlom_compiled(raw_conn, args.limit)),
-            ("sqlom compiled (batch)", run_sqlom_compiled_batch(raw_conn, args.limit)),
+            ("rowform reflective (hydrate)", run_rowform_reflective(raw_conn, args.limit)),
+            ("rowform compiled (per-row)", run_rowform_compiled(raw_conn, args.limit)),
+            ("rowform compiled (batch)", run_rowform_compiled_batch(raw_conn, args.limit)),
             ("dataclass slots (orjson native)", run_dataclass_native(raw_conn, args.limit)),
             ("dataclass slots (passthrough)", run_dataclass_passthrough(raw_conn, args.limit)),
-            ("sqlom DB-side JSON", run_sqlom_db_json(raw_conn, args.limit)),
+            ("rowform DB-side JSON", run_rowform_db_json(raw_conn, args.limit)),
             ("SQLAlchemy Core (mappings)", run_sqlalchemy_core(core_conn, args.limit)),
             ("SQLAlchemy Core (positional)",
              run_sqlalchemy_core_positional(core_conn, args.limit)),

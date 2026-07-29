@@ -362,7 +362,7 @@ class Query(Generic[R]):
         always requires a real linking condition (README §12). SQLAlchemy
         allows exactly the same thing (its from-linter only *warns* about
         the resulting cartesian product, and only if you opt in); the
-        difference here is that sqlom has no implicit way to reach it —
+        difference here is that rowform has no implicit way to reach it —
         `join()` still always refuses an ON clause that doesn't link two
         sources, unaffected by this method's existence.
 
@@ -484,7 +484,7 @@ class Query(Generic[R]):
 
         Rarely needed: references are found wherever they appear, including inside
         a subquery, an EXISTS or another CTE. This exists for the case where the
-        CTE is not referenced by anything sqlom can see — raw SQL via
+        CTE is not referenced by anything rowform can see — raw SQL via
         `sql_function`, say — and would otherwise be left undefined.
         """
         for entry in ctes:
@@ -496,12 +496,12 @@ class Query(Generic[R]):
 
     def add_cte(self, *ctes: CTE, nest_here: bool = False) -> Self:
         """SQLAlchemy's name for `with_()` (`HasCTE.add_cte`). `nest_here` is
-        not supported — sqlom always hoists every CTE to the outermost
+        not supported — rowform always hoists every CTE to the outermost
         statement's WITH clause, so passing `True` raises rather than
         silently placing it somewhere else."""
         if nest_here:
             raise NotImplementedError(
-                "add_cte(nest_here=True) is not supported; sqlom always "
+                "add_cte(nest_here=True) is not supported; rowform always "
                 "hoists every CTE to the outermost statement's WITH clause"
             )
         return self.with_(*ctes)
@@ -520,7 +520,7 @@ class Query(Generic[R]):
         those call sites also still accept for a bare `Query`. It exists so
         calling code reads as intended and so the one-row-one-column
         requirement has somewhere to be documented: it is the database that
-        enforces it, not sqlom.
+        enforces it, not rowform.
         """
         return ScalarSubquery(self)
 
@@ -745,7 +745,7 @@ class Query(Generic[R]):
         `GenerativeSelect.with_for_update()`.
 
         Postgres-only; sqlite has no locking clause at all, so this is one of
-        the few sqlom-generated statements that only ever makes sense against
+        the few rowform-generated statements that only ever makes sense against
         Postgres (same status as `DELETE ... USING`, see README §11).
         `of=` takes a model/alias or a sequence of them, restricting the lock
         to specific tables in a join (`FOR UPDATE OF t1, t2`, Postgres-only,
@@ -896,7 +896,7 @@ class Query(Generic[R]):
                dialect: Dialect | None = None) -> tuple[str, tuple[Any, ...]]:
         """Return `(sql, params)`. `params` is a **tuple**.
 
-        `dialect=` (`SQLITE`/`POSTGRES`, from `sqlom.dialects`) is optional and
+        `dialect=` (`SQLITE`/`POSTGRES`, from `rowform.dialects`) is optional and
         additive: omitted, rendering is exactly what it always was. Passed, it
         both picks a sensible default placeholder style (unless `placeholder`
         is also given, which always wins) and makes `current_dialect()`
@@ -1201,7 +1201,7 @@ class CompoundSelect(Generic[R]):
         """SQLAlchemy's name for `with_()`. See `Query.add_cte()`."""
         if nest_here:
             raise NotImplementedError(
-                "add_cte(nest_here=True) is not supported; sqlom always "
+                "add_cte(nest_here=True) is not supported; rowform always "
                 "hoists every CTE to the outermost statement's WITH clause"
             )
         return self.with_(*ctes)
@@ -1286,6 +1286,35 @@ class CompoundSelect(Generic[R]):
     def __repr__(self) -> str:
         return f"<CompoundSelect {self.operator} x{len(self.operands)}>"
 
+
+# Mirrors Query.__init__'s own overload set (same _Sel[T] shapes, same per-arity
+# return types) so `select(User)` infers `Query[User]` as precisely as
+# `Query(User)` does. mypy's overlap check doesn't apply to __init__ itself
+# (every overload there returns None), but here the catch-all's return type
+# genuinely differs — `type[M]`/`Alias[M]` are single-argument calls a vararg
+# catch-all could also match, just never dispatch to at runtime.
+@overload
+def select(entity: type[M], /) -> Query[M]: ...  # type: ignore[overload-overlap]
+
+@overload
+def select(entity: "Alias[M]", /) -> Query[M]: ...  # type: ignore[overload-overlap]
+
+@overload
+def select(entity: "Expression[T]", /) -> Query[tuple[T]]: ...
+
+@overload
+def select(e1: _Sel[T], e2: _Sel[T2], /) -> Query[tuple[T, T2]]: ...
+
+@overload
+def select(e1: _Sel[T], e2: _Sel[T2], e3: _Sel[T3], /) -> Query[tuple[T, T2, T3]]: ...
+
+@overload
+def select(
+    e1: _Sel[T], e2: _Sel[T2], e3: _Sel[T3], e4: _Sel[T4], /
+) -> Query[tuple[T, T2, T3, T4]]: ...
+
+@overload
+def select(*entities: _Sel[Any]) -> Query[tuple[Any, ...]]: ...
 
 def select(*entities: Any) -> Query[Any]:
     """SQLAlchemy-style constructor for `Query` — `select(User, Post.title)` is

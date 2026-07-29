@@ -11,13 +11,13 @@ Each endpoint returns byte-identical JSON via `Response`, bypassing FastAPI's ow
 `jsonable_encoder`, so the only difference between routes is the data layer.
 
 Endpoints:
-    /sqlom       sqlom, all optimizations (compiled hydrator + hook,
+    /rowform       rowform, all optimizations (compiled hydrator + hook,
                  conditional reset)
     /core        SQLAlchemy 2.0 Core, tuned (AUTOCOMMIT, no pool reset)
     /core-fast   the same, shaping rows positionally rather than via .mappings()
     /orm         SQLAlchemy 2.0 ORM, tuned
     /orm-default SQLAlchemy 2.0 ORM as normally written
-    /psy-sqlom   sqlom on psycopg3, DEFAULT pool behaviour
+    /psy-rowform   rowform on psycopg3, DEFAULT pool behaviour
     /psy-core    SQLAlchemy Core on psycopg3, DEFAULT
     /psy-core-fast  the same, positional row shaping
     /psy-orm     SQLAlchemy ORM on psycopg3, DEFAULT
@@ -41,14 +41,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from benchmarks.models import User, UserORM, users_table
-from sqlom import DatabaseEngine, PsycopgEngine, Query, compile_json_default
+from rowform import DatabaseEngine, PsycopgEngine, Query, compile_json_default
 
-DSN = "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
-SA_DSN = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/sqlom_bench"
+DSN = "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
+SA_DSN = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/rowform_bench"
 # Same-driver, both-defaults variants: psycopg3 async on both sides, no pool
 # tuning anywhere. See benchmarks/bench_psycopg.py.
 PSY_CONNINFO = DSN
-PSY_SA_DSN = "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
+PSY_SA_DSN = "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
 LIMIT = int(os.environ.get("BENCH_LIMIT", "100"))
 POOL = int(os.environ.get("BENCH_POOL", "10"))
 
@@ -61,7 +61,7 @@ def sa_engine(tuned):
     kwargs = dict(pool_size=POOL, max_overflow=0, connect_args={"ssl": False})
     if tuned:
         # Without this SQLAlchemy sends BEGIN + SELECT + ROLLBACK per request —
-        # 3 statements against sqlom's 1. See benchmarks/bench_final.py.
+        # 3 statements against rowform's 1. See benchmarks/bench_final.py.
         kwargs["isolation_level"] = "AUTOCOMMIT"
         kwargs["pool_reset_on_return"] = None
     return create_async_engine(SA_DSN, **kwargs)
@@ -113,8 +113,8 @@ async def noop():
     return Response(content=b"[]", media_type=JSON)
 
 
-@app.get("/sqlom")
-async def read_sqlom():
+@app.get("/rowform")
+async def read_rowform():
     rows = await state["db"].fetch_all(state["query"])
     return Response(content=orjson.dumps(rows, default=state["to_dict"]),
                     media_type=JSON)
@@ -171,8 +171,8 @@ async def read_orm_default():
 # --------------------------------------------------------------------------
 
 
-@app.get("/psy-sqlom")
-async def read_psy_sqlom():
+@app.get("/psy-rowform")
+async def read_psy_rowform():
     rows = await state["psy"].fetch_all(state["query"])
     return Response(content=orjson.dumps(rows, default=state["to_dict"]),
                     media_type=JSON)

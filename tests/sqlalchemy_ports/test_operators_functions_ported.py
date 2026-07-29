@@ -1,30 +1,30 @@
 """Ported from SQLAlchemy's test/sql/test_operators.py and test/sql/test_functions.py
-(subset relevant to sqlom's operator/function surface), adapted to sqlom.
+(subset relevant to rowform's operator/function surface), adapted to rowform.
 
 Skipped: custom/user-defined types and TypeDecorator comparator overrides
-(sqlom has no type system to hook into); dialect-specific operators (MySQL/
+(rowform has no type system to hook into); dialect-specific operators (MySQL/
 Oracle/MSSQL rendering, `%` paramstyle escaping, floor-division-as-FLOOR()
-rewriting) since sqlom targets Postgres/sqlite generically and does not do
+rewriting) since rowform targets Postgres/sqlite generically and does not do
 per-dialect operator rewriting; JSON/ARRAY/HSTORE indexing operators (Postgres
-extension types sqlom does not model); ORM-level `Comparator` customization,
+extension types rowform does not model); ORM-level `Comparator` customization,
 `GenericFunction` subclassing and the function registry (no ORM, and
 `func.*` here is a thin passthrough, not a registry); ANSI `IS DISTINCT FROM`
 (no equivalent method exists — see the gap note below: sqlite and Postgres
 spell null-safe equality completely differently — bare `IS`/`IS NOT` versus
 `IS [NOT] DISTINCT FROM` — and `to_sql()` renders one dialect-agnostic
 string, so there is no single fragment that is valid on both); pickling of
-expression trees; `VALUES` constructs since sqlom has no derived-table VALUES
+expression trees; `VALUES` constructs since rowform has no derived-table VALUES
 clause; and precedence tests that rely on SQLAlchemy's
-precedence-aware compiler omitting "unnecessary" parens — sqlom always
+precedence-aware compiler omitting "unnecessary" parens — rowform always
 parenthesises `BinaryOp`/`BooleanClause`/`Not`, so there is no
-precedence-dependent rendering to assert on the sqlom side (only the *Python*
+precedence-dependent rendering to assert on the rowform side (only the *Python*
 operator-precedence trap around `&`/`|` remains observable, and is covered
 below).
 """
 
 import pytest
 
-from sqlom import (
+from rowform import (
     Query,
     and_,
     avg,
@@ -73,7 +73,7 @@ class TestComparisonOperators:
 
     # Ported from test/sql/test_operators.py::ComparisonOperatorTest.test_comparison_op (SQLAlchemy 2.0.51)
     def test_value_on_the_left_reflects_onto_the_column(self):
-        # sqlom only defines the comparison dunders on Expression, not their
+        # rowform only defines the comparison dunders on Expression, not their
         # reflected counterparts on plain values. Python's own operator
         # protocol supplies the rest: when `int.__gt__` can't handle a
         # ColumnExpr it falls back to the reflected method, which for `>`/`<`
@@ -116,7 +116,7 @@ class TestNullAndIsOperators:
     # Ported from test/sql/test_compiler.py::CoercionTest.test_val_is_null_coerced (SQLAlchemy 2.0.51)
     def test_is_matches_eq_none_and_is_not_matches_ne_none(self):
         # SQLAlchemy's `.is_()`/`.is_not()` are just spellings of `==`/`!=`
-        # against NULL; sqlom keeps that equivalence but only for None.
+        # against NULL; rowform keeps that equivalence but only for None.
         assert Book.title.is_(None).to_sql("?") == (Book.title == None).to_sql("?")  # noqa: E711
         assert Book.title.is_not(None).to_sql("?") == (Book.title != None).to_sql("?")  # noqa: E711
 
@@ -124,7 +124,7 @@ class TestNullAndIsOperators:
     @pytest.mark.parametrize("bad", [True, False, 0, "x"])
     def test_is_only_accepts_none(self, bad):
         # Unlike SQLAlchemy, which lets `.is_()` take TRUE/FALSE literals too
-        # (`c.is_(True)` -> "x IS true"), sqlom restricts it to None: SQL `IS`
+        # (`c.is_(True)` -> "x IS true"), rowform restricts it to None: SQL `IS`
         # otherwise wants a literal, not a bound parameter, and a value
         # comparison already has a correct spelling in `==`.
         with pytest.raises(TypeError, match="only supports None"):
@@ -189,10 +189,10 @@ class TestIsDistinctFrom:
             params=(1,),
         )
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     # SQLAlchemy has no dialect-less default to fall back on either, but it
     # never needs one: its compiler always has a dialect (defaulting to
-    # "generic ANSI"), where sqlom's to_sql() is dialect-less unless a
+    # "generic ANSI"), where rowform's to_sql() is dialect-less unless a
     # dialect is explicitly given. This is the one predicate that requires
     # one.
     def test_raises_without_a_dialect(self):
@@ -201,13 +201,13 @@ class TestIsDistinctFrom:
         with pytest.raises(ValueError, match="needs a dialect"):
             Query(Book).where(Book.id.is_not_distinct_from(1)).to_sql()
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     # Proves the null-safe semantics actually execute correctly against real
     # NULLs, the exact case plain ==/!= get wrong. No fixture column is ever
     # NULL, so an outer join supplies one: author "dan" (id 4) has no books,
     # so Book.id is NULL for that row only.
     def test_is_distinct_from_end_to_end_on_sqlite(self, db):
-        from sqlom import SQLITE
+        from rowform import SQLITE
 
         distinct = (
             Query(Author.name, Book.id)
@@ -264,7 +264,7 @@ class TestLikeIlikeBetween:
         assert clause == "(id >= $1 AND id <= $2)"
         assert params == (10, 20)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_between_end_to_end(self, run_query):
         rows = run_query(Query(Book.id).where(Book.id.between(11, 12)).order_by(Book.id))
         assert rows == [(11,), (12,)]
@@ -281,7 +281,7 @@ class TestInAndNotIn:
     def test_in_accepts_a_generator(self):
         # SQLAlchemy's InTest exercises `in_(iter(...))` explicitly (test_in_4)
         # because the historical implementation once required a concrete
-        # sequence; sqlom's `list(self.values)` already handles any iterable.
+        # sequence; rowform's `list(self.values)` already handles any iterable.
         clause, params = Author.id.in_(x for x in (1, 2, 3)).to_sql("?")
         assert clause == "id IN (?, ?, ?)"
         assert params == (1, 2, 3)
@@ -362,7 +362,7 @@ class TestTupleComparisons:
         assert clause == "(id, name) = ($1, $2)"
         assert params == (1, "ada")
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     # `!=` on tuple_() isn't exercised by any upstream test; it falls out of
     # the same ColumnOperators machinery as `==` (test_type_coercion_on_eq
     # above), so this just pins down that the negated form renders
@@ -432,17 +432,17 @@ class TestTupleComparisons:
         assert clause == "(id, name) IN (SELECT author_id, title FROM t_books)"
         assert params == ()
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_tuple_comparison_rejects_a_mismatched_value(self):
         with pytest.raises(TypeError, match="tuple_"):
             tuple_(Author.id) == 5
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_tuple_needs_at_least_one_element(self):
         with pytest.raises(ValueError, match="at least one element"):
             tuple_()
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_tuple_equality_end_to_end(self, run_query):
         rows = run_query(Query(Author).where(tuple_(Author.id, Author.name) == (1, "ada")))
         assert len(rows) == 1 and rows[0].name == "ada"
@@ -454,7 +454,7 @@ class TestTupleComparisons:
 
 
 class TestBooleanComposition:
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_or_wrapped_inside_and(self):
         clause, params = where_of(
             Query(Author).where(
@@ -464,11 +464,11 @@ class TestBooleanComposition:
         assert clause == "((id = $1 AND active = $2) OR id = $3)"
         assert params == (1, True, 2)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_and_wrapped_inside_or(self):
         # The reverse nesting from test_or_wrapped_inside_and: SQLAlchemy's
         # compiler could drop these parens because AND binds tighter than OR
-        # in SQL; sqlom always parenthesises a nested BooleanClause instead
+        # in SQL; rowform always parenthesises a nested BooleanClause instead
         # of reasoning about relative precedence.
         clause, params = where_of(
             Query(Author).where(
@@ -478,14 +478,14 @@ class TestBooleanComposition:
         assert clause == "(id = $1 AND (active = $2 OR id = $3))"
         assert params == (1, True, 2)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_three_way_and_is_flattened_not_nested(self):
         clause, _ = where_of(
             Query(Author).where(and_(Author.id == 1, Author.id == 2, Author.id == 3))
         )
         assert clause == "(id = $1 AND id = $2 AND id = $3)"
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_not_of_and_wraps_the_whole_clause(self):
         clause, params = where_of(
             Query(Author).where(
@@ -495,9 +495,9 @@ class TestBooleanComposition:
         assert clause == "NOT ((active = $1 AND (id = $2 OR id = $3)))"
         assert params == (True, 1, 2)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_double_negation_nests_rather_than_cancelling(self):
-        # sqlom's `~` always wraps in a fresh `Not`; it does not simplify
+        # rowform's `~` always wraps in a fresh `Not`; it does not simplify
         # `NOT (NOT x)` down to `x` the way some compilers' De Morgan passes
         # might. Worth pinning down explicitly since it's the kind of thing
         # an optimization could silently break.
@@ -505,7 +505,7 @@ class TestBooleanComposition:
         assert clause == "NOT (NOT (id = ?))"
         assert params == (1,)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_mixed_and_or_operator_overloads_nest_correctly(self):
         clause, params = where_of(
             Query(Author).where(
@@ -515,7 +515,7 @@ class TestBooleanComposition:
         assert clause == "(id = $1 OR (active = $2 AND id = $3))"
         assert params == (1, True, 2)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_unparenthesised_comparison_with_bitwise_operator_is_a_python_trap(self):
         # `&`/`|` bind tighter than comparisons in Python, so an
         # un-parenthesised `A.x > 1 & A.y < 2` does not parse as the boolean
@@ -536,7 +536,7 @@ class TestBooleanComposition:
 
 
 class TestArithmetic:
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_arithmetic_expression_compared_to_a_column(self):
         # Exercises BinaryOp on the left of a Condition against a plain
         # ColumnExpr on the right — both sides parenthesise/render correctly
@@ -545,7 +545,7 @@ class TestArithmetic:
         assert clause == "(id + $1) = author_id"
         assert params == (5,)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_concat_of_two_columns(self):
         # test_expressions.py already covers concat against a literal; this
         # is the column-to-column form, `title || name` — across a join,
@@ -562,7 +562,7 @@ class TestArithmetic:
 
     # Ported from test/sql/test_operators.py::BitOpTest.test_compile_binary (SQLAlchemy 2.0.51)
     def test_operate_supports_bitwise_operators(self):
-        # sqlom has no dedicated bitwise operator methods (SQLAlchemy has
+        # rowform has no dedicated bitwise operator methods (SQLAlchemy has
         # `.bitwise_and`/`.bitwise_or`/etc.); `.operate()` is the documented
         # escape hatch for exactly this.
         clause, params = select_of(Query(Book.id.operate("&", 1)))
@@ -571,7 +571,7 @@ class TestArithmetic:
         clause, _ = select_of(Query(Book.id.operate("|", 2)))
         assert clause == "(id | $1)"
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_operate_chains_because_binaryop_is_itself_an_expression(self):
         # `.operate()` returns a `BinaryOp`, which is an `Expression`, so it
         # exposes `.operate()` too — chaining composes rather than needing a
@@ -606,7 +606,7 @@ class TestGenericFunctions:
         assert clause == "(coalesce(author_id, $1) + $2)"
         assert params == (0, 1)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_sql_function_is_the_explicit_spelling_of_func_attribute_access(self):
         assert (sql_function("lower", Book.title).to_sql("?")
                 == func.lower(Book.title).to_sql("?"))
@@ -615,14 +615,14 @@ class TestGenericFunctions:
     def test_func_has_no_dotted_package_namespace(self):
         # SQLAlchemy supports `func.foo_.bar_.baz()` as a dotted/quoted
         # package path (test_underscores_packages, test_quote_special_chars).
-        # sqlom's `func` namespace returns a plain callable from attribute
+        # rowform's `func` namespace returns a plain callable from attribute
         # access rather than a nested namespace object, so a second
-        # attribute access on it fails — sqlom has no equivalent feature,
+        # attribute access on it fails — rowform has no equivalent feature,
         # this just documents the boundary rather than a bug to fix.
         with pytest.raises(AttributeError):
             func.foo.bar
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     @pytest.mark.parametrize("bad", ["1abc", "a b", "lower(x)", ""])
     def test_function_names_are_validated_as_identifiers(self, bad):
         with pytest.raises(ValueError, match="not a valid SQL function name"):
@@ -643,7 +643,7 @@ class TestAggregateFunctions:
     def test_count_of_a_column(self):
         assert select_of(Query(count(Book.id)))[0] == "count(id)"
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_count_distinct_of_a_column(self):
         assert select_of(Query(count(Book.author_id, distinct=True)))[0] == \
             "count(DISTINCT author_id)"
@@ -658,11 +658,11 @@ class TestAggregateFunctions:
     def test_typed_aggregate_shortcuts(self, aggregate, expected):
         assert select_of(Query(aggregate(Book.id)))[0] == expected
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_sum_distinct(self):
         assert select_of(Query(sum_(Book.id, distinct=True)))[0] == "sum(DISTINCT id)"
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_aggregate_in_a_having_clause(self):
         sql, params = (
             Query(Book.author_id, count(Book.id))
@@ -687,19 +687,19 @@ class TestAggregateEndToEnd:
     """Real values out of sqlite, not just SQL text — the aggregates in
     test_expressions.py's TestCountForms only exercise `count()`."""
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_sum_avg_min_max(self, run_query):
         assert run_query(Query(sum_(Book.id))) == [(46,)]
         assert run_query(Query(avg(Book.id))) == [(11.5,)]
         assert run_query(Query(min_(Book.id))) == [(10,)]
         assert run_query(Query(max_(Book.id))) == [(13,)]
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_count_distinct(self, run_query):
         # 4 books, 3 distinct authors (author 1 wrote two).
         assert run_query(Query(count(Book.author_id, distinct=True))) == [(3,)]
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_group_by_with_having(self, run_query):
         rows = run_query(
             Query(Book.author_id, count(Book.id))
@@ -715,23 +715,23 @@ class TestAggregateEndToEnd:
 
 
 class TestLabel:
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_label_on_a_column(self):
         clause, _ = select_of(Query(Book.title.label("book_title")))
         assert clause == "title AS book_title"
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_label_on_an_arithmetic_expression(self):
         clause, params = select_of(Query((Book.id + 1).label("next_id")))
         assert clause == "(id + $1) AS next_id"
         assert params == (1,)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_label_on_an_aggregate(self):
         clause, _ = select_of(Query(count(Book.id).label("n")))
         assert clause == "count(id) AS n"
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_labelled_expression_is_usable_end_to_end(self, run_query):
         rows = run_query(Query(Book.id, count().over().label("total")).order_by(Book.id).limit(1))
         assert rows == [(10, 4)]

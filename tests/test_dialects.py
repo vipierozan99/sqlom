@@ -2,32 +2,32 @@
 `is_distinct_from_sql()` spellings, and `current_dialect()`'s contextvar
 behaviour outside of any render.
 
-sqlom-original tests (no SQLAlchemy equivalent) — this module doesn't exist
+rowform-original tests (no SQLAlchemy equivalent) — this module doesn't exist
 in SQLAlchemy, whose dialect system is a full compiler/visitor hierarchy.
-sqlom's is deliberately a much smaller "common core + a few overridable
-flags/methods" — see sqlom/dialects.py's module docstring for why.
+rowform's is deliberately a much smaller "common core + a few overridable
+flags/methods" — see rowform/dialects.py's module docstring for why.
 """
 
-from sqlom import SQLITE, POSTGRES, Dialect, PostgresDialect, SqliteDialect
-from sqlom.dialects import current_dialect
+from rowform import SQLITE, POSTGRES, Dialect, PostgresDialect, SqliteDialect
+from rowform.dialects import current_dialect
 
 
 class TestSingletons:
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_sqlite_and_postgres_are_shared_instances(self):
         assert SqliteDialect() is not SQLITE
         assert SQLITE is SQLITE
         assert PostgresDialect() is not POSTGRES
         assert POSTGRES is POSTGRES
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_names_and_default_placeholders(self):
         assert SQLITE.name == "sqlite"
         assert SQLITE.default_placeholder == "?"
         assert POSTGRES.name == "postgres"
         assert POSTGRES.default_placeholder == "$"
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_generic_base_dialect_is_permissive(self):
         base = Dialect()
         assert base.supports_ilike
@@ -37,14 +37,14 @@ class TestSingletons:
 
 
 class TestSupportsFlags:
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_postgres_supports_everything(self):
         assert POSTGRES.supports_ilike
         assert POSTGRES.supports_for_update
         assert POSTGRES.supports_delete_using
         assert POSTGRES.supports_on_conflict_constraint
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_sqlite_supports_none_of_the_postgres_only_features(self):
         assert not SQLITE.supports_ilike
         assert not SQLITE.supports_for_update
@@ -71,6 +71,6 @@ class TestIsDistinctFromSql:
 
 
 class TestCurrentDialect:
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_none_outside_any_render(self):
         assert current_dialect() is None

@@ -2,7 +2,7 @@
 
 import pytest
 
-from sqlom import CompoundSelect, Query
+from rowform import CompoundSelect, Query
 from tests.conftest import Author, Book
 
 

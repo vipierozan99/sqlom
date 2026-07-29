@@ -10,7 +10,7 @@ A checker reporting nothing on the positive file proves the good cases work. Onl
 this file proves the bad cases are caught.
 """
 
-from sqlom import (
+from rowform import (
     Column,
     DatabaseEngine,
     Delete,
@@ -168,11 +168,6 @@ Insert("authors")  # type: ignore[arg-type]  # pyright: ignore
 Update(Author).set(name="z").where("id = 1")  # type: ignore[arg-type]  # pyright: ignore
 Delete(Author).where("id = 1")  # type: ignore[arg-type]  # pyright: ignore
 Insert(Author).values(name="a").returning("id")  # type: ignore[arg-type]  # pyright: ignore
-
-
-async def execute_only_takes_statements(engine: DatabaseEngine) -> None:
-    # execute() is for writes; a select has no rowcount to report.
-    await engine.execute(Query(Author))  # type: ignore[arg-type]  # pyright: ignore
 
 
 # --------------------------------------------------------------------------

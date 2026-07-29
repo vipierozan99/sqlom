@@ -1,6 +1,6 @@
 """Pure-function engine internals that need no database connection."""
 
-from sqlom import DatabaseEngine
+from rowform import DatabaseEngine
 
 
 class TestNumberPlaceholders:

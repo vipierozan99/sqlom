@@ -11,7 +11,7 @@ Every Core contender in this repo shaped rows like this:
 `.mappings()` yields `RowMapping`s whose keys are `quoted_name`, a `str` subclass
 that orjson refuses to serialize, so each key of each row gets an explicit `str()`
 cast. That cast is not row shaping. It is the price of one particular Core API,
-and sqlom's path never pays anything like it.
+and rowform's path never pays anything like it.
 
 The equally idiomatic alternative captures the names once and zips:
 
@@ -26,7 +26,7 @@ HOW IT WAS FOUND
 Not by reading the code. The new two-model join benchmark *cannot* use
 `.mappings()` — both tables have an `id`, so the keys collide — so its Core
 contender had to slice the flat row positionally. Core then came out far closer to
-sqlom on the join (1.17x) than on the single table (3.87x), which is the wrong
+rowform on the join (1.17x) than on the single table (3.87x), which is the wrong
 direction: a join is more work, not less. The only way a join could *close* Core's
 gap is if the single-table measurement had been charging Core for something else.
 
@@ -46,7 +46,7 @@ median of 3 trials. "was published" is the figure in docs/BENCHMARKS.md before t
 correction; "re-run" is the same idiom measured today, so the two columns separate
 box drift from the correction itself.
 
-  sqlom vs SQLAlchemy CORE
+  rowform vs SQLAlchemy CORE
   configuration                        was published   re-run   positional
   ---------------------------------------------------------------------------
   sqlite single table, 1000 rows               3.87x    3.91x        1.49x
@@ -56,7 +56,7 @@ box drift from the correction itself.
   psycopg both default, via FastAPI            2.07x    2.22x        1.57x
   sqlite two-model join, 1000 rows                 -        -        1.17x
 
-  sqlom vs SQLAlchemy ORM  (unaffected - the ORM path uses getattr, not .mappings())
+  rowform vs SQLAlchemy ORM  (unaffected - the ORM path uses getattr, not .mappings())
   configuration                        was published   re-run
   ------------------------------------------------------------
   sqlite single table, 1000 rows               5.22x    5.57x
@@ -69,25 +69,25 @@ box drift from the correction itself.
 RAW NUMBERS BEHIND THE POSITIONAL COLUMN
 ----------------------------------------
 sqlite single table, isolated processes, 1000 rows, median ms:
-    sqlom compiled (batch)        1.260
+    rowform compiled (batch)        1.260
     Core (positional)             1.876
     Core (mappings)               4.923
     SQLAlchemy ORM                7.013
 
 asyncpg, both tuned, data layer, core 0, c=8, uvloop, rps:
-    sqlom (all optimizations)      4823
+    rowform (all optimizations)      4823
     Core positional (tuned)        1922
     Core (tuned)                   1072
     ORM (tuned)                     667
 
 psycopg3 both sides, default pools, data layer, core 0, c=8, uvloop, rps:
-    sqlom                          2228
+    rowform                          2228
     Core positional                1110
     Core                            778
     ORM                             491
 
 FastAPI end-to-end, both drivers, 5 trials x 4s, rps:
-    /sqlom          2430      /psy-sqlom       1293
+    /rowform          2430      /psy-rowform       1293
     /core-fast      1359      /psy-core-fast    825
     /core            914      /psy-core         582
 
@@ -97,7 +97,7 @@ The positional column. A benchmark should compare each contender at its best, an
 `dict(zip(names, row))` is not a trick — it is what the join benchmark had to use
 anyway, and it needs no knowledge of SQLAlchemy internals.
 
-So: sqlom is **1.5-2.5x SQLAlchemy Core**, depending on driver and whether the web
+So: rowform is **1.5-2.5x SQLAlchemy Core**, depending on driver and whether the web
 layer is included, and **1.2x on a two-model join**. Not 2.1-4.0x. The ORM figures
 stand: 3.2-7.2x, and 4.1x on the join.
 
@@ -108,8 +108,8 @@ WHAT THIS DOES NOT CHANGE
 -------------------------
 * The ORM comparison, which is the headline. The ORM contender builds dicts with
   `getattr` and never touches `.mappings()`.
-* sqlom's own absolute numbers, which are unchanged in every configuration.
-* The direction of the conclusion. Core is still slower than sqlom everywhere
+* rowform's own absolute numbers, which are unchanged in every configuration.
+* The direction of the conclusion. Core is still slower than rowform everywhere
   measured; it is 1.2-2.5x slower rather than 2-4x slower.
 
 WHY IT TOOK THIS LONG

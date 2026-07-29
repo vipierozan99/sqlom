@@ -47,7 +47,7 @@ import orjson
 
 from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User
-from sqlom import SQLITE_CONVERTERS, Query, compile_batch_hydrator, compile_json_default
+from rowform import SQLITE_CONVERTERS, Query, compile_batch_hydrator, compile_json_default
 
 
 def seed(db_path, rows, rng_seed=42):
@@ -63,7 +63,7 @@ def seed(db_path, rows, rng_seed=42):
     conn.close()
 
 
-def sqlom_pieces(limit):
+def rowform_pieces(limit):
     sql, params = (
         Query(User).where(User.is_active == 1).where(User.id > 100).limit(limit).to_sql()
     )
@@ -74,7 +74,7 @@ def sqlom_pieces(limit):
 # --------------------------------------------------------------- variants
 def make_sync(db_path, limit, _conc):
     conn = sqlite3.connect(db_path)
-    sql, params, hydrate, to_dict = sqlom_pieces(limit)
+    sql, params, hydrate, to_dict = rowform_pieces(limit)
 
     def request():
         return orjson.dumps(hydrate(conn.execute(sql, params).fetchall()),
@@ -85,7 +85,7 @@ def make_sync(db_path, limit, _conc):
 
 def make_coro(db_path, limit, _conc, yield_point):
     conn = sqlite3.connect(db_path)
-    sql, params, hydrate, to_dict = sqlom_pieces(limit)
+    sql, params, hydrate, to_dict = rowform_pieces(limit)
 
     async def request():
         if yield_point:
@@ -102,7 +102,7 @@ def make_aiosqlite(db_path, limit, _conc):
     """NOT single-threaded: aiosqlite runs sqlite3 on a helper thread."""
     import aiosqlite
 
-    sql, params, hydrate, to_dict = sqlom_pieces(limit)
+    sql, params, hydrate, to_dict = rowform_pieces(limit)
     holder = {}
 
     async def setup():

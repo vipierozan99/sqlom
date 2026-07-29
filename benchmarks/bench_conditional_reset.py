@@ -40,7 +40,7 @@ import orjson
 
 from benchmarks.benchargs import validate
 from benchmarks.models import User
-from sqlom import (
+from rowform import (
     ASYNCPG_CONVERTERS,
     DatabaseEngine,
     Query,
@@ -48,7 +48,7 @@ from sqlom import (
     compile_json_default,
 )
 
-DSN = "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
+DSN = "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
 
 
 async def noop_reset(con):
@@ -75,7 +75,7 @@ async def make_engine(limit, pool_size, conditional, dirty_every=0):
     async def request():
         counter["n"] += 1
         if dirty_every and counter["n"] % dirty_every == 0:
-            # Realistic escape-hatch use: raw connection for something sqlom
+            # Realistic escape-hatch use: raw connection for something rowform
             # does not model. Marks the connection dirty, so its release pays
             # the reset. Must do the *same* query work as the normal path, or a
             # higher dirty rate would simply be doing less and look faster.
@@ -144,7 +144,7 @@ async def main():
          lambda: make_raw(args.limit, args.pool_size, None)),
         ("reset=no-op (LEAKS session state)",
          lambda: make_raw(args.limit, args.pool_size, noop_reset)),
-        ("conditional, pure sqlom traffic",
+        ("conditional, pure rowform traffic",
          lambda: make_engine(args.limit, args.pool_size, True)),
         ("conditional, 1 in 10 uses acquire()",
          lambda: make_engine(args.limit, args.pool_size, True, dirty_every=10)),
@@ -158,7 +158,7 @@ async def main():
     # runs its own built-in reset and the counter stays at 0 — which reads as
     # "this variant skips the reset", the exact opposite of the truth. Report n/a
     # for any variant the counter does not instrument.
-    instrumented = {"conditional, pure sqlom traffic",
+    instrumented = {"conditional, pure rowform traffic",
                     "conditional, 1 in 10 uses acquire()",
                     "conditional, 1 in 2 uses acquire()"}
 

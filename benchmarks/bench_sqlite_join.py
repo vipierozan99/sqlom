@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Micro-benchmark: selecting **two models across a join**, sqlom vs SQLAlchemy.
+"""Micro-benchmark: selecting **two models across a join**, rowform vs SQLAlchemy.
 
-Every other benchmark in this repo measures one flat table. That is the shape sqlom
+Every other benchmark in this repo measures one flat table. That is the shape rowform
 was built for and the shape it looks best in, so it is also the shape least likely to
 generalise. A join is the obvious next question: two entities to construct per row
 instead of one, a wider select list, and — for the ORM — the machinery that makes a
@@ -11,9 +11,9 @@ Same file, same driver, same connection type for every contender, and the same
 fairness corrections the single-table suite already carries:
 
 * **Connections and `Session`s are hoisted or not, deliberately.** The raw
-  `sqlite3.Connection` sqlom uses is created once, so Core's connection is checked out
+  `sqlite3.Connection` rowform uses is created once, so Core's connection is checked out
   once too — timing `engine.connect()` inside the loop charges Core for something
-  sqlom never pays. The ORM's `Session`, by contrast, is created *per iteration*:
+  rowform never pays. The ORM's `Session`, by contrast, is created *per iteration*:
   hoisting it lets its identity map survive between iterations, so every iteration
   after the first returns already-hydrated instances and skips the work under
   measurement.
@@ -64,7 +64,7 @@ from benchmarks.join_models import (
     authors_table,
     posts_table,
 )
-from sqlom import (
+from rowform import (
     SQLITE_CONVERTERS,
     Query,
     compile_join_hydrator,
@@ -111,7 +111,7 @@ def seed_database(db_path, authors, rng_seed=42):
 # faster for a reason that has nothing to do with object mapping.
 
 
-def sqlom_query(limit):
+def rowform_query(limit):
     return (Query(Author, Post)
             .join(Post, Post.author_id == Author.id)
             .where(Author.is_active == True)     # noqa: E712 - builds SQL, not a bool
@@ -138,14 +138,14 @@ def orm_statement(limit):
 # --- contenders -----------------------------------------------------------
 
 
-def run_sqlom(conn, limit):
-    """sqlom: compiled join hydrator, then orjson with a compiled default hook.
+def run_rowform(conn, limit):
+    """rowform: compiled join hydrator, then orjson with a compiled default hook.
 
-    The hydrator and the hook are built once, which is what sqlom does at runtime —
+    The hydrator and the hook are built once, which is what rowform does at runtime —
     both are cached per model shape, so building them inside the loop would time a
     cost a real service pays once per process.
     """
-    query = sqlom_query(limit)
+    query = rowform_query(limit)
     sql, params = query.to_sql()
     hydrate_rows = compile_join_hydrator(
         query.hydration_spec(), SQLITE_CONVERTERS, wrap=query.is_multi_entity
@@ -169,15 +169,15 @@ def run_sqlom(conn, limit):
     return _iteration
 
 
-def run_sqlom_tuples(conn, limit):
-    """sqlom without the JSON hook: dicts built directly from the hydrated objects.
+def run_rowform_tuples(conn, limit):
+    """rowform without the JSON hook: dicts built directly from the hydrated objects.
 
     Included because the hook is an orjson-specific trick and its cost is not
     obviously separable from hydration. This variant shows what the same objects cost
     when shaped by ordinary attribute access, which is what any non-orjson serializer
     would do.
     """
-    query = sqlom_query(limit)
+    query = rowform_query(limit)
     sql, params = query.to_sql()
     hydrate_rows = compile_join_hydrator(
         query.hydration_spec(), SQLITE_CONVERTERS, wrap=query.is_multi_entity
@@ -250,12 +250,12 @@ def run_dict_floor(conn, limit):
     """No object mapping at all: sqlite3 rows straight into dicts.
 
     Called a floor because it builds no model instances, but note what it is *not* a
-    floor for: it still materialises two dicts per row, and `sqlom (hook)` materialises
+    floor for: it still materialises two dicts per row, and `rowform (hook)` materialises
     none — orjson walks the objects directly. So the hook path can and does come out
     ahead of this. The honest reading is that this bounds the *object construction*
     cost, not the response-building cost.
     """
-    sql, params = sqlom_query(limit).to_sql()
+    sql, params = rowform_query(limit).to_sql()
     width = len(AUTHOR_FIELDS)
     author_bool = AUTHOR_FIELDS.index("is_active")
     post_bool = POST_FIELDS.index("published")
@@ -356,8 +356,8 @@ def main():
         orm_conn = orm_engine.connect()
 
         cases = [
-            ("sqlom (hook)", run_sqlom(raw_conn, args.limit)),
-            ("sqlom (attribute dicts)", run_sqlom_tuples(raw_conn, args.limit)),
+            ("rowform (hook)", run_rowform(raw_conn, args.limit)),
+            ("rowform (attribute dicts)", run_rowform_tuples(raw_conn, args.limit)),
             ("dict floor (no objects)", run_dict_floor(raw_conn, args.limit)),
             ("SQLAlchemy Core", run_sqlalchemy_core(core_conn, args.limit)),
             ("SQLAlchemy ORM", run_sqlalchemy_orm(orm_conn, args.limit)),
@@ -390,7 +390,7 @@ def main():
                         return 1
             print(f"Output equivalence: all {len(cases)} approaches emit identical "
                   f"JSON ({len(reference)} bytes), stable over 3 repeats each")
-            print(f"SQL under test:\n  {sqlom_query(args.limit).to_sql()[0]}\n")
+            print(f"SQL under test:\n  {rowform_query(args.limit).to_sql()[0]}\n")
 
         results = []
         for name, fn in cases:

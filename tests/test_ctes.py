@@ -15,7 +15,7 @@ guard's regression test.
 
 import pytest
 
-from sqlom import (
+from rowform import (
     CTE,
     Column,
     Delete,

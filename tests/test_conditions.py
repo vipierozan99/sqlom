@@ -2,7 +2,7 @@
 
 import pytest
 
-from sqlom import ColumnExpr, Condition
+from rowform import ColumnExpr, Condition
 from tests.conftest import Author, Book
 
 

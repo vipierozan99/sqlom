@@ -5,18 +5,18 @@ Output equivalence: all 7 contenders emit identical JSON (7701 bytes)
 
 contender                                          rps  cpu ms/req   util
 -------------------------------------------------------------------------
-asyncpg default + sqlom (TLS, RESET)              4612      0.2167   1.00
-asyncpg fair + sqlom (no TLS/RESET)               6688      0.1495   1.00
-asyncpg held conn + sqlom                         8805      0.1134   1.00
+asyncpg default + rowform (TLS, RESET)              4612      0.2167   1.00
+asyncpg fair + rowform (no TLS/RESET)               6688      0.1495   1.00
+asyncpg held conn + rowform                         8805      0.1134   1.00
 psqlpy (Rust) pool -> dicts                       3977      0.2511   1.00
 psqlpy (Rust) pool prepared -> dicts              3965      0.2519   1.00
 psqlpy (Rust) held conn -> dicts                  4769      0.2097   1.00
 psqlpy (Rust) held conn -> RUST-BUILT objects     3787      0.2640   1.00
 
 vs. the fair asyncpg baseline (6688 rps, 0.1495 ms CPU/req):
-  asyncpg default + sqlom (TLS, RESET)             0.69x rps     0.69x cpu
-  asyncpg fair + sqlom (no TLS/RESET)              1.00x rps     1.00x cpu
-  asyncpg held conn + sqlom                        1.32x rps     1.32x cpu
+  asyncpg default + rowform (TLS, RESET)             0.69x rps     0.69x cpu
+  asyncpg fair + rowform (no TLS/RESET)              1.00x rps     1.00x cpu
+  asyncpg held conn + rowform                        1.32x rps     1.32x cpu
   psqlpy (Rust) pool -> dicts                      0.59x rps     0.60x cpu
   psqlpy (Rust) pool prepared -> dicts             0.59x rps     0.59x cpu
   psqlpy (Rust) held conn -> dicts                 0.71x rps     0.71x cpu

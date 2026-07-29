@@ -11,18 +11,18 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-import sqlom as _sqlom_pkg
+import rowform as _rowform_pkg
 
-# Resolved once. Substring matching on "sqlom" is a trap: this repo's own
-# directory is named sqlom, so a naive r"/sqlom/" pattern also matches
-# /home/user/sqlom/benchmarks/bench_pg_load.py and credits harness work to the
+# Resolved once. Substring matching on "rowform" is a trap: this repo's own
+# directory is named rowform, so a naive r"/rowform/" pattern also matches
+# /home/user/rowform/benchmarks/bench_pg_load.py and credits harness work to the
 # library. Compare against real package directories instead.
-SQLOM_DIR = str(Path(_sqlom_pkg.__file__).resolve().parent) + os.sep
+ROWFORM_DIR = str(Path(_rowform_pkg.__file__).resolve().parent) + os.sep
 BENCH_DIR = str(Path(__file__).resolve().parent) + os.sep
 
-# Functions sqlom generates via exec(). Their code object filename is "<string>",
+# Functions rowform generates via exec(). Their code object filename is "<string>",
 # which SQLAlchemy also uses for its own codegen, so match on name.
-SQLOM_GENERATED = {"_hydrate", "_hydrate_all", "_default", "_rows_to_dicts"}
+ROWFORM_GENERATED = {"_hydrate", "_hydrate_all", "_default", "_rows_to_dicts"}
 
 # Checked in order after the path-based tests; first match wins. C functions are
 # matched on funcname too, which is how sqlite3's methods get recognised: they
@@ -44,10 +44,10 @@ CATEGORIES = [
 def categorize(filename, funcname):
     if filename.startswith(BENCH_DIR):
         return "benchmark harness"
-    if filename.startswith(SQLOM_DIR):
-        return "sqlom (library)"
-    if filename == "<string>" and funcname in SQLOM_GENERATED:
-        return "sqlom (codegen)"
+    if filename.startswith(ROWFORM_DIR):
+        return "rowform (library)"
+    if filename == "<string>" and funcname in ROWFORM_GENERATED:
+        return "rowform (codegen)"
     subject = f"{filename}:{funcname}"
     for label, patterns in CATEGORIES:
         if any(re.search(p, subject) for p in patterns):
@@ -59,7 +59,7 @@ def rollup(stats, attribute_builtins=True):
     """Aggregate per-function self-CPU into per-library shares.
 
     A flat rollup misattributes generic C builtins: `object.__new__` and
-    `list.append` are almost entirely *caused by* sqlom's generated hydrator, but
+    `list.append` are almost entirely *caused by* rowform's generated hydrator, but
     their frames belong to no library and land in "stdlib". So by default each
     such builtin's self time is redistributed to its callers in proportion to
     call counts, one level up.

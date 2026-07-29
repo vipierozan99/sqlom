@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Concurrent load benchmark: sqlom vs SQLAlchemy 2.0 async, over asyncpg.
+"""Concurrent load benchmark: rowform vs SQLAlchemy 2.0 async, over asyncpg.
 
 This is the benchmark the README's "high-throughput HTTP services" framing
 actually needs, and it closes two gaps the sqlite micro-benchmark left open:
@@ -17,7 +17,7 @@ As in the sqlite benchmark, all contenders are checked to emit byte-identical
 JSON before timing starts. `raw asyncpg` is the floor — it does no mapping.
 
 Setup (Postgres must be reachable):
-    createdb sqlom_bench
+    createdb rowform_bench
     python3 benchmarks/bench_pg_load.py --seed-only
 
 Usage:
@@ -44,14 +44,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from benchmarks.benchargs import validate
 from benchmarks.models import TABLE_NAME, User, UserORM, users_table
-from sqlom import (
+from rowform import (
     ASYNCPG_CONVERTERS,
     Query,
     compile_batch_hydrator,
     compile_json_default,
 )
 
-DEFAULT_DSN = "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench"
+DEFAULT_DSN = "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench"
 
 SEED_SQL = f"""
 DROP TABLE IF EXISTS {TABLE_NAME};
@@ -83,7 +83,7 @@ async def seed(dsn, rows):
 # Each factory returns an async `request()` coroutine function plus a teardown.
 
 
-async def make_sqlom(dsn, pool_size, limit):
+async def make_rowform(dsn, pool_size, limit):
     pool = await asyncpg.create_pool(dsn, min_size=pool_size, max_size=pool_size)
     query = Query(User).where(User.is_active == True).where(User.id > 100).limit(limit)
     sql, params = query.to_sql(placeholder="$")
@@ -103,7 +103,7 @@ async def make_raw_asyncpg(dsn, pool_size, limit):
     """Naive no-mapping baseline: `dict(record)` per row.
 
     This is what you'd write by hand without a mapper. It is NOT a floor —
-    sqlom's compiled path beats it, because `dict(Record)` rebuilds each dict
+    rowform's compiled path beats it, because `dict(Record)` rebuilds each dict
     through asyncpg's key machinery while the compiled hook emits a dict
     literal with the keys baked in.
     """
@@ -187,7 +187,7 @@ async def make_sa_orm(dsn, pool_size, limit):
 
 
 CONTENDERS = {
-    "sqlom (compiled)": make_sqlom,
+    "rowform (compiled)": make_rowform,
     "raw asyncpg + codegen dict": make_raw_codegen,
     "raw asyncpg + dict(Record)": make_raw_asyncpg,
     "SQLAlchemy async Core": make_sa_core,

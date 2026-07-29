@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Profile the sqlite path — no event loop, no pool, no TLS.
 
-The Postgres profile (docs/BENCHMARKS.md §5) found sqlom's generated code to be
+The Postgres profile (docs/BENCHMARKS.md §5) found rowform's generated code to be
 only ~15% of client CPU, with 38% in the asyncio loop, 19% in the asyncpg fetch
 and 15% in pool acquire/release. Those three are all *transport*: they exist
 because the database is a separate process reached over a socket.
 
 sqlite removes all of it. The driver is in-process C, there is no connection
 pool, no TLS handshake and no event loop. Whatever is left is the irreducible
-cost of turning rows into JSON, which is the part sqlom is actually responsible
+cost of turning rows into JSON, which is the part rowform is actually responsible
 for. This is the cleanest available measurement of the mapper's own weight.
 
 Same two profilers as profile_pg.py, for the same reasons: cProfile with a
@@ -41,7 +41,7 @@ from sqlalchemy.orm import Session
 from benchmarks.benchargs import validate
 from benchmarks import profkit
 from benchmarks.models import DDL, TABLE_NAME, User, UserORM, users_table
-from sqlom import (
+from rowform import (
     SQLITE_CONVERTERS,
     Query,
     compile_batch_hydrator,
@@ -62,7 +62,7 @@ def seed(db_path, rows, rng_seed=42):
     conn.close()
 
 
-def make_sqlom(db_path, limit):
+def make_rowform(db_path, limit):
     conn = sqlite3.connect(db_path)
     sql, params = (
         Query(User).where(User.is_active == 1).where(User.id > 100).limit(limit).to_sql()
@@ -74,7 +74,7 @@ def make_sqlom(db_path, limit):
         rows = conn.execute(sql, params).fetchall()
         return orjson.dumps(hydrate_all(rows), default=to_dict)
 
-    return "sqlom (compiled)", request, conn.close
+    return "rowform (compiled)", request, conn.close
 
 
 def make_orm(db_path, limit):
@@ -114,7 +114,7 @@ def make_core(db_path, limit):
     return "SQLAlchemy Core", request, engine.dispose
 
 
-BUILDERS = {"sqlom": make_sqlom, "orm": make_orm, "core": make_core}
+BUILDERS = {"rowform": make_rowform, "orm": make_orm, "core": make_core}
 
 
 def measure(request, n, warmup):
@@ -214,8 +214,8 @@ def main():
     p.add_argument("--profile-requests", type=int, default=800)
     p.add_argument("--warmup", type=int, default=100)
     p.add_argument("--top", type=int, default=16)
-    p.add_argument("--only", default="sqlom", choices=list(BUILDERS))
-    p.add_argument("--compare", action="store_true", help="sqlom vs Core vs ORM")
+    p.add_argument("--only", default="rowform", choices=list(BUILDERS))
+    p.add_argument("--compare", action="store_true", help="rowform vs Core vs ORM")
     p.add_argument("--sampler", action="store_true")
     p.add_argument("--pin", default=None, help="pin this process to these cores, e.g. 0")
     args = p.parse_args()
@@ -230,7 +230,7 @@ def main():
         db_path = str(Path(tmp) / "bench.sqlite3")
         seed(db_path, args.rows)
 
-        names = ["sqlom", "core", "orm"] if args.compare else [args.only]
+        names = ["rowform", "core", "orm"] if args.compare else [args.only]
         results = []
         for n in names:
             results.append(profile_one(n, db_path, args))

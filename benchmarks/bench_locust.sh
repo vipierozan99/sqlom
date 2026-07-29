@@ -26,7 +26,7 @@ set -euo pipefail
 USERS=8
 DURATION=10s
 REPEAT=3
-ENDPOINTS="/noop,/psy-sqlom,/psy-core,/psy-orm"
+ENDPOINTS="/noop,/psy-rowform,/psy-core,/psy-orm"
 SERVER_CORE=0
 CLIENT_CORE=1
 DB_CORES="2,3"
@@ -199,11 +199,11 @@ if "/noop" in med:
         print(f"  /noop is {ratio:>5.2f}x {ep:<14} {verdict}")
 
 db = {ep: r for ep, r in med.items() if ep != "/noop"}
-if "/psy-sqlom" in db:
+if "/psy-rowform" in db:
     print("\nratios, locust:")
     for ep, rps in db.items():
-        if ep != "/psy-sqlom":
-            print(f"  sqlom vs {ep:<12}{db['/psy-sqlom'] / rps:>6.2f}x")
+        if ep != "/psy-rowform":
+            print(f"  rowform vs {ep:<12}{db['/psy-rowform'] / rps:>6.2f}x")
 
 # --- Cross-check against httpload.py -----------------------------------------
 # Two independent generators, same server, same core, same run. Where they agree
@@ -219,9 +219,9 @@ if hmed:
         delta = (med[ep] - hmed[ep]) / hmed[ep] * 100
         print(f"{ep:<14}{med[ep]:>12.0f}{hmed[ep]:>14.0f}{delta:>8.1f}%")
     hdb = {ep: r for ep, r in hmed.items() if ep != "/noop"}
-    if "/psy-sqlom" in hdb:
+    if "/psy-rowform" in hdb:
         print("\nratios, httpload:")
         for ep, rps in hdb.items():
-            if ep != "/psy-sqlom":
-                print(f"  sqlom vs {ep:<12}{hdb['/psy-sqlom'] / rps:>6.2f}x")
+            if ep != "/psy-rowform":
+                print(f"  rowform vs {ep:<12}{hdb['/psy-rowform'] / rps:>6.2f}x")
 PY

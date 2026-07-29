@@ -48,7 +48,7 @@ class AsyncpgTransaction(Transaction):
     async def _fetch_value(self, sql, params):
         return await self.connection.fetchval(sql, *params)
 
-    async def execute(self, sql, *args):
+    async def _execute_raw(self, sql, *args):
         return await self.connection.execute(sql, *args)
 
     def transaction(
@@ -208,7 +208,7 @@ class DatabaseEngine:
         Goes through `acquire()`, so the connection is marked dirty and pays the
         full session reset on release — a transaction body can leave session
         state behind, which is exactly what the conditional-reset invariant
-        assumes `fetch_all` never does. See sqlom/transaction.py.
+        assumes `fetch_all` never does. See rowform/transaction.py.
         """
         kwargs: dict[str, Any] = {"readonly": readonly, "deferrable": deferrable}
         if isolation is not None:
@@ -283,12 +283,24 @@ class DatabaseEngine:
             rows = await conn.fetch(sql, *params)
         return self._hydrator_for(query)(rows)
 
-    async def execute(self, statement: _Statement, **overrides: Any) -> str:
-        """Run an Insert/Update/Delete that has no RETURNING.
+    @overload
+    async def execute(self, statement: _Select[R], **overrides: Any) -> list[R]: ...
 
-        Returns asyncpg's status tag, e.g. "INSERT 0 3" — the driver's own report of
-        what happened, not a normalised count, because normalising it would hide
-        the difference between "0 rows matched" and "the statement did nothing".
+    @overload
+    async def execute(self, statement: _Statement, **overrides: Any) -> str: ...
+
+    async def execute(self, statement: Any, **overrides: Any) -> Any:
+        """The SQLAlchemy-style single entry point: `execute(select(...))` (or
+        any other `Query`/`CompoundSelect`) hydrates and returns its rows,
+        exactly as `fetch_all()` does. An Insert/Update/Delete with no
+        RETURNING runs and returns asyncpg's status tag instead, e.g.
+        "INSERT 0 3" — the driver's own report of what happened, not a
+        normalised count, because normalising it would hide the difference
+        between "0 rows matched" and "the statement did nothing".
+
+        Calling this on an Insert/Update/Delete *with* `returning()` still
+        raises, asking you to use `fetch_all()` so you get the rows back
+        rather than silently discarding them.
 
         DML built by this library cannot leave session state behind, so it does not
         mark the connection dirty and the conditional reset still applies. It does
@@ -297,6 +309,8 @@ class DatabaseEngine:
 
         `**overrides` — see `fetch_all()`.
         """
+        if isinstance(statement, (Query, CompoundSelect)):
+            return await self.fetch_all(statement, **overrides)
         if getattr(statement, "returns_rows", False):
             raise ValueError(
                 "this statement has RETURNING, so it produces rows — use "

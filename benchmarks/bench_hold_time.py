@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Connection hold time: sqlom releases before hydrating, SQLAlchemy does not.
+"""Connection hold time: rowform releases before hydrating, SQLAlchemy does not.
 
 Both engines in this repo take a pooled connection per request via `async with`,
 exactly as SQLAlchemy does — there is no connection reuse in the library. But there
 is a shape difference worth measuring rather than hand-waving:
 
-    # sqlom.PsycopgEngine.fetch_all
+    # rowform.PsycopgEngine.fetch_all
     async with pool.connection() as conn:
         rows = await (await conn.execute(sql, params)).fetchall()
     return hydrate(rows)              # <- connection already back in the pool
@@ -15,7 +15,7 @@ is a shape difference worth measuring rather than hand-waving:
         result = await conn.execute(stmt)
         payload = [...]               # <- still holding the connection
 
-So sqlom occupies a pooled connection for less of each request. Does that flatter
+So rowform occupies a pooled connection for less of each request. Does that flatter
 it? Measured answer: **no, in any configuration tested.**
 
 Releasing early is consistently worth slightly *less* than nothing to Core
@@ -58,10 +58,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from benchmarks.models import User, users_table
-from sqlom import PsycopgEngine, Query, compile_json_default
+from rowform import PsycopgEngine, Query, compile_json_default
 
-CONNINFO = "postgresql://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
-SA_DSN = "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sqlom_bench?sslmode=disable"
+CONNINFO = "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
+SA_DSN = "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
 
 
 def stmt_for(limit):
@@ -71,7 +71,7 @@ def stmt_for(limit):
             .limit(limit))
 
 
-async def make_sqlom(limit, pool):
+async def make_rowform(limit, pool):
     db = PsycopgEngine(CONNINFO, min_size=pool, max_size=pool)
     await db.connect()
     q = Query(User).where(User.is_active == True).where(User.id > 100).limit(limit)
@@ -96,7 +96,7 @@ async def make_core_hold(limit, pool):
 
 
 async def make_core_release(limit, pool):
-    """Rows out inside, shaping outside — symmetric with sqlom.fetch_all."""
+    """Rows out inside, shaping outside — symmetric with rowform.fetch_all."""
     engine = create_async_engine(SA_DSN, pool_size=pool, max_overflow=0)
     stmt = stmt_for(limit)
 
@@ -110,7 +110,7 @@ async def make_core_release(limit, pool):
 
 
 VARIANTS = [
-    ("sqlom (releases before hydrate)", make_sqlom),
+    ("rowform (releases before hydrate)", make_rowform),
     ("Core: payload inside `async with`", make_core_hold),
     ("Core: payload after release", make_core_release),
 ]
@@ -189,8 +189,8 @@ async def main():
         rel = res["Core: payload after release"]
         print(f"\n  releasing early is worth {rel / hold:.3f}x to Core "
               f"({(rel / hold - 1) * 100:+.1f}%)")
-        print(f"  sqlom vs Core: {res['sqlom (releases before hydrate)'] / hold:.2f}x "
-              f"(hold)  vs  {res['sqlom (releases before hydrate)'] / rel:.2f}x "
+        print(f"  rowform vs Core: {res['rowform (releases before hydrate)'] / hold:.2f}x "
+              f"(hold)  vs  {res['rowform (releases before hydrate)'] / rel:.2f}x "
               f"(symmetric)\n")
     return 0
 

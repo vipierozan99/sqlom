@@ -6,7 +6,7 @@ here cannot corrupt what the read tests assert.
 
 import pytest
 
-from sqlom import (
+from rowform import (
     Column,
     Delete,
     Insert,
@@ -34,7 +34,7 @@ class Row(metaclass=ModelMeta):
 
 @pytest.fixture(params=["asyncpg", "psycopg"])
 async def engine(request, pg_schema):
-    from sqlom import DatabaseEngine, PsycopgEngine
+    from rowform import DatabaseEngine, PsycopgEngine
 
     if request.param == "asyncpg":
         eng = DatabaseEngine(dsn=pg_schema, min_size=1, max_size=4)
@@ -206,7 +206,7 @@ class TestNewExpressionsAgainstTheServer:
         assert rows == [(1, 30), (2, 30), (3, 5)]
 
     async def test_case_and_arithmetic(self, engine):
-        from sqlom import case, func
+        from rowform import case, func
 
         await seed(engine, BASE)
         rows = await engine.fetch_all(

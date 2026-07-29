@@ -2,7 +2,7 @@
 
 import pytest
 
-from sqlom import Query, and_, count, exists, not_, or_
+from rowform import Query, and_, count, exists, not_, or_
 from tests.conftest import Author, Book
 
 

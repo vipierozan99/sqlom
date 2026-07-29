@@ -1,9 +1,9 @@
 """Ported from SQLAlchemy's test/sql/test_insert.py, test_update.py,
 test_delete.py, test_returning.py, test_values.py — extending
 tests/test_dml.py, tests/test_upsert.py, tests/test_update_from.py.
-Adapted to sqlom.
+Adapted to rowform.
 
-sqlom has no `Table`/`MetaData`/column-collection object, no `INSERT ...
+rowform has no `Table`/`MetaData`/column-collection object, no `INSERT ...
 SELECT` (and therefore no data-modifying CTE built on it), no server-side or
 DDL-level column defaults, no `bindparam()`/custom-key-thing machinery, and no
 per-dialect RETURNING quirks beyond what sqlite and Postgres both support —
@@ -11,29 +11,29 @@ per-dialect RETURNING quirks beyond what sqlite and Postgres both support —
 test surface does not translate: this file mines the remaining cases that do,
 and each class below documents *which* SQLAlchemy test(s) it corresponds to.
 
-Skipped entirely (no sqlom equivalent):
+Skipped entirely (no rowform equivalent):
   * `INSERT ... SELECT`, and the data-modifying CTE built on it
     (`InsertImplicitReturningTest.test_insert_select*`,
-    `EmptyTest`/`MultirowTest` sequence and server_default cases) — sqlom's
+    `EmptyTest`/`MultirowTest` sequence and server_default cases) — rowform's
     `Insert` only takes `values()`, never a `Query` to select from.
   * Server-side/DDL-level defaults, `Sequence`, `onupdate=`, inline vs.
-    non-inline default compilation, `return_defaults()` — sqlom has no
+    non-inline default compilation, `return_defaults()` — rowform has no
     schema/DDL layer, so there is nothing to prefetch or inline.
   * `bindparam()` and the "bind param named after a column" overlap rules
     (`test_binds_that_match_columns`, `test_bindparam_name_no_consume_error`)
-    — sqlom binds plain Python values, not named `bindparam` placeholders.
+    — rowform binds plain Python values, not named `bindparam` placeholders.
   * `Values` the standalone derived-table/VALUES-as-FROM-clause construct
     (all of `test_values.py`) — an entirely different feature from
-    `Insert.values()`; sqlom has no derived-table VALUES clause at all.
+    `Insert.values()`; rowform has no derived-table VALUES clause at all.
   * `.ordered_values()`, custom `__clause_element__` "key things",
     `.prefix_with()`, positional (non-dict) row values, dialect-specific
-    paramstyle/positional-binding tests — no equivalents; sqlom's `values()`
+    paramstyle/positional-binding tests — no equivalents; rowform's `values()`
     only takes column-name dicts or keywords, and `to_sql()` is one
     dialect-agnostic renderer, not a per-dialect compiler.
   * MySQL-specific and dialect-comparison tests, and anything keyed to a
     specific driver's paramstyle.
 
-One behavioural quirk noticed while porting (not fixed — sqlom's generative
+One behavioural quirk noticed while porting (not fixed — rowform's generative
 builders mutate and accumulate rather than merge, unlike SQLAlchemy's
 immutable statements with dict-merge `.values()` semantics):
   * Calling `.set()` twice for the *same* column does not merge — it appends
@@ -52,7 +52,7 @@ the bare `Query`. See `TestUpdateAssignmentForms::test_scalar_subquery_as_an_ass
 
 import pytest
 
-from sqlom import (
+from rowform import (
     Alias,
     DatabaseEngine,
     Delete,
@@ -96,7 +96,7 @@ class TestReturningAccumulates:
         statement.returning(Author.name)
         assert sql_of(statement).endswith("RETURNING id, name")
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_on_conflict_do_nothing_returning_called_twice_accumulates_columns(self):
         statement = (Insert(Author).values(id=1)
                      .on_conflict_do_nothing(Author.id)
@@ -106,7 +106,7 @@ class TestReturningAccumulates:
             "ON CONFLICT (id) DO NOTHING RETURNING id, name"
         )
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_mixing_a_column_and_the_whole_model_across_two_returning_calls(self):
         # Not forbidden: the "only one whole-model call" rule only fires
         # within output_columns()/hydration_spec() bookkeeping, not at
@@ -138,7 +138,7 @@ class TestReturningExpressions:
         )
         assert params == (1, -1, 10)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_delete_returning_expression_over_the_using_source(self):
         statement = (Delete(Book).using(Author)
                      .where(Author.id == Book.author_id)
@@ -151,7 +151,7 @@ class TestReturningExpressions:
         )
         assert params == ("!",)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_insert_returning_an_alias_column_and_an_expression(self):
         alias = Alias(Author, "a")
         statement = (Insert(alias).values(id=1, name="x")
@@ -163,7 +163,7 @@ class TestReturningExpressions:
         )
         assert params == (1, "x", "!")
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_update_returning_expression_over_the_from_source(self):
         statement = (Update(Book).set(title=Author.name).from_(Author)
                      .where(Author.id == Book.author_id)
@@ -189,7 +189,7 @@ class TestInsertValuesEdgeCases:
         assert sql == "INSERT INTO t_authors () VALUES ()"
         assert params == ()
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_default_row_ceiling_uses_the_full_model_width(self):
         # test_parameter_ceiling in test_dml.py always passes an explicit
         # columns list; calling max_rows_per_statement(model) with none
@@ -200,7 +200,7 @@ class TestInsertValuesEdgeCases:
     def test_single_row_then_bulk_rows_accumulate_into_one_statement(self):
         # SQLAlchemy's MultirowTest forbids mixing single- and multi-row
         # .values() calls (test_mix_single_and_multi_single_first raises
-        # InvalidRequestError). sqlom has no such rule: values() just keeps
+        # InvalidRequestError). rowform has no such rule: values() just keeps
         # extending self._rows as long as the column set matches, single or
         # bulk, in either order.
         statement = Insert(Author).values(id=1, name="d1").values(
@@ -266,14 +266,14 @@ class TestUpdateAssignmentForms:
         # re-`.values()`-ing the same column overwrites it (test_update_10);
         # here, set() only ever appends, so the same column can appear
         # twice in one SET clause. Postgres rejects this at execution time
-        # ("multiple assignments to same column name") — sqlom does not
+        # ("multiple assignments to same column name") — rowform does not
         # catch it at build time. See this module's docstring.
         statement = Update(Author).set(name="a").set(name="b")
         sql, params = statement.to_sql(placeholder="$")
         assert sql == "UPDATE t_authors SET name = $1, name = $2"
         assert params == ("a", "b")
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_values_alias_and_set_can_be_mixed_in_the_same_chain(self):
         # Update.values is literally `set` (see dml.py), so a chain that
         # calls both names still accumulates into one assignment list.
@@ -384,7 +384,7 @@ class TestDeleteUsingVariations:
         )
         assert params == (True,)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_returning_with_several_using_tables(self):
         statement = (Delete(Book).using(Author, Tag)
                      .where(Author.id == Book.author_id, Tag.book_id == Book.id)
@@ -396,7 +396,7 @@ class TestDeleteUsingVariations:
             "AND t_tags.book_id = t_books.id RETURNING t_books.id"
         )
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     def test_using_condition_combined_with_an_uncorrelated_subquery(self):
         statement = (Delete(Book).using(Author).where(
             Author.id == Book.author_id,
@@ -426,19 +426,19 @@ class TestEngineReturningMismatch:
         # Never connected: self.pool stays None, so this needs no server.
         return DatabaseEngine("postgresql://fake:fake@localhost/fake")
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     async def test_execute_rejects_a_statement_that_has_returning(self, engine):
         statement = Insert(Author).values(id=1).returning(Author.id)
         with pytest.raises(ValueError, match="use fetch_all"):
             await engine.execute(statement)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     async def test_fetch_all_rejects_a_statement_that_has_no_returning(self, engine):
         statement = Insert(Author).values(id=1)
         with pytest.raises(ValueError, match="has no returning"):
             await engine.fetch_all(statement)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     async def test_execute_accepts_a_statement_without_returning_and_reaches_the_pool(
         self, engine
     ):
@@ -450,7 +450,7 @@ class TestEngineReturningMismatch:
         with pytest.raises(RuntimeError, match="not connected"):
             await engine.execute(statement)
 
-    # sqlom-original test (no SQLAlchemy equivalent)
+    # rowform-original test (no SQLAlchemy equivalent)
     async def test_fetch_all_accepts_a_statement_with_returning_and_reaches_the_pool(
         self, engine
     ):

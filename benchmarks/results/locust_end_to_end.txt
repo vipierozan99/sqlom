@@ -4,13 +4,13 @@ locust 2.46.2 FastHttpUser (geventhttpclient), wait_time=constant(0)
 
 response sizes:
   /noop  2 bytes
-  /psy-sqlom  7701 bytes
+  /psy-rowform  7701 bytes
   /psy-core  7701 bytes
   /psy-orm  7701 bytes
   -> all database endpoints agree
 
   measured /noop
-  measured /psy-sqlom
+  measured /psy-rowform
   measured /psy-core
   measured /psy-orm
 
@@ -21,33 +21,33 @@ NOTE: locust rounds sub-100ms response times to whole ms, so its
 endpoint           rps   mean ms    p50    p95    p99  fails
 ------------------------------------------------------------
 /noop             5417      1.24      1      2      2      0
-/psy-sqlom        1328      5.88      6      7      9      0
+/psy-rowform        1328      5.88      6      7      9      0
 /psy-core          624     12.67     12     15     21      0
 /psy-orm           404     19.64     15     69     81      0
 
 concurrency check (rps * mean latency, should be ~8):
   /noop           6.70   <-- NOT saturating
-  /psy-sqlom      7.81
+  /psy-rowform      7.81
   /psy-core       7.90
   /psy-orm        7.94
 
 client headroom (/noop does no database work; if it is not well
 above the database endpoints, locust itself was the bottleneck):
-  /noop is  4.08x /psy-sqlom     ok
+  /noop is  4.08x /psy-rowform     ok
   /noop is  8.69x /psy-core      ok
   /noop is 13.41x /psy-orm       ok
 
 ratios, locust:
-  sqlom vs /psy-core     2.13x
-  sqlom vs /psy-orm      3.29x
+  rowform vs /psy-core     2.13x
+  rowform vs /psy-orm      3.29x
 
 endpoint        locust rps  httpload rps    delta
 -------------------------------------------------
 /noop                 5417          8604   -37.0%
-/psy-sqlom            1328          1326     0.1%
+/psy-rowform            1328          1326     0.1%
 /psy-core              624           668    -6.6%
 /psy-orm               404           416    -2.9%
 
 ratios, httpload:
-  sqlom vs /psy-core     1.99x
-  sqlom vs /psy-orm      3.19x
+  rowform vs /psy-core     1.99x
+  rowform vs /psy-orm      3.19x

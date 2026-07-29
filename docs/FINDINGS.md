@@ -1,6 +1,6 @@
 # What actually makes this fast (and what doesn't)
 
-Engineering conclusions from building and measuring sqlom. Numbers are from
+Engineering conclusions from building and measuring rowform. Numbers are from
 [BENCHMARKS.md](BENCHMARKS.md); the reasoning about *why* is here.
 
 ---
@@ -19,21 +19,21 @@ pool behaviour, measured through a real web stack — the claim with the fewest
 assumptions behind it. The 7.18x headline required asyncpg (which SQLAlchemy cannot
 use) *and* skipping the pool's session reset, so it belongs in a caveat, not a claim.
 
-Two independent effects each cost about a third and compound: sqlom's advantage partly
+Two independent effects each cost about a third and compound: rowform's advantage partly
 *was* the driver plus the skipped reset, and the web layer adds ~119 µs/request that
 every route pays equally.
 
-Measured with every optimization in this repo applied to sqlom *and* the equivalent
+Measured with every optimization in this repo applied to rowform *and* the equivalent
 applied to SQLAlchemy — including `isolation_level="AUTOCOMMIT"`, without which
 SQLAlchemy sends 3 statements per request (`BEGIN`/`SELECT`/`ROLLBACK`) against
-sqlom's 1. SQLAlchemy's own tuning is worth 1.10-1.15x, so the gap is not an artifact
+rowform's 1. SQLAlchemy's own tuning is worth 1.10-1.15x, so the gap is not an artifact
 of leaving it misconfigured
-([BENCHMARKS §13](BENCHMARKS.md#13-bottom-line-sqlom-vs-sqlalchemy-both-tuned-with-and-without-fastapi)).
+([BENCHMARKS §13](BENCHMARKS.md#13-bottom-line-rowform-vs-sqlalchemy-both-tuned-with-and-without-fastapi)).
 
 **FastAPI + uvicorn costs 121 µs/request and every route pays it**, which compresses
-the ratio by about a third. Above that floor the data layers cost 292 µs (sqlom),
+the ratio by about a third. Above that floor the data layers cost 292 µs (rowform),
 1003 µs (Core) and 1856 µs (ORM) per request. The tail matters more than the mean:
-sqlom's p99 is 4.9 ms against the ORM's 65 ms.
+rowform's p99 is 4.9 ms against the ORM's 65 ms.
 
 Practical reading: on a fixed core budget a JSON read endpoint serves ~4.8x more
 requests, and no data layer can exceed the 8297 rps framework floor — so the cheaper
@@ -42,7 +42,7 @@ the query, the less the mapper matters.
 **The ratios survive an independent load generator.** Re-running the both-default
 comparison under locust — different HTTP client, different concurrency model, no
 shared code — gives 2.13x Core and 3.29x ORM against the published 2.07x/3.33x, and
-matches sqlom's absolute throughput to 0.1%. Concurrency is confirmed by socket counts
+matches rowform's absolute throughput to 0.1%. Concurrency is confirmed by socket counts
 read from `/proc/net/tcp` and by Little's Law, which lands on the requested in-flight
 count to two decimal places
 ([§15](BENCHMARKS.md#15-auditing-the-load-generator-itself)). The one thing locust
@@ -52,14 +52,14 @@ not automatically the more trustworthy one — it has to have the headroom.
 
 ## The scaling model, which reframes everything else
 
-A sqlom client is one asyncio event loop under the GIL. It saturates **exactly one
+A rowform client is one asyncio event loop under the GIL. It saturates **exactly one
 core** and cannot use more — measured CPU utilization is 0.91–1.00 in every
 configuration tested. Three consequences:
 
 1. **A mapper's efficiency is not a latency feature, it is a core-count feature.**
-   Per request, sqlom saves fractions of a millisecond. Per *core*, it serves ~6x
+   Per request, rowform saves fractions of a millisecond. Per *core*, it serves ~6x
    the requests of SQLAlchemy's async ORM. On a fixed core budget that is the whole
-   difference: ~4,400 req/s needs 1 core with sqlom, roughly 6 with the ORM.
+   difference: ~4,400 req/s needs 1 core with rowform, roughly 6 with the ORM.
 2. **Extra cores do nothing for a single process, and can hurt.** Pinning a client
    to two cores instead of one cost ~30% more CPU per request (0.308 vs 0.217 ms) —
    the event loop migrates between cores and loses cache locality.
@@ -83,17 +83,17 @@ make Postgres the bottleneck would compress it toward 1.0.
 
 Profiling the saturated path — client on one core, Postgres on two, sampled so
 instrumentation doesn't distort it — puts a ceiling on how much the mapper can still
-matter ([BENCHMARKS §5b](BENCHMARKS.md#5b-where-sqloms-0225-msreq-goes-sampled)):
+matter ([BENCHMARKS §5b](BENCHMARKS.md#5b-where-rowforms-0225-msreq-goes-sampled)):
 
 | component | share of client CPU |
 |---|---|
 | asyncio loop dispatch + protocol/TLS | 38% |
 | asyncpg `Connection.fetch` | 19% |
 | asyncpg pool acquire/release | 15% |
-| **sqlom generated code** (hydrate + dict build) | **15%** |
+| **rowform generated code** (hydrate + dict build) | **15%** |
 | `orjson.dumps` | 7% |
 
-**sqlom's own code is ~15% of the CPU it is competing on.** Driving it to zero would
+**rowform's own code is ~15% of the CPU it is competing on.** Driving it to zero would
 buy ~15% throughput; the larger remaining targets are the event loop and pool
 handling, neither of which is mapper work. Notably pool acquire/release alone costs
 as much as all hydration.
@@ -102,7 +102,7 @@ This is the throughput analogue of the latency finding in §2: there the driver 
 65% of a single request's wall clock, here the loop and driver are ~72% of its CPU.
 Both say the same thing from different directions — **the mapper stopped being the
 bottleneck some time ago**, and the 6x over the ORM comes from the ORM spending
-1.29 ms/req where sqlom spends 0.22, not from sqlom's remaining 0.03 ms of headroom.
+1.29 ms/req where rowform spends 0.22, not from rowform's remaining 0.03 ms of headroom.
 
 For the ORM the profile names the mechanism exactly: 40,000 `InstanceState.__init__`
 and `new_instance` calls per 800 requests (one per row), 160,000
@@ -120,14 +120,14 @@ Profiling the same request shape against in-process sqlite — no event loop, no
 no TLS ([BENCHMARKS §7](BENCHMARKS.md#7-profiled-sqlite-run-the-mapper-with-transport-removed))
 — inverts the picture:
 
-| sqlom, 100 rows/request | CPU/req | sqlom's share of it |
+| rowform, 100 rows/request | CPU/req | rowform's share of it |
 |---|---|---|
 | Postgres (asyncpg, pooled, TLS) | 0.215 ms | ~15% |
 | sqlite (in-process) | 0.100 ms | ~50% |
 
 Transport is **0.115 ms/req, 53% of the Postgres figure** — slightly more than an
 entire sqlite request costs end to end. So "the mapper is only 15% of CPU" was never a
-statement about the mapper; it was a statement about sockets. Remove them and sqlom's
+statement about the mapper; it was a statement about sockets. Remove them and rowform's
 generated code becomes about half of what is left, with ~30% in the sqlite3 driver and
 ~15% in orjson.
 
@@ -138,7 +138,7 @@ Both readings are true and they bound the work differently:
 - **Against a local or embedded database**, the mapper is the dominant term and
   hydration work pays back directly.
 
-sqlom still leads by 7.4x over the async ORM and 4.4x over Core in the sqlite
+rowform still leads by 7.4x over the async ORM and 4.4x over Core in the sqlite
 configuration, so the advantage is not an artifact of transport masking differences —
 it survives having transport removed.
 
@@ -239,7 +239,7 @@ practice since it still allocates and writes slots.
 The empirical test is the striking part. `psqlpy` is a Rust/tokio-postgres driver
 whose `as_class()` constructs Python instances from Rust — exactly the hypothetical —
 and after controlling for pool policy and TLS it runs at **0.57x** of asyncpg plus
-sqlom's codegen'd Python hydrator. Its Rust object construction is even slower than
+rowform's codegen'd Python hydrator. Its Rust object construction is even slower than
 its own dict path, which suggests `cls(**kwargs)` rather than direct slot writes.
 
 Two conclusions worth separating:
@@ -301,7 +301,7 @@ pool's Python-side cost — `PoolAcquireContext`, holder juggling, acquire/relea
 futures — which removing the round trip does not address.
 
 **So the order of work is: fix the pool, adopt uvloop, then optimize the mapper.**
-After the first two, sqlom's generated code goes from ~15% of client CPU to roughly a
+After the first two, rowform's generated code goes from ~15% of client CPU to roughly a
 quarter of what remains — it becomes the largest single item, which it was not before.
 
 ---
@@ -394,7 +394,7 @@ and clearing an `AttributeError` on every instance.
 | `@dataclass(slots=True)` (native fallback) | 421 ns | 672 ns | **6.16x** |
 
 **If your models are slotted dataclasses, pass
-`sqlom.DATACLASS_DUMP_OPTION`** (= `orjson.OPT_PASSTHROUGH_DATACLASS`) to route them
+`rowform.DATACLASS_DUMP_OPTION`** (= `orjson.OPT_PASSTHROUGH_DATACLASS`) to route them
 back to the compiled hook. That one flag is worth ~2.3x on the serialization step
 and ~30% end-to-end.
 
@@ -414,7 +414,7 @@ serializable` for both `@define` and `@define(slots=False)`. So attrs still need
 `default=` hook, and `attrs.asdict` is ~6x slower than a compiled dict literal
 (1507 vs 236 ns/object).
 
-Since sqlom bypasses `__init__` entirely via `object.__new__`, attrs' generated-init
+Since rowform bypasses `__init__` entirely via `object.__new__`, attrs' generated-init
 advantages don't apply. Attribute read/write and construction measured identical to
 `dataclass(slots=True)` within noise. `@define` also adds a `__weakref__` slot by
 default, making instances 8 bytes larger (set `weakref_slot=False` for parity).
@@ -444,15 +444,15 @@ a C-level loop.
 
 `conn.execute()` alone costs 0.005 ms of a 0.97 ms request; essentially all of the
 65% "query + fetch" stage is the driver creating Python `int`/`str` objects. An
-object path needs those objects, so that cost is not addressable from sqlom.
+object path needs those objects, so that cost is not addressable from rowform.
 
 ---
 
 ## Honest limits on the claim
 
 - **The ~6x is over SQLAlchemy's ORM, not over writing it yourself.** Hand-written
-  asyncpg with `dict(record)` reaches 3877 rps against sqlom's 3168 in the same
-  isolated configuration. Against a competent hand-rolled loop, sqlom *loses*
+  asyncpg with `dict(record)` reaches 3877 rps against rowform's 3168 in the same
+  isolated configuration. Against a competent hand-rolled loop, rowform *loses*
   slightly; it costs +10–25% CPU over building no objects at all. The value is
   ergonomics at near-hand-written cost, not beating hand-written code.
 - **Nothing scales past ~c=8 on a 4-vCPU box**, and p99 degrades sharply (2.8 ms at
@@ -462,4 +462,4 @@ object path needs those objects, so that cost is not addressable from sqlom.
   both object construction and Python serialization. It is implemented
   (`Query.to_json_sql`, `DatabaseEngine.fetch_json`) but parked — it is not an
   object mapper. If your endpoint only ever emits JSON, it is the faster answer and
-  sqlom's object path is the wrong tool.
+  rowform's object path is the wrong tool.

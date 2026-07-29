@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """How much did timing SQLAlchemy's connection setup inflate the sqlite table?
 
-`bench_sqlite.py` originally handed the sqlom paths a `sqlite3.Connection`
+`bench_sqlite.py` originally handed the rowform paths a `sqlite3.Connection`
 created once, but built SQLAlchemy's connection (Core) and `Session` (ORM)
 *inside* the timed closure. So SQLAlchemy was charged for pool checkout and
-session construction that sqlom never paid, and the difference was reported as
+session construction that rowform never paid, and the difference was reported as
 object-mapping cost. This measures exactly what that was worth.
 
 Why a separate script rather than comparing two runs of the suite: at 1000
@@ -40,7 +40,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from benchmarks.models import DDL, TABLE_NAME, User, UserORM, users_table
-from sqlom import SQLITE_CONVERTERS, Query, compile_batch_hydrator, compile_json_default
+from rowform import SQLITE_CONVERTERS, Query, compile_batch_hydrator, compile_json_default
 
 
 def seed(db_path, rows, rng_seed=42):
@@ -74,7 +74,7 @@ def build_variants(db_path, engine, held_conn, limit):
     hydrate_all = compile_batch_hydrator(User, SQLITE_CONVERTERS)
     to_dict = compile_json_default(User)
 
-    def sqlom():
+    def rowform():
         return orjson.dumps(hydrate_all(raw.execute(sql, params).fetchall()),
                             default=to_dict)
 
@@ -109,7 +109,7 @@ def build_variants(db_path, engine, held_conn, limit):
         return orjson.dumps(payload)
 
     return {
-        "sqlom compiled (batch)":        sqlom,
+        "rowform compiled (batch)":        rowform,
         "Core: connect() in loop (old)": core_inside,
         "Core: hoisted (new)":           core_hoisted,
         "ORM: Session(engine) in loop (old)": orm_inside,
@@ -175,7 +175,7 @@ def main():
             for name in variants:
                 print(f"{name:<40}{med[name]:>9.3f}{spread[name]:>8.1f}%")
 
-            s = med["sqlom compiled (batch)"]
+            s = med["rowform compiled (batch)"]
             old_core = med["Core: connect() in loop (old)"]
             new_core = med["Core: hoisted (new)"]
             old_orm = med["ORM: Session(engine) in loop (old)"]
@@ -190,10 +190,10 @@ def main():
                   f"({(old_orm / new_orm - 1) * 100:.1f}% of the ORM)")
             print(f"  identity-map reuse would flatter the ORM by "
                   f"{(new_orm / bad_orm - 1) * 100:.1f}%")
-            print(f"\n  sqlom vs Core   {old_core / s:>5.2f}x before  ->  "
+            print(f"\n  rowform vs Core   {old_core / s:>5.2f}x before  ->  "
                   f"{new_core / s:>5.2f}x after   "
                   f"({(new_core / s) / (old_core / s) - 1:+.1%})")
-            print(f"  sqlom vs ORM    {old_orm / s:>5.2f}x before  ->  "
+            print(f"  rowform vs ORM    {old_orm / s:>5.2f}x before  ->  "
                   f"{new_orm / s:>5.2f}x after   "
                   f"({(new_orm / s) / (old_orm / s) - 1:+.1%})\n")
 

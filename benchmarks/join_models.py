@@ -1,4 +1,4 @@
-"""Two-table schema for the join benchmark, defined for sqlom, SA Core and SA ORM.
+"""Two-table schema for the join benchmark, defined for rowform, SA Core and SA ORM.
 
 Separate from `benchmarks/models.py` on purpose. That module's `users` table backs
 every published single-table figure, and adding a second table plus a foreign key to
@@ -32,7 +32,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from sqlom import Column, ModelMeta
+from rowform import Column, ModelMeta
 
 AUTHORS_TABLE = "j_authors"
 POSTS_TABLE = "j_posts"
@@ -62,7 +62,7 @@ DDL = [
 ]
 
 
-# --- sqlom ----------------------------------------------------------------
+# --- rowform ----------------------------------------------------------------
 
 
 class Author(metaclass=ModelMeta):

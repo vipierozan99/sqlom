@@ -11,7 +11,7 @@ import sqlite3
 
 import pytest
 
-from sqlom import Alias, Column, Insert, ModelMeta, Query, excluded
+from rowform import Alias, Column, Insert, ModelMeta, Query, excluded
 
 from tests.conftest import Author, Book
 
@@ -230,7 +230,7 @@ class TestValidation:
             excluded("hits")
 
     def test_excluded_of_an_unknown_column_is_refused(self):
-        from sqlom import ColumnExpr
+        from rowform import ColumnExpr
 
         # Same source (Counter), but a name that table does not have. Passes
         # the source-identity check in test_excluded_from_another_table_is_refused,
@@ -365,7 +365,7 @@ class TestAgainstSqlite:
         assert rows == [("a", 5)]
 
     def test_returning_hydrates_a_model(self, upsert_db):
-        from sqlom import SQLITE_CONVERTERS, compile_batch_hydrator
+        from rowform import SQLITE_CONVERTERS, compile_batch_hydrator
 
         statement = (Insert(Counter).values(key="a", hits=1)
                      .on_conflict_do_update(Counter.key, set_={"hits": 2})

@@ -3,7 +3,7 @@
 Eight claims published in this repo turned out to be wrong. Each was caught by
 attacking the benchmark rather than trusting it, and each came from a distinct
 methodological flaw. They are recorded here because the flaws generalize well
-beyond sqlom.
+beyond rowform.
 
 Two of the eight were found by an automated reviewer (CodeRabbit) on the pull
 request rather than by me, which is worth recording as its own lesson: corrections
@@ -29,10 +29,10 @@ you built should be treated as a bug report until you have tried to break it.**
 
 ### 1. Comparing different payloads (inflated 3.5x → 2.6x)
 
-The first sqlite benchmark had sqlom emitting `"is_active":1` while both SQLAlchemy
+The first sqlite benchmark had rowform emitting `"is_active":1` while both SQLAlchemy
 variants emitted `"is_active":true`. sqlite has no boolean type, and SQLAlchemy's
-`Boolean` column converts on the way out — sqlom simply passed the raw integer
-through. **sqlom was skipping type-coercion work its competitors were paying for**,
+`Boolean` column converts on the way out — rowform simply passed the raw integer
+through. **rowform was skipping type-coercion work its competitors were paying for**,
 and the published 3.5x-vs-ORM was partly measuring that.
 
 Fix: `bench_sqlite.py` now asserts every approach emits **byte-identical JSON**
@@ -45,18 +45,18 @@ which came from the same single noisy run described in correction 5).
 
 ### 2. Contender ordering inside one process
 
-The load suite ran all contenders in a single process, in dict order, with sqlom
+The load suite ran all contenders in a single process, in dict order, with rowform
 first. That is not neutral: later contenders measured slower. At c=1 it produced a
-physically impossible result — sqlom appeared to beat the *no-object* baselines and
+physically impossible result — rowform appeared to beat the *no-object* baselines and
 to use less CPU than doing no mapping at all.
 
 | c=1, pinned, 100 rows | in-suite | isolated (median of 3) |
 |---|---|---|
-| sqlom | 1095 rps | **848 rps** |
+| rowform | 1095 rps | **848 rps** |
 | raw asyncpg + codegen dict | 777 rps | **1237 rps** |
 | raw asyncpg + `dict(Record)` | 667 rps | **1309 rps** |
 
-Isolated, the hand-written baselines are faster than sqlom — as they must be. The
+Isolated, the hand-written baselines are faster than rowform — as they must be. The
 in-suite ordering had it exactly backwards.
 
 Fix: `--only` runs one contender per process and `--repeat` takes medians. The
@@ -79,7 +79,7 @@ taken**, which said so plainly. Giving the client two cores wasted one, and the 
 came from (a) the loop migrating between two cores and losing cache locality, and
 (b) Postgres having *fewer* cores than it did unpinned.
 
-| sqlom, c=8 | CPU ms/req | throughput |
+| rowform, c=8 | CPU ms/req | throughput |
 |---|---|---|
 | client pinned to 1 core | **0.217** | 4560 rps |
 | client pinned to 2 cores | 0.308 | 3168 rps |
@@ -132,10 +132,10 @@ three tied variants grouped into one row rather than ranked.
 
 ### 6. Timing one side's connection setup and not the other's (Core ratio inflated 8%)
 
-`bench_sqlite.py` handed the sqlom runners a `sqlite3.Connection` created once before
+`bench_sqlite.py` handed the rowform runners a `sqlite3.Connection` created once before
 timing, but built SQLAlchemy's connection (`engine.connect()`) and `Session` *inside*
 the timed closure. So SQLAlchemy paid a pool checkout on every measured iteration
-that sqlom never paid, and that cost was published as object-mapping overhead — in a
+that rowform never paid, and that cost was published as object-mapping overhead — in a
 benchmark whose stated purpose was to isolate "the object-shaping path".
 
 This is correction 1 again in a different costume: the contenders were not doing the
@@ -217,7 +217,7 @@ runner; that line had been read many times and carried a comment correctly
 explaining why the cast was needed. It was found by adding a benchmark for a
 *two-model join*, where `.mappings()` is simply unavailable — both tables have an
 `id`, so the keys collide — which forced the Core contender to slice positionally.
-Core then came out much closer to sqlom on the join (1.17x) than on the single table
+Core then came out much closer to rowform on the join (1.17x) than on the single table
 (3.87x). That is the wrong direction: a join is strictly more work, so it cannot
 *close* a gap. The impossible-looking result was the whole signal.
 
@@ -301,13 +301,13 @@ single tier. Report spread alongside every central value so a reader
 can see when a gap is not a gap.
 
 **Never categorize profiler frames by substring on a project name.** The first
-version of `profile_pg.py` bucketed frames with `r"/sqlom/"` — which also matches
-`/home/user/sqlom/benchmarks/bench_pg_load.py`, because the repository directory
+version of `profile_pg.py` bucketed frames with `r"/rowform/"` — which also matches
+`/home/user/rowform/benchmarks/bench_pg_load.py`, because the repository directory
 shares the package's name. The result credited the *harness's* dict comprehension to
-the sqlom library, and made the SQLAlchemy ORM run appear to spend 20% of its time in
-sqlom, which is impossible. Caught only because that impossible row was visible.
+the rowform library, and made the SQLAlchemy ORM run appear to spend 20% of its time in
+rowform, which is impossible. Caught only because that impossible row was visible.
 `profile_pg.py` now compares against resolved package directories
-(`Path(sqlom.__file__).parent`) and distinguishes sqlom's `exec`-generated frames from
+(`Path(rowform.__file__).parent`) and distinguishes rowform's `exec`-generated frames from
 SQLAlchemy's by function name, since both use the filename `<string>`.
 
 > **Generalizes to:** a rollup that can attribute work to a library the code never
@@ -329,10 +329,10 @@ implemented in C (and for exact call counts). Publish which profiler a number ca
 from, and when they disagree materially, publish both rather than picking the
 flattering one.
 
-**Remove a layer to find out what a share means.** "sqlom is 15% of client CPU" read
+**Remove a layer to find out what a share means.** "rowform is 15% of client CPU" read
 as a fact about the mapper. Re-profiling against in-process sqlite showed 53% of the
 Postgres cost was transport — loop, socket, TLS, pool — and that with it gone the
-mapper is ~50%. The 15% was a statement about sockets, not about sqlom. When a
+mapper is ~50%. The 15% was a statement about sockets, not about rowform. When a
 component looks small, check whether you are measuring it or measuring its
 surroundings.
 
@@ -377,7 +377,7 @@ the postmaster covers backends started afterwards — but pooled connections ope
 
 **Include a floor and a naive baseline.** `raw asyncpg + codegen dict` (no objects)
 and `raw asyncpg + dict(Record)` (what you'd write by hand) bracket the result. When
-sqlom appeared to beat the floor, that was the signal something was wrong — a
+rowform appeared to beat the floor, that was the signal something was wrong — a
 benchmark without a floor has no such tripwire.
 
 **State the bottleneck.** Every ratio here is measured with the *client* saturated
@@ -413,7 +413,7 @@ This audit found no error: the ratios were correct as published. Recording a
 implies verification only happens where something broke.
 
 **Calibrate the generator's headroom with a do-nothing endpoint.** Re-running §14
-under locust reproduced sqlom's throughput to 0.1% and bracketed both ratios within
+under locust reproduced rowform's throughput to 0.1% and bracketed both ratios within
 7% — but reported `/noop` 37% low, because locust on one core saturates around
 5400 rps, beneath `/noop`'s real throughput. Little's Law caught it (6.70 in flight
 instead of 8) before the number could be published. A `/noop` route that does no
@@ -445,7 +445,7 @@ python3 benchmarks/bench_sqlite.py --rows 200000 --limit 1000 --iterations 300 -
 python3 benchmarks/profile_stages.py
 
 # throughput (needs PostgreSQL)
-createdb sqlom_bench
+createdb rowform_bench
 python3 benchmarks/bench_pg_load.py --seed-only
 
 # quick side-by-side — ordering-biased, do not quote
@@ -453,7 +453,7 @@ python3 benchmarks/bench_pg_load.py --limit 100 --concurrency 1,8,32,64 --durati
 
 # quote-worthy: isolated, repeated, deliberately pinned
 bash benchmarks/pin_and_run.sh --db-cores 1,2,3 --client-cores 0 -- \
-     --only sqlom --concurrency 8 --duration 4 --repeat 3
+     --only rowform --concurrency 8 --duration 4 --repeat 3
 
 # same driver, both libraries at their defaults (the figure to quote)
 taskset -c 0 python3 benchmarks/bench_psycopg.py --repeat 3
