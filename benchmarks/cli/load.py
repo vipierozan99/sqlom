@@ -198,7 +198,7 @@ def run(
     case: str = typer.Option("postgres-flat-rowform", help=load_registry.CASE_HELP),
     rows: int = typer.Option(50_000),
     limit: int = typer.Option(100),
-    levels: str = typer.Option("1,8,128,512", help="locust concurrency levels to sweep"),
+    levels: str = typer.Option("1,128", help="locust concurrency levels to sweep"),
     duration: float = typer.Option(30.0),
     warmup: float = typer.Option(
         DEFAULT_WARMUP_S, help="unmeasured locust ramp before each level's measured window"

@@ -120,7 +120,10 @@ async def noop() -> Response:
 async def sqlite_flat_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     query = rf.select(User).where(User.is_active == True).where(User.id > 100).limit(limit)
     rows = await app.state.rowform.fetch_all(query)
-    return Response(content=orjson.dumps(rows, default=rf.json_default, option=rf.DATACLASS_DUMP_OPTION), media_type=JSON)
+    return Response(
+        content=orjson.dumps(rows, default=rf.json_default, option=rf.DATACLASS_DUMP_OPTION),
+        media_type=JSON,
+    )
 
 
 @app.get("/sqlite-flat-raw-aiosqlite-dict")
@@ -207,7 +210,10 @@ async def sqlite_join_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Resp
     )
     pairs = await app.state.rowform.fetch_all(query)
     payload = [{"author": author, "post": post} for author, post in pairs]
-    return Response(content=orjson.dumps(payload, default=rf.json_default, option=rf.DATACLASS_DUMP_OPTION), media_type=JSON)
+    return Response(
+        content=orjson.dumps(payload, default=rf.json_default, option=rf.DATACLASS_DUMP_OPTION),
+        media_type=JSON,
+    )
 
 
 @app.get("/sqlite-join-sqlalchemy-async-core-positional")
@@ -275,7 +281,10 @@ async def sqlite_join_sqlalchemy_async_orm(limit: int = Query(default=DEFAULT_LI
 async def postgres_flat_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     query = rf.select(User).where(User.is_active == True).where(User.id > 100).limit(limit)
     rows = await app.state.pg_rowform.fetch_all(query)
-    return Response(content=orjson.dumps(rows, default=rf.json_default, option=rf.DATACLASS_DUMP_OPTION), media_type=JSON)
+    return Response(
+        content=orjson.dumps(rows, default=rf.json_default, option=rf.DATACLASS_DUMP_OPTION),
+        media_type=JSON,
+    )
 
 
 @app.get("/postgres-flat-raw-asyncpg-dict")
@@ -287,8 +296,8 @@ async def postgres_flat_raw_asyncpg_dict(limit: int = Query(default=DEFAULT_LIMI
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/postgres-flat-sqlalchemy-async-core-mappings")
-async def postgres_flat_sqlalchemy_async_core_mappings(
+@app.get("/postgres-flat-sqlalchemy-core-mappings")
+async def postgres_flat_sqlalchemy_core_mappings(
     limit: int = Query(default=DEFAULT_LIMIT),
 ) -> Response:
     stmt = (
@@ -303,8 +312,8 @@ async def postgres_flat_sqlalchemy_async_core_mappings(
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/postgres-flat-sqlalchemy-async-core-positional")
-async def postgres_flat_sqlalchemy_async_core_positional(
+@app.get("/postgres-flat-sqlalchemy-core-positional")
+async def postgres_flat_sqlalchemy_core_positional(
     limit: int = Query(default=DEFAULT_LIMIT),
 ) -> Response:
     stmt = (
@@ -327,8 +336,8 @@ async def postgres_flat_sqlalchemy_async_core_positional(
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/postgres-flat-sqlalchemy-async-orm")
-async def postgres_flat_sqlalchemy_async_orm(
+@app.get("/postgres-flat-sqlalchemy-orm")
+async def postgres_flat_sqlalchemy_orm(
     limit: int = Query(default=DEFAULT_LIMIT),
 ) -> Response:
     stmt = select(UserORM).where(UserORM.is_active == True).where(UserORM.id > 100).limit(limit)
@@ -356,11 +365,14 @@ async def postgres_join_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Re
     )
     pairs = await app.state.pg_rowform.fetch_all(query)
     payload = [{"author": author, "post": post} for author, post in pairs]
-    return Response(content=orjson.dumps(payload, default=rf.json_default, option=rf.DATACLASS_DUMP_OPTION), media_type=JSON)
+    return Response(
+        content=orjson.dumps(payload, default=rf.json_default, option=rf.DATACLASS_DUMP_OPTION),
+        media_type=JSON,
+    )
 
 
-@app.get("/postgres-join-sqlalchemy-async-core-positional")
-async def postgres_join_sqlalchemy_async_core_positional(
+@app.get("/postgres-join-sqlalchemy-core-positional")
+async def postgres_join_sqlalchemy_core_positional(
     limit: int = Query(default=DEFAULT_LIMIT),
 ) -> Response:
     stmt = (
@@ -393,8 +405,8 @@ async def postgres_join_sqlalchemy_async_core_positional(
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/postgres-join-sqlalchemy-async-orm")
-async def postgres_join_sqlalchemy_async_orm(
+@app.get("/postgres-join-sqlalchemy-orm")
+async def postgres_join_sqlalchemy_orm(
     limit: int = Query(default=DEFAULT_LIMIT),
 ) -> Response:
     stmt = (

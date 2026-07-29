@@ -2,7 +2,7 @@
 
 from benchmarks.load.locust import CaseUser
 
-CASE = "postgres-flat-sqlalchemy-async-core-positional"
+CASE = "postgres-flat-sqlalchemy-core-positional"
 
 
 class User(CaseUser):

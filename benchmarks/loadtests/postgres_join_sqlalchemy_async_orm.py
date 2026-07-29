@@ -2,7 +2,7 @@
 
 from benchmarks.load.locust import CaseUser
 
-CASE = "postgres-join-sqlalchemy-async-orm"
+CASE = "postgres-join-sqlalchemy-orm"
 
 
 class User(CaseUser):

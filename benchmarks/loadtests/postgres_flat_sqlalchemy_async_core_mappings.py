@@ -2,7 +2,7 @@
 
 from benchmarks.load.locust import CaseUser
 
-CASE = "postgres-flat-sqlalchemy-async-core-mappings"
+CASE = "postgres-flat-sqlalchemy-core-mappings"
 
 
 class User(CaseUser):

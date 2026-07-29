@@ -2,7 +2,7 @@
 
 from benchmarks.load.locust import CaseUser
 
-CASE = "postgres-flat-sqlalchemy-async-orm"
+CASE = "postgres-flat-sqlalchemy-orm"
 
 
 class User(CaseUser):
