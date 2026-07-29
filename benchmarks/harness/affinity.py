@@ -15,6 +15,7 @@ role; degrades to sharing with a recorded warning; never refuses.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -111,3 +112,25 @@ def read_back(pid: int) -> list[int]:
 
 def verify(pid: int, expected_cpus: list[int]) -> bool:
     return read_back(pid) == sorted(set(expected_cpus))
+
+
+@contextmanager
+def pin_current_process(cpus: list[int]):
+    """Restrict the calling process to `cpus` for the block, restoring the
+    prior affinity mask on exit (even on exception) — same guarantee
+    `timing.gc_control` gives GC state. `cpus=[]` is a no-op (nothing
+    requested to pin to).
+
+    Yields the actual mask read back after setting it (`None` if `cpus` was
+    empty) rather than `cpus` itself — PLAN.md §4: "records actual masks,"
+    not the request, since the kernel is free to reject/adjust it.
+    """
+    if not cpus:
+        yield None
+        return
+    prior = read_back(0)
+    set_affinity(0, cpus)
+    try:
+        yield read_back(0)
+    finally:
+        set_affinity(0, prior)

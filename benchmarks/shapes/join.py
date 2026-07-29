@@ -29,7 +29,7 @@ from sqlalchemy import (
 from sqlalchemy import (
     Column as SAColumn,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
 
 from rowform import Column, ModelMeta
 
@@ -150,6 +150,32 @@ class AuthorORM(Base):
 
 
 class PostORM(Base):
+    __tablename__ = POSTS_TABLE
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(ForeignKey(f"{AUTHORS_TABLE}.id"))
+    title: Mapped[str]
+    score: Mapped[int]
+    published: Mapped[bool]
+
+
+# --- SQLAlchemy ORM (Dataclass) -----------------------------------------------------------
+
+
+class BaseDC(MappedAsDataclass, DeclarativeBase):
+    pass
+
+
+class AuthorDC(BaseDC):
+    __tablename__ = AUTHORS_TABLE
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+    email: Mapped[str]
+    is_active: Mapped[bool]
+
+
+class PostDC(BaseDC):
     __tablename__ = POSTS_TABLE
 
     id: Mapped[int] = mapped_column(primary_key=True)

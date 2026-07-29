@@ -16,8 +16,8 @@ import typer
 
 import benchmarks.micro.contenders  # noqa: F401 -- import for @contender registration side-effects
 from benchmarks.backends.sqlite import EphemeralSqlite
+from benchmarks.harness import affinity, equivalence, registry, result
 from benchmarks.harness import env as env_module
-from benchmarks.harness import equivalence, registry, result
 from benchmarks.harness import seed as seed_module
 from benchmarks.harness.registry import ContenderInit
 from benchmarks.harness.stats import median, spread_pct
@@ -32,12 +32,15 @@ RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 def run(
     shape: str = typer.Option("flat", help=f"one of {seed_module.SHAPES} — {registry.SHAPE_HELP}"),
     rows: int = typer.Option(200_000, help="rows seeded into the ephemeral database"),
-    limit: int = typer.Option(100, help="rows per request"),
-    iterations: int = typer.Option(300, help="timed iterations per contender"),
-    warmup: int = typer.Option(30, help="untimed iterations before measurement"),
+    limit: int = typer.Option(1000, help="rows per request"),
+    iterations: int = typer.Option(1000, help="timed iterations per contender"),
+    warmup: int = typer.Option(100, help="untimed iterations before measurement"),
     only: str | None = typer.Option(None, help=registry.ONLY_HELP),
     gc: str = typer.Option(
-        "on", help="'on', 'off', or 'both' (PLAN.md §4: GC is a first-order effect)"
+        "off", help="'on', 'off', or 'both' (PLAN.md §4: GC is a first-order effect)"
+    ),
+    pin: str | None = typer.Option(
+        "0,2", "--pin", help="comma-separated logical CPUs to pin this process to (PLAN.md D13)"
     ),
     record: bool = typer.Option(
         False, "--record", help="write a run.json under results/runs/ (PLAN.md §6)"
@@ -50,7 +53,8 @@ def run(
     gc_modes = ["on", "off"] if gc == "both" else [gc]
     if any(mode not in ("on", "off") for mode in gc_modes):
         raise typer.BadParameter("--gc must be 'on', 'off', or 'both'")
-    asyncio.run(_run(shape, rows, limit, iterations, warmup, only, gc_modes, record))
+    pin_cpus = [int(c) for c in pin.split(",")] if pin else []
+    asyncio.run(_run(shape, rows, limit, iterations, warmup, only, gc_modes, pin_cpus, record))
 
 
 async def _mock_handle(shape: str, limit: int) -> list[tuple]:
@@ -96,6 +100,7 @@ async def _run(
     warmup: int,
     only: str | None,
     gc_modes: list[str],
+    pin_cpus: list[int],
     record: bool,
 ) -> result.Run | None:
     specs = registry.select(shape=shape, only=only)
@@ -111,81 +116,86 @@ async def _run(
     recorded_eq: equivalence.EquivalenceResult | None = None
     cells: list[result.Cell] = []
 
-    for backend, backend_specs in by_backend.items():
-        db = None
-        if backend == "sqlite":
-            db = EphemeralSqlite.create(shape, rows)
-            handle = db.path
-        elif backend == "mock":
-            handle = await _mock_handle(shape, limit)
-        else:
-            typer.echo(f"skipping backend={backend!r}: bench micro has no runner for it yet")
-            continue
+    with affinity.pin_current_process(pin_cpus) as pin_actual:
+        if pin_cpus:
+            typer.echo(f"pinned to cpus {pin_actual}")
 
-        init = ContenderInit(handle=handle, limit=limit)
-        try:
-            instances = {}
-            for spec in backend_specs:
-                target, teardown = await spec.factory(init)
-                instances[spec.name] = (target, teardown)
+        for backend, backend_specs in by_backend.items():
+            db = None
+            if backend == "sqlite":
+                db = EphemeralSqlite.create(shape, rows)
+                handle = db.path
+            elif backend == "mock":
+                handle = await _mock_handle(shape, limit)
+            else:
+                typer.echo(f"skipping backend={backend!r}: bench micro has no runner for it yet")
+                continue
 
-            eq = await equivalence.check({name: req for name, (req, _) in instances.items()})
-            typer.echo(
-                f"\n[{shape}/{backend}] equivalence: "
-                f"{'PASS' if eq.passed else 'FAIL'} "
-                f"({eq.payload_bytes} bytes, sha256={eq.payload_sha256})"
-            )
-            for failure in eq.failures:
-                typer.echo(f"  ! {failure}")
+            init = ContenderInit(handle=handle, limit=limit)
+            try:
+                instances = {}
+                for spec in backend_specs:
+                    target, teardown = await spec.factory(init)
+                    instances[spec.name] = (target, teardown)
 
-            if eq.passed:
-                # Recorded run.json covers the first backend group with
-                # passing equivalence (typically "sqlite") — mock/other
-                # groups still print above but aren't persisted, keeping the
-                # recorded schema to one equivalence block (PLAN.md §6).
-                record_this_group = record and recorded_backend is None
-                if record_this_group:
-                    recorded_backend = backend
-                    recorded_eq = eq
+                eq = await equivalence.check({name: req for name, (req, _) in instances.items()})
+                typer.echo(
+                    f"\n[{shape}/{backend}] equivalence: "
+                    f"{'PASS' if eq.passed else 'FAIL'} "
+                    f"({eq.payload_bytes} bytes, sha256={eq.payload_sha256})"
+                )
+                for failure in eq.failures:
+                    typer.echo(f"  ! {failure}")
 
-                for mode in gc_modes:
-                    typer.echo(f"  -- gc={mode} --")
-                    for name, (request, _) in instances.items():
-                        with gc_control(mode):
-                            samples = [
-                                s * 1000 for s in await per_iteration(request, iterations, warmup)
-                            ]
-                        stdev = statistics.pstdev(samples)
-                        typer.echo(
-                            f"    {name:<38} median {median(samples):>9.4f} ms  "
-                            f"stdev {stdev:>8.4f}  spread {spread_pct(samples):>6.1f}%"
-                        )
-                        if record_this_group:
-                            spec = next(s for s in backend_specs if s.name == name)
-                            cells.append(
-                                result.Cell(
-                                    contender=name,
-                                    shipped=spec.shipped,
-                                    params={"backend": backend, "gc": mode, "limit": limit},
-                                    trials=[
-                                        result.Trial(
-                                            trial=0,
-                                            metrics={
-                                                "median_ms": median(samples),
-                                                "stdev_ms": stdev,
-                                                "spread_pct": spread_pct(samples),
-                                                "iterations": iterations,
-                                            },
-                                        )
-                                    ],
-                                )
+                if eq.passed:
+                    # Recorded run.json covers the first backend group with
+                    # passing equivalence (typically "sqlite") — mock/other
+                    # groups still print above but aren't persisted, keeping the
+                    # recorded schema to one equivalence block (PLAN.md §6).
+                    record_this_group = record and recorded_backend is None
+                    if record_this_group:
+                        recorded_backend = backend
+                        recorded_eq = eq
+
+                    for mode in gc_modes:
+                        typer.echo(f"  -- gc={mode} --")
+                        for name, (request, _) in instances.items():
+                            with gc_control(mode):
+                                samples = [
+                                    s * 1000
+                                    for s in await per_iteration(request, iterations, warmup)
+                                ]
+                            stdev = statistics.pstdev(samples)
+                            typer.echo(
+                                f"    {name:<38} median {median(samples):>9.4f} ms  "
+                                f"stdev {stdev:>8.4f}  spread {spread_pct(samples):>6.1f}%"
                             )
+                            if record_this_group:
+                                spec = next(s for s in backend_specs if s.name == name)
+                                cells.append(
+                                    result.Cell(
+                                        contender=name,
+                                        shipped=spec.shipped,
+                                        params={"backend": backend, "gc": mode, "limit": limit},
+                                        trials=[
+                                            result.Trial(
+                                                trial=0,
+                                                metrics={
+                                                    "median_ms": median(samples),
+                                                    "stdev_ms": stdev,
+                                                    "spread_pct": spread_pct(samples),
+                                                    "iterations": iterations,
+                                                },
+                                            )
+                                        ],
+                                    )
+                                )
 
-            for _, teardown in instances.values():
-                await teardown()
-        finally:
-            if db is not None:
-                db.close()
+                for _, teardown in instances.values():
+                    await teardown()
+            finally:
+                if db is not None:
+                    db.close()
 
     if not record:
         return None
@@ -212,6 +222,8 @@ async def _run(
             "warmup": warmup,
             "gc": gc_modes,
             "only": only,
+            "pin_requested": pin_cpus,
+            "pin_actual": pin_actual,
         },
         equivalence={
             "enforced": recorded_eq.enforced if recorded_eq else False,

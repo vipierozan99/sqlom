@@ -5,7 +5,7 @@ uses. Ported from the old `benchmarks/models.py`, kept separate from
 
 from sqlalchemy import Boolean, Integer, MetaData, String, Table
 from sqlalchemy import Column as SAColumn
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
 
 from rowform import Column, ModelMeta, model
 
@@ -71,8 +71,21 @@ class UserORM(Base):
     is_active: Mapped[bool]
 
 
+class BaseDC(MappedAsDataclass, DeclarativeBase):
+    pass
+
+
+class UserDC(BaseDC):
+    __tablename__ = TABLE_NAME
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+    email: Mapped[str]
+    is_active: Mapped[bool]
+
+
 @model
-class UserDC:
+class UserRF:
     """Same schema as `User`, but a real stdlib @dataclass(slots=True) whose
     class-level attribute access still yields query expressions."""
 

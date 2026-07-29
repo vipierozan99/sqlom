@@ -3,7 +3,7 @@ from __future__ import annotations
 import itertools
 import re
 import weakref
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, TypeVar, Union, overload
 
@@ -51,9 +51,7 @@ class AsyncpgTransaction(Transaction):
     async def _execute_raw(self, sql, *args):
         return await self.connection.execute(sql, *args)
 
-    def transaction(
-        self, **kwargs: Any
-    ) -> AbstractAsyncContextManager[Transaction]:
+    def transaction(self, **kwargs: Any) -> AbstractAsyncContextManager[Transaction]:
         """Nested block. asyncpg turns a nested `transaction()` into a SAVEPOINT."""
         return _asyncpg_block(self._engine, self.connection, self._depth + 1, kwargs)
 
@@ -154,8 +152,7 @@ class DatabaseEngine:
     def _require_pool(self):
         if self.pool is None:
             raise RuntimeError(
-                "engine is not connected — await engine.connect() first "
-                "(or it has been closed)"
+                "engine is not connected — await engine.connect() first (or it has been closed)"
             )
         return self.pool
 
@@ -182,7 +179,7 @@ class DatabaseEngine:
         self._dirty.add(self._real(conn))
 
     @asynccontextmanager
-    async def acquire(self) -> AsyncIterator[Any]:
+    async def acquire(self) -> AsyncGenerator[Any, None]:
         """Raw connection access. Marks the connection dirty, so it gets the
         full session reset on release — use this for anything that is not a
         `Query`, including transactions, `SET`, `LISTEN` and DDL."""
@@ -192,9 +189,12 @@ class DatabaseEngine:
 
     @asynccontextmanager
     async def transaction(
-        self, *, isolation: str | None = None, readonly: bool = False,
+        self,
+        *,
+        isolation: str | None = None,
+        readonly: bool = False,
         deferrable: bool = False,
-    ) -> AsyncIterator[AsyncpgTransaction]:
+    ) -> AsyncGenerator[AsyncpgTransaction, None]:
         """Several statements on one connection, committed together.
 
         Commits on clean exit, rolls back on any exception. Yields a
@@ -312,8 +312,7 @@ class DatabaseEngine:
             return await self.fetch_all(statement, **overrides)
         if getattr(statement, "returns_rows", False):
             raise ValueError(
-                "this statement has RETURNING, so it produces rows — use "
-                "fetch_all() to get them"
+                "this statement has RETURNING, so it produces rows — use fetch_all() to get them"
             )
         sql, params = statement.to_sql(placeholder="$", dialect=POSTGRES)
         if has_deferred_params(params):

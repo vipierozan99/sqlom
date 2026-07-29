@@ -23,19 +23,23 @@ import this module either.
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 import orjson
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 import rowform as rf
 from benchmarks.harness.registry import ContenderInit, Target, Teardown, contender
-from benchmarks.shapes.flat import User, UserORM, users_table
+from benchmarks.shapes.flat import User, UserDC, UserORM, users_table
 from benchmarks.shapes.join import (
     AUTHOR_FIELDS,
     POST_FIELDS,
     Author,
+    AuthorDC,
     AuthorORM,
     Post,
+    PostDC,
     PostORM,
     authors_table,
     posts_table,
@@ -64,7 +68,9 @@ def _flat_query(limit: int):
 
 
 @contender(
-    "rowform", backend="sqlite", shape="flat",
+    "rowform",
+    backend="sqlite",
+    shape="flat",
     description="rowform's shipped sqlite path: compiled hydrator + compiled orjson hook.",
 )
 async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -81,7 +87,10 @@ async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
-    "rowform (MockEngine)", backend="mock", shape="flat", tags=("mapper-floor",),
+    "rowform (mock)",
+    backend="mock",
+    shape="flat",
+    tags=("mapper-floor",),
     description="rowform's mapper cost alone, via MockEngine — zero driver cost.",
 )
 async def flat_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -104,30 +113,139 @@ async def flat_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
-    "raw aiosqlite + dict", backend="sqlite", shape="flat", shipped=False, tags=("floor",),
-    description="Naive no-mapping baseline: dict(zip(names, row)) per row.",
+    "raw aiosqlite + dict",
+    backend="sqlite",
+    shape="flat",
+    shipped=False,
+    tags=("floor",),
+    description="Naive no-mapping baseline: {id: row[0], name: row[1], email: row[2], is_active: bool(row[3])} per row.",
 )
 async def flat_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
     import aiosqlite
 
     conn = await aiosqlite.connect(init.handle)
-    sql = (
-        "SELECT id, name, email, is_active FROM users "
-        "WHERE is_active = 1 AND id > 100 LIMIT ?"
-    )
-    names = ("id", "name", "email", "is_active")
+    sql = "SELECT id, name, email, is_active FROM users WHERE is_active = 1 AND id > 100 LIMIT ?"
 
     async def target() -> bytes:
         cur = await conn.execute(sql, (init.limit,))
         rows = await cur.fetchall()
-        payload = [dict(zip(names, (r[0], r[1], r[2], bool(r[3])), strict=True)) for r in rows]
+        payload = [
+            {
+                "id": r[0],
+                "name": r[1],
+                "email": r[2],
+                "is_active": bool(r[3]),
+            }
+            for r in rows
+        ]
         return orjson.dumps(payload)
 
     return target, conn.close
 
 
 @contender(
-    "SQLAlchemy async Core (.mappings())", backend="sqlite", shape="flat",
+    "raw mock + dict",
+    backend="mock",
+    shape="flat",
+    shipped=False,
+    tags=("floor",),
+    description="Naive no-mapping baseline: {id: row[0], name: row[1], email: row[2], is_active: bool(row[3])} per row.",
+)
+async def flat_raw_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+    from benchmarks.engines.mock import MockEngine
+
+    engine = MockEngine(init.handle)
+
+    async def target() -> bytes:
+        rows = engine._rows
+        payload = [
+            {
+                "id": r[0],
+                "name": r[1],
+                "email": r[2],
+                "is_active": bool(r[3]),
+            }
+            for r in rows
+        ]
+        return orjson.dumps(payload)
+
+    return target, engine.close
+
+
+@contender(
+    "SQLAlchemy Core (positional)",
+    backend="sqlite",
+    shape="flat",
+    description="SQLAlchemy Core, rows shaped positionally instead of via .mappings().",
+)
+async def flat_sa_core_positional(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn(init.handle))
+    stmt = (
+        select(users_table)
+        .where(users_table.c.is_active == True)
+        .where(users_table.c.id > 100)
+        .limit(init.limit)
+    )
+
+    async def target() -> bytes:
+        async with engine.connect() as conn:
+            result = await conn.execute(stmt)
+            payload = [
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "email": row[2],
+                    "is_active": bool(row[3]),
+                }
+                for row in result
+            ]
+        return orjson.dumps(payload)
+
+    return target, engine.dispose
+
+
+@contender(
+    "SQLAlchemy Core (positional) (mock)",
+    backend="mock",
+    shape="flat",
+    tags=("mapper-floor",),
+    description="SQLAlchemy Core's mapper cost alone, via mock_sqlalchemy_engine — zero driver cost.",
+)
+async def flat_sa_core_positional_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+    """`init.handle` is precomputed rows (typically `harness.seed.flat_rows`
+    filtered to `init.limit`) — see `benchmarks.engines.mock.mock_sqlalchemy_engine`."""
+    from benchmarks.engines.mock import mock_sqlalchemy_engine
+
+    columns = [str(c.name) for c in users_table.columns]
+    engine = mock_sqlalchemy_engine(columns, init.handle)
+    stmt = (
+        select(users_table)
+        .where(users_table.c.is_active == True)
+        .where(users_table.c.id > 100)
+        .limit(init.limit)
+    )
+
+    async def target() -> bytes:
+        async with engine.connect() as conn:
+            result = await conn.execute(stmt)
+            payload = [
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "email": row[2],
+                    "is_active": bool(row[3]),
+                }
+                for row in result
+            ]
+        return orjson.dumps(payload)
+
+    return target, engine.dispose
+
+
+@contender(
+    "SQLAlchemy Core (.mappings())",
+    backend="sqlite",
+    shape="flat",
     description="SQLAlchemy Core via .mappings() — orjson needs a per-key str() cast for it.",
 )
 async def flat_sa_core_mappings(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -153,30 +271,39 @@ async def flat_sa_core_mappings(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
-    "SQLAlchemy async Core (positional)", backend="sqlite", shape="flat",
-    description="SQLAlchemy Core, rows shaped positionally instead of via .mappings().",
+    "SQLAlchemy Core (.mappings()) (mock)",
+    backend="mock",
+    shape="flat",
+    tags=("mapper-floor",),
+    description="SQLAlchemy Core's mapper cost alone, via mock_sqlalchemy_engine — zero driver cost.",
 )
-async def flat_sa_core_positional(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn(init.handle))
+async def flat_sa_core_mappings_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+    """`init.handle` is precomputed rows (typically `harness.seed.flat_rows`
+    filtered to `init.limit`) — see `benchmarks.engines.mock.mock_sqlalchemy_engine`."""
+    from benchmarks.engines.mock import mock_sqlalchemy_engine
+
+    columns = [str(c.name) for c in users_table.columns]
+    engine = mock_sqlalchemy_engine(columns, init.handle)
     stmt = (
         select(users_table)
         .where(users_table.c.is_active == True)
         .where(users_table.c.id > 100)
         .limit(init.limit)
     )
-    names = [str(c.name) for c in users_table.columns]
 
     async def target() -> bytes:
         async with engine.connect() as conn:
             result = await conn.execute(stmt)
-            payload = [dict(zip(names, row, strict=True)) for row in result]
+            payload = [{str(k): v for k, v in m.items()} for m in result.mappings()]
         return orjson.dumps(payload)
 
     return target, engine.dispose
 
 
 @contender(
-    "SQLAlchemy async ORM", backend="sqlite", shape="flat",
+    "SQLAlchemy ORM",
+    backend="sqlite",
+    shape="flat",
     description="SQLAlchemy ORM, one Session per request.",
 )
 async def flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -185,10 +312,7 @@ async def flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     after the first (PLAN.md §4: "audit what is inside each timed region")."""
     engine = create_async_engine(_sa_dsn(init.handle))
     stmt = (
-        select(UserORM)
-        .where(UserORM.is_active == True)
-        .where(UserORM.id > 100)
-        .limit(init.limit)
+        select(UserORM).where(UserORM.is_active == True).where(UserORM.id > 100).limit(init.limit)
     )
     names = [str(c.name) for c in UserORM.__table__.columns]
 
@@ -201,6 +325,74 @@ async def flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     return target, engine.dispose
 
 
+@contender(
+    "SQLAlchemy ORM (DC)",
+    backend="sqlite",
+    shape="flat",
+    description="SQLAlchemy ORM (Dataclass), one Session per request.",
+)
+async def flat_sa_orm_dt(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn(init.handle))
+    stmt = select(UserDC).where(UserDC.is_active == True).where(UserDC.id > 100).limit(init.limit)
+
+    async def target() -> bytes:
+        async with AsyncSession(engine) as session:
+            users = (await session.execute(stmt)).scalars().all()
+            payload = [asdict(u) for u in users]
+        return orjson.dumps(payload)
+
+    return target, engine.dispose
+
+
+@contender(
+    "SQLAlchemy ORM (mock)",
+    backend="mock",
+    shape="flat",
+    tags=("mapper-floor",),
+    description="SQLAlchemy ORM's mapper cost alone, via mock_sqlalchemy_engine — zero driver cost.",
+)
+async def flat_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+    """`init.handle` is precomputed rows — see
+    `benchmarks.engines.mock.mock_sqlalchemy_engine`."""
+    from benchmarks.engines.mock import mock_sqlalchemy_engine
+
+    names = [str(c.name) for c in UserORM.__table__.columns]
+    engine = mock_sqlalchemy_engine(names, init.handle)
+    stmt = (
+        select(UserORM).where(UserORM.is_active == True).where(UserORM.id > 100).limit(init.limit)
+    )
+
+    async def target() -> bytes:
+        async with AsyncSession(engine) as session:
+            users = (await session.execute(stmt)).scalars().all()
+            payload = [{name: getattr(u, name) for name in names} for u in users]
+        return orjson.dumps(payload)
+
+    return target, engine.dispose
+
+
+@contender(
+    "SQLAlchemy ORM (DC) (mock)",
+    backend="mock",
+    shape="flat",
+    description="SQLAlchemy ORM (Dataclass), one Session per request.",
+)
+async def flat_sa_orm_dc_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+    from benchmarks.engines.mock import mock_sqlalchemy_engine
+
+    names = [str(c.name) for c in UserDC.__table__.columns]
+    engine = mock_sqlalchemy_engine(names, init.handle)
+    stmt = select(UserDC).where(UserDC.is_active == True).where(UserDC.id > 100).limit(init.limit)
+
+    async def target() -> bytes:
+        async with AsyncSession(engine) as session:
+            users = (await session.execute(stmt)).scalars().all()
+            payload = [asdict(u) for u in users]
+        return orjson.dumps(payload)
+
+    return target, engine.dispose
+
+
 # --------------------------------------------------------------------------
 # join shape (`j_authors` x `j_posts`)
 # --------------------------------------------------------------------------
@@ -208,7 +400,8 @@ async def flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
 
 def _join_query(limit: int):
     return (
-        rf.select(Author, Post)
+        rf
+        .select(Author, Post)
         .join(Post, Post.author_id == Author.id)
         .where(Author.is_active == True)
         .where(Post.score > 100)
@@ -217,7 +410,9 @@ def _join_query(limit: int):
 
 
 @contender(
-    "rowform", backend="sqlite", shape="join",
+    "rowform",
+    backend="sqlite",
+    shape="join",
     description="rowform's shipped sqlite join path: compiled join hydrator + dispatching orjson hook.",
 )
 async def join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -240,7 +435,10 @@ async def join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
-    "rowform (MockEngine)", backend="mock", shape="join", tags=("mapper-floor",),
+    "rowform (mock)",
+    backend="mock",
+    shape="join",
+    tags=("mapper-floor",),
     description="rowform's join mapper cost alone, via MockEngine — zero driver cost.",
 )
 async def join_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -269,7 +467,9 @@ async def join_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
-    "SQLAlchemy async Core (positional)", backend="sqlite", shape="join",
+    "SQLAlchemy Core (positional)",
+    backend="sqlite",
+    shape="join",
     description="SQLAlchemy Core, positional join shaping — .mappings() collides on the shared id column.",
 )
 async def join_sa_core_positional(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -284,15 +484,25 @@ async def join_sa_core_positional(init: ContenderInit) -> tuple[Target, Teardown
         .where(posts_table.c.score > 100)
         .limit(init.limit)
     )
-    n_author = len(AUTHOR_FIELDS)
 
     async def target() -> bytes:
         async with engine.connect() as conn:
             result = await conn.execute(stmt)
             payload = [
                 {
-                    "author": dict(zip(AUTHOR_FIELDS, row[:n_author], strict=True)),
-                    "post": dict(zip(POST_FIELDS, row[n_author:], strict=True)),
+                    "author": {
+                        "id": row[0],
+                        "name": row[1],
+                        "email": row[2],
+                        "is_active": bool(row[3]),
+                    },
+                    "post": {
+                        "id": row[4],
+                        "author_id": row[5],
+                        "title": row[6],
+                        "score": row[7],
+                        "published": bool(row[8]),
+                    },
                 }
                 for row in result
             ]
@@ -302,7 +512,57 @@ async def join_sa_core_positional(init: ContenderInit) -> tuple[Target, Teardown
 
 
 @contender(
-    "SQLAlchemy async ORM", backend="sqlite", shape="join",
+    "SQLAlchemy Core (positional) (mock)",
+    backend="mock",
+    shape="join",
+    tags=("mapper-floor",),
+    description="SQLAlchemy Core's join mapper cost alone, via mock_sqlalchemy_engine — zero driver cost.",
+)
+async def join_sa_core_positional_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+    """`init.handle` is the pre-joined `(author_cols + post_cols)` flat tuples
+    — see `benchmarks.engines.mock.mock_sqlalchemy_engine`."""
+    from benchmarks.engines.mock import mock_sqlalchemy_engine
+
+    columns = AUTHOR_FIELDS + POST_FIELDS
+    engine = mock_sqlalchemy_engine(columns, init.handle)
+    stmt = (
+        select(authors_table, posts_table)
+        .join(posts_table, posts_table.c.author_id == authors_table.c.id)
+        .where(authors_table.c.is_active == True)
+        .where(posts_table.c.score > 100)
+        .limit(init.limit)
+    )
+
+    async def target() -> bytes:
+        async with engine.connect() as conn:
+            result = await conn.execute(stmt)
+            payload = [
+                {
+                    "author": {
+                        "id": row[0],
+                        "name": row[1],
+                        "email": row[2],
+                        "is_active": bool(row[3]),
+                    },
+                    "post": {
+                        "id": row[4],
+                        "author_id": row[5],
+                        "title": row[6],
+                        "score": row[7],
+                        "published": bool(row[8]),
+                    },
+                }
+                for row in result
+            ]
+        return orjson.dumps(payload)
+
+    return target, engine.dispose
+
+
+@contender(
+    "SQLAlchemy ORM",
+    backend="sqlite",
+    shape="join",
     description="SQLAlchemy ORM join, one Session per request.",
 )
 async def join_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -320,8 +580,135 @@ async def join_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
             pairs = (await session.execute(stmt)).all()
             payload = [
                 {
-                    "author": {name: getattr(a, name) for name in AUTHOR_FIELDS},
-                    "post": {name: getattr(p, name) for name in POST_FIELDS},
+                    "author": {
+                        "id": a.id,
+                        "name": a.name,
+                        "email": a.email,
+                        "is_active": a.is_active,
+                    },
+                    "post": {
+                        "id": p.id,
+                        "author_id": p.author_id,
+                        "title": p.title,
+                        "score": p.score,
+                        "published": p.published,
+                    },
+                }
+                for a, p in pairs
+            ]
+        return orjson.dumps(payload)
+
+    return target, engine.dispose
+
+
+@contender(
+    "SQLAlchemy ORM (DC)",
+    backend="sqlite",
+    shape="join",
+    description="SQLAlchemy ORM join, one Session per request.",
+)
+async def join_sa_orm_dt(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn(init.handle))
+    stmt = (
+        select(AuthorDC, PostDC)
+        .join(PostDC, PostDC.author_id == AuthorDC.id)
+        .where(AuthorDC.is_active == True)
+        .where(PostDC.score > 100)
+        .limit(init.limit)
+    )
+
+    async def target() -> bytes:
+        async with AsyncSession(engine) as session:
+            pairs = (await session.execute(stmt)).all()
+            payload = [
+                {
+                    "author": asdict(a),
+                    "post": asdict(p),
+                }
+                for a, p in pairs
+            ]
+        return orjson.dumps(payload)
+
+    return target, engine.dispose
+
+
+@contender(
+    "SQLAlchemy ORM (mock)",
+    backend="mock",
+    shape="join",
+    tags=("mapper-floor",),
+    description="SQLAlchemy ORM's join mapper cost alone, via mock_sqlalchemy_engine — zero driver cost.",
+)
+async def join_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+    """`init.handle` is the pre-joined `(author_cols + post_cols)` flat tuples
+    — see `benchmarks.engines.mock.mock_sqlalchemy_engine`."""
+    from benchmarks.engines.mock import mock_sqlalchemy_engine
+
+    columns = AUTHOR_FIELDS + POST_FIELDS
+    engine = mock_sqlalchemy_engine(columns, init.handle)
+    stmt = (
+        select(AuthorORM, PostORM)
+        .join(PostORM, PostORM.author_id == AuthorORM.id)
+        .where(AuthorORM.is_active == True)
+        .where(PostORM.score > 100)
+        .limit(init.limit)
+    )
+
+    async def target() -> bytes:
+        async with AsyncSession(engine) as session:
+            pairs = (await session.execute(stmt)).all()
+            payload = [
+                {
+                    "author": {
+                        "id": a.id,
+                        "name": a.name,
+                        "email": a.email,
+                        "is_active": a.is_active,
+                    },
+                    "post": {
+                        "id": p.id,
+                        "author_id": p.author_id,
+                        "title": p.title,
+                        "score": p.score,
+                        "published": p.published,
+                    },
+                }
+                for a, p in pairs
+            ]
+        return orjson.dumps(payload)
+
+    return target, engine.dispose
+
+
+@contender(
+    "SQLAlchemy ORM (DC) (mock)",
+    backend="mock",
+    shape="join",
+    tags=("mapper-floor",),
+    description="SQLAlchemy ORM's join mapper cost alone, via mock_sqlalchemy_engine — zero driver cost.",
+)
+async def join_sa_orm_dc_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+    """`init.handle` is the pre-joined `(author_cols + post_cols)` flat tuples
+    — see `benchmarks.engines.mock.mock_sqlalchemy_engine`."""
+    from benchmarks.engines.mock import mock_sqlalchemy_engine
+
+    columns = AUTHOR_FIELDS + POST_FIELDS
+    engine = mock_sqlalchemy_engine(columns, init.handle)
+    stmt = (
+        select(AuthorDC, PostDC)
+        .join(PostDC, PostDC.author_id == AuthorDC.id)
+        .where(AuthorDC.is_active == True)
+        .where(PostDC.score > 100)
+        .limit(init.limit)
+    )
+
+    async def target() -> bytes:
+        async with AsyncSession(engine) as session:
+            pairs = (await session.execute(stmt)).all()
+            payload = [
+                {
+                    "author": asdict(a),
+                    "post": asdict(p),
                 }
                 for a, p in pairs
             ]
@@ -336,7 +723,9 @@ async def join_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
-    "rowform", backend="postgres", shape="flat",
+    "rowform",
+    backend="postgres",
+    shape="flat",
     description="rowform's shipped postgres path: compiled hydrator + compiled orjson hook.",
 )
 async def flat_rowform_pg(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -353,7 +742,11 @@ async def flat_rowform_pg(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
-    "raw asyncpg + dict", backend="postgres", shape="flat", shipped=False, tags=("floor",),
+    "raw asyncpg + dict",
+    backend="postgres",
+    shape="flat",
+    shipped=False,
+    tags=("floor",),
     description="Naive no-mapping baseline: dict(record) per row.",
 )
 async def flat_raw_asyncpg(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -371,7 +764,9 @@ async def flat_raw_asyncpg(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
-    "SQLAlchemy async Core (.mappings())", backend="postgres", shape="flat",
+    "SQLAlchemy Core (.mappings())",
+    backend="postgres",
+    shape="flat",
     description="SQLAlchemy Core via .mappings() — orjson needs a per-key str() cast for it.",
 )
 async def flat_sa_core_mappings_pg(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -393,7 +788,9 @@ async def flat_sa_core_mappings_pg(init: ContenderInit) -> tuple[Target, Teardow
 
 
 @contender(
-    "SQLAlchemy async Core (positional)", backend="postgres", shape="flat",
+    "SQLAlchemy Core (positional)",
+    backend="postgres",
+    shape="flat",
     description="SQLAlchemy Core, rows shaped positionally instead of via .mappings().",
 )
 async def flat_sa_core_positional_pg(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -404,35 +801,48 @@ async def flat_sa_core_positional_pg(init: ContenderInit) -> tuple[Target, Teard
         .where(users_table.c.id > 100)
         .limit(init.limit)
     )
-    names = [str(c.name) for c in users_table.columns]
 
     async def target() -> bytes:
         async with engine.connect() as conn:
             result = await conn.execute(stmt)
-            payload = [dict(zip(names, row, strict=True)) for row in result]
+            payload = [
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "email": row[2],
+                    "is_active": bool(row[3]),
+                }
+                for row in result
+            ]
         return orjson.dumps(payload)
 
     return target, engine.dispose
 
 
 @contender(
-    "SQLAlchemy async ORM", backend="postgres", shape="flat",
+    "SQLAlchemy ORM",
+    backend="postgres",
+    shape="flat",
     description="SQLAlchemy ORM, one Session per request.",
 )
 async def flat_sa_orm_pg(init: ContenderInit) -> tuple[Target, Teardown]:
     engine = create_async_engine(_sa_dsn_pg(init.handle))
     stmt = (
-        select(UserORM)
-        .where(UserORM.is_active == True)
-        .where(UserORM.id > 100)
-        .limit(init.limit)
+        select(UserORM).where(UserORM.is_active == True).where(UserORM.id > 100).limit(init.limit)
     )
-    names = [str(c.name) for c in UserORM.__table__.columns]
 
     async def target() -> bytes:
         async with AsyncSession(engine) as session:
             users = (await session.execute(stmt)).scalars().all()
-            payload = [{name: getattr(u, name) for name in names} for u in users]
+            payload = [
+                {
+                    "id": u.id,
+                    "name": u.name,
+                    "email": u.email,
+                    "is_active": u.is_active,
+                }
+                for u in users
+            ]
         return orjson.dumps(payload)
 
     return target, engine.dispose
@@ -444,7 +854,9 @@ async def flat_sa_orm_pg(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
-    "rowform", backend="postgres", shape="join",
+    "rowform",
+    backend="postgres",
+    shape="join",
     description="rowform's shipped postgres join path: compiled join hydrator + dispatching orjson hook.",
 )
 async def join_rowform_pg(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -467,7 +879,9 @@ async def join_rowform_pg(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
-    "SQLAlchemy async Core (positional)", backend="postgres", shape="join",
+    "SQLAlchemy Core (positional)",
+    backend="postgres",
+    shape="join",
     description="SQLAlchemy Core, positional join shaping — .mappings() collides on the shared id column.",
 )
 async def join_sa_core_positional_pg(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -479,15 +893,25 @@ async def join_sa_core_positional_pg(init: ContenderInit) -> tuple[Target, Teard
         .where(posts_table.c.score > 100)
         .limit(init.limit)
     )
-    n_author = len(AUTHOR_FIELDS)
 
     async def target() -> bytes:
         async with engine.connect() as conn:
             result = await conn.execute(stmt)
             payload = [
                 {
-                    "author": dict(zip(AUTHOR_FIELDS, row[:n_author], strict=True)),
-                    "post": dict(zip(POST_FIELDS, row[n_author:], strict=True)),
+                    "author": {
+                        "id": row[0],
+                        "name": row[1],
+                        "email": row[2],
+                        "is_active": bool(row[3]),
+                    },
+                    "post": {
+                        "id": row[4],
+                        "author_id": row[5],
+                        "title": row[6],
+                        "score": row[7],
+                        "published": bool(row[8]),
+                    },
                 }
                 for row in result
             ]
@@ -497,7 +921,9 @@ async def join_sa_core_positional_pg(init: ContenderInit) -> tuple[Target, Teard
 
 
 @contender(
-    "SQLAlchemy async ORM", backend="postgres", shape="join",
+    "SQLAlchemy ORM",
+    backend="postgres",
+    shape="join",
     description="SQLAlchemy ORM join, one Session per request.",
 )
 async def join_sa_orm_pg(init: ContenderInit) -> tuple[Target, Teardown]:
@@ -515,8 +941,19 @@ async def join_sa_orm_pg(init: ContenderInit) -> tuple[Target, Teardown]:
             pairs = (await session.execute(stmt)).all()
             payload = [
                 {
-                    "author": {name: getattr(a, name) for name in AUTHOR_FIELDS},
-                    "post": {name: getattr(p, name) for name in POST_FIELDS},
+                    "author": {
+                        "id": a.id,
+                        "name": a.name,
+                        "email": a.email,
+                        "is_active": a.is_active,
+                    },
+                    "post": {
+                        "id": p.id,
+                        "author_id": p.author_id,
+                        "title": p.title,
+                        "score": p.score,
+                        "published": p.published,
+                    },
                 }
                 for a, p in pairs
             ]

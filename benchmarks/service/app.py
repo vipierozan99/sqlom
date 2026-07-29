@@ -128,8 +128,15 @@ async def sqlite_flat_raw_aiosqlite_dict(limit: int = Query(default=DEFAULT_LIMI
     sql = "SELECT id, name, email, is_active FROM users WHERE is_active = 1 AND id > 100 LIMIT ?"
     cur = await app.state.aiosqlite.execute(sql, (limit,))
     rows = await cur.fetchall()
-    names = ("id", "name", "email", "is_active")
-    payload = [dict(zip(names, (r[0], r[1], r[2], bool(r[3])), strict=True)) for r in rows]
+    payload = [
+        {
+            "id": r[0],
+            "name": r[1],
+            "email": r[2],
+            "is_active": bool(r[3]),
+        }
+        for r in rows
+    ]
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
@@ -159,10 +166,17 @@ async def sqlite_flat_sqlalchemy_async_core_positional(
         .where(users_table.c.id > 100)
         .limit(limit)
     )
-    names = [str(c.name) for c in users_table.columns]
     async with app.state.sa_engine.connect() as conn:
         result = await conn.execute(stmt)
-        payload = [dict(zip(names, row, strict=True)) for row in result]
+        payload = [
+            {
+                "id": row[0],
+                "name": row[1],
+                "email": row[2],
+                "is_active": bool(row[3]),
+            }
+            for row in result
+        ]
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
@@ -207,13 +221,24 @@ async def sqlite_join_sqlalchemy_async_core_positional(
         .where(posts_table.c.score > 100)
         .limit(limit)
     )
-    n_author = len(AUTHOR_FIELDS)
+
     async with app.state.sa_engine.connect() as conn:
         result = await conn.execute(stmt)
         payload = [
             {
-                "author": dict(zip(AUTHOR_FIELDS, row[:n_author], strict=True)),
-                "post": dict(zip(POST_FIELDS, row[n_author:], strict=True)),
+                "author": {
+                    "id": row[0],
+                    "name": row[1],
+                    "email": row[2],
+                    "is_active": bool(row[3]),
+                },
+                "post": {
+                    "id": row[4],
+                    "author_id": row[5],
+                    "title": row[6],
+                    "score": row[7],
+                    "published": bool(row[8]),
+                },
             }
             for row in result
         ]
@@ -288,10 +313,17 @@ async def postgres_flat_sqlalchemy_async_core_positional(
         .where(users_table.c.id > 100)
         .limit(limit)
     )
-    names = [str(c.name) for c in users_table.columns]
     async with app.state.pg_sa_engine.connect() as conn:
         result = await conn.execute(stmt)
-        payload = [dict(zip(names, row, strict=True)) for row in result]
+        payload = [
+            {
+                "id": row[0],
+                "name": row[1],
+                "email": row[2],
+                "is_active": bool(row[3]),
+            }
+            for row in result
+        ]
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
@@ -338,13 +370,23 @@ async def postgres_join_sqlalchemy_async_core_positional(
         .where(posts_table.c.score > 100)
         .limit(limit)
     )
-    n_author = len(AUTHOR_FIELDS)
     async with app.state.pg_sa_engine.connect() as conn:
         result = await conn.execute(stmt)
         payload = [
             {
-                "author": dict(zip(AUTHOR_FIELDS, row[:n_author], strict=True)),
-                "post": dict(zip(POST_FIELDS, row[n_author:], strict=True)),
+                "author": {
+                    "id": row[0],
+                    "name": row[1],
+                    "email": row[2],
+                    "is_active": bool(row[3]),
+                },
+                "post": {
+                    "id": row[4],
+                    "author_id": row[5],
+                    "title": row[6],
+                    "score": row[7],
+                    "published": bool(row[8]),
+                },
             }
             for row in result
         ]
