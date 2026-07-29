@@ -26,7 +26,6 @@ Usage:
 import argparse
 import random
 import sqlite3
-import statistics
 import sys
 import tempfile
 import timeit
@@ -195,24 +194,24 @@ def main():
         print("\n" + "=" * 74)
         print("CEILING 2: Rust extension")
         print("=" * 74)
-        print(f"  orjson is ALREADY Rust and sqlite3 is already C, so a Rust rewrite can")
+        print("  orjson is ALREADY Rust and sqlite3 is already C, so a Rust rewrite can")
         print(f"  only replace the {t_hyd * 1e6:.2f} us hydration loop and the per-row")
         print(f"  _default callback inside the {t_json_obj * 1e6:.2f} us JSON step.")
         print()
-        print(f"  (a) Rust mapper still returning Python objects:")
+        print("  (a) Rust mapper still returning Python objects:")
         print(f"      bounded by ceiling 1 — {t_full / floor1:.2f}x — because creating "
               f"{4 * L} Python")
         print(f"      values costs {value_creation * 1e6:.2f} us ({value_creation / t_full * 100:.0f}% "
               f"of the request) and is unavoidable")
-        print(f"      the moment the API hands back objects with Python field values.")
+        print("      the moment the API hands back objects with Python field values.")
         print()
-        print(f"  (b) Rust returning JSON bytes, no Python objects at all:")
-        print(f"      Python value creation vanishes too. Measured anchor for exactly")
-        print(f"      that shape — sqlite's json_group_array, all work below Python:")
+        print("  (b) Rust returning JSON bytes, no Python objects at all:")
+        print("      Python value creation vanishes too. Measured anchor for exactly")
+        print("      that shape — sqlite's json_group_array, all work below Python:")
         print(f"      {t_dbjson * 1e6:.2f} us vs {t_full * 1e6:.2f} us  ->  "
               f"{t_full / t_dbjson:.2f}x")
-        print(f"      A Rust extension doing rows->JSON could approach this, and it is")
-        print(f"      already reachable today in SQL with no Rust at all.")
+        print("      A Rust extension doing rows->JSON could approach this, and it is")
+        print("      already reachable today in SQL with no Rust at all.")
         conn.close()
     return 0
 

@@ -49,15 +49,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import asyncpg
 import orjson
 
-from benchmarks.benchargs import validate
 from benchmarks.bench_pg_load import DEFAULT_DSN
-from benchmarks.models import TABLE_NAME, User
+from benchmarks.benchargs import validate
+from benchmarks.models import User
 from rowform import ASYNCPG_CONVERTERS, Query, compile_batch_hydrator, compile_json_default
 
 
 async def noop_reset(con):
     """Replaces asyncpg's RESET ALL round trip. See --no-reset caveats."""
-    return None
+    return
 
 
 async def build(args):
@@ -94,7 +94,7 @@ async def build(args):
 
         return make_request, teardown
 
-    kwargs = dict(min_size=args.pool_size, max_size=args.pool_size)
+    kwargs = {"min_size": args.pool_size, "max_size": args.pool_size}
     if args.no_reset:
         kwargs["reset"] = noop_reset
     pool = await asyncpg.create_pool(dsn, **kwargs)

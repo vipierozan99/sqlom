@@ -38,7 +38,8 @@ be atomic.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Self
+from collections.abc import Iterable
+from typing import Any, Self
 
 from .dialects import Dialect, current_dialect, dialect_scope, resolve_placeholder
 from .expr import (
@@ -56,7 +57,6 @@ from .expr import (
 from .query import (
     _and_join,
     _columns_in,
-    _non_negative_int,
     _placeholders,
     _with_clause,
 )
@@ -832,6 +832,12 @@ def delete(target: type[Any] | Alias[Any]) -> Delete:
 
 
 __all__ = [
-    "Insert", "Update", "Delete", "insert", "update", "delete",
-    "MAX_PARAMETERS", "max_rows_per_statement",
+    "MAX_PARAMETERS",
+    "Delete",
+    "Insert",
+    "Update",
+    "delete",
+    "insert",
+    "max_rows_per_statement",
+    "update",
 ]

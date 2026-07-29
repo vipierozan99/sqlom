@@ -26,10 +26,9 @@ import os
 import pstats
 import random
 import sqlite3
-import statistics
 import sys
-import time
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -38,8 +37,8 @@ import orjson
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from benchmarks.benchargs import validate
 from benchmarks import profkit
+from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User, UserORM, users_table
 from rowform import (
     SQLITE_CONVERTERS,
@@ -173,12 +172,12 @@ def report(r, args):
     print(f"\n{'=' * 78}\n{r['label']}\n{'=' * 78}")
     print(f"  {r['wall_ms']:.3f} ms wall/req, {r['cpu_ms']:.3f} ms CPU/req, "
           f"utilization {r['utilization']:.2f}, {1000 / r['wall_ms']:.0f} req/s single-threaded")
-    print(f"      -> utilization ~1.0 with no event loop: a synchronous sqlite call")
-    print(f"         is CPU, not I/O wait. There is nothing to overlap.")
+    print("      -> utilization ~1.0 with no event loop: a synchronous sqlite call")
+    print("         is CPU, not I/O wait. There is nothing to overlap.")
     print()
     profkit.print_rollup(r["stats"], r["profiled_cpu"], r["n"], r["cpu_ms"])
     if r.get("sampled"):
-        print(f"\n  Sampling cross-check (pyinstrument, 0.5 ms interval):")
+        print("\n  Sampling cross-check (pyinstrument, 0.5 ms interval):")
         for line in r["sampled"].splitlines()[:args.top + 6]:
             print(f"    {line}")
     profkit.print_top(r["stats"], args.top)

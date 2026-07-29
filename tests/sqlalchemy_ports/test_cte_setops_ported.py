@@ -43,13 +43,11 @@ import pytest
 
 from rowform import (
     CompoundSelect,
-    CTE,
     Query,
     count,
     exists,
     recursive_cte,
 )
-
 from tests.conftest import Author, Book
 
 
@@ -152,7 +150,7 @@ class TestDependencyOrdering:
     def test_plain_cte_ordered_before_the_recursive_cte_that_joins_it(self):
         # The dependency runs the other way from the previous test: a plain
         # CTE that the recursive term itself joins to.
-        active_authors = Query(Author.id).where(Author.active == True).cte(  # noqa: E712
+        active_authors = Query(Author.id).where(Author.active == True).cte(
             "active_authors"
         )
         tree = recursive_cte(
@@ -459,7 +457,7 @@ class TestKnownGaps:
         union_query = (Query(Author.id).where(Author.id < 3)
                        .union(Query(Author.id).where(Author.id > 2)))
         wrapped = union_query.subquery("both_ids")
-        sql, params = Query(wrapped.id).to_sql()
+        sql, _params = Query(wrapped.id).to_sql()
         assert "both_ids" in sql
         assert wrapped.id.py_type is int
 

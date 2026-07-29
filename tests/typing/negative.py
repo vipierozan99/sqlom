@@ -1,3 +1,4 @@
+# ruff: noqa: B015, B018, RUF059
 """Mistakes that must be type errors. Checked by mypy and pyright; never run.
 
 Every line below carries both an `# type: ignore[...]` for mypy and a
@@ -51,17 +52,17 @@ class Book(metaclass=ModelMeta):
 
 # Ordering comparisons are caught: there is no fallback for `<` and `>` when the
 # operand type does not match.
-Author.id > "abc"  # type: ignore[operator]  # pyright: ignore[reportOperatorIssue]
-Author.id < "abc"  # type: ignore[operator]  # pyright: ignore[reportOperatorIssue]
-Author.name > 5  # type: ignore[operator]  # pyright: ignore[reportOperatorIssue]
+Author.id > "abc"  # type: ignore[operator]
+Author.id < "abc"  # type: ignore[operator]
+Author.name > 5  # type: ignore[operator]
 
 # `Author.name == 5` is NOT an error, and cannot be made one — see the note at the
 # bottom of this file. Comparing two columns of different types *is* caught, because
 # then neither side's __eq__ accepts the other and there is nothing to fall back to.
-Author.id == Book.title  # type: ignore[operator]  # pyright: ignore[reportOperatorIssue]
+Author.id == Book.title  # type: ignore[operator]
 
 # IN over the wrong element type.
-Author.id.in_(["a", "b"])  # type: ignore[list-item]  # pyright: ignore
+Author.id.in_(["a", "b"])  # type: ignore[list-item]
 
 
 # --------------------------------------------------------------------------
@@ -71,51 +72,51 @@ Author.id.in_(["a", "b"])  # type: ignore[list-item]  # pyright: ignore
 # __getattr__ is a fallback for *any* name, so a checker that saw it would type
 # `Author.nope` as whatever it returns and this line would pass.
 
-Author.nope  # type: ignore[attr-defined]  # pyright: ignore
+Author.nope  # type: ignore[attr-defined]
 
 
 def instance_typo(author: Author) -> None:
-    author.nope  # type: ignore[attr-defined]  # pyright: ignore
+    author.nope  # type: ignore[attr-defined]
 
 
 def instance_field_is_not_an_expression(author: Author) -> None:
     # An instance attribute is the value, so it has no query-builder methods.
-    author.name.like("a%")  # type: ignore[attr-defined]  # pyright: ignore
+    author.name.like("a%")  # type: ignore[attr-defined]
 
 
 def instance_assignment_is_checked(author: Author) -> None:
-    author.id = "not an int"  # type: ignore[assignment]  # pyright: ignore
+    author.id = "not an int"  # type: ignore[assignment]
 
 
 # --------------------------------------------------------------------------
 # Query construction
 # --------------------------------------------------------------------------
 
-Query("authors")  # type: ignore[call-overload]  # pyright: ignore
+Query("authors")  # type: ignore[call-overload]
 
 # A subquery is a source, not a select entity.
-Query(Query(Author.id).subquery("s"))  # type: ignore[call-overload]  # pyright: ignore
+Query(Query(Author.id).subquery("s"))  # type: ignore[call-overload]
 
 
 # --------------------------------------------------------------------------
 # Predicate combinators take predicates, not columns or values
 # --------------------------------------------------------------------------
 
-or_(Author.id, Author.name)  # type: ignore[arg-type]  # pyright: ignore
-and_(True, False)  # type: ignore[arg-type]  # pyright: ignore
-not_(Author.id)  # type: ignore[arg-type]  # pyright: ignore
-exists(Author.id == 1)  # type: ignore[arg-type]  # pyright: ignore
+or_(Author.id, Author.name)  # type: ignore[arg-type]
+and_(True, False)  # type: ignore[arg-type]
+not_(Author.id)  # type: ignore[arg-type]
+exists(Author.id == 1)  # type: ignore[arg-type]
 
-Query(Author).where("id > 5")  # type: ignore[arg-type]  # pyright: ignore
-Query(Author).having(count())  # type: ignore[arg-type]  # pyright: ignore
+Query(Author).where("id > 5")  # type: ignore[arg-type]
+Query(Author).having(count())  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------
 # limit/offset take ints
 # --------------------------------------------------------------------------
 
-Query(Author).limit("10")  # type: ignore[arg-type]  # pyright: ignore
-Query(Author).offset(1.5)  # type: ignore[arg-type]  # pyright: ignore
+Query(Author).limit("10")  # type: ignore[arg-type]
+Query(Author).offset(1.5)  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------
@@ -126,13 +127,11 @@ Query(Author).offset(1.5)  # type: ignore[arg-type]  # pyright: ignore
 async def row_type_is_enforced(engine: DatabaseEngine) -> None:
     authors = await engine.fetch_all(Query(Author))
     # A list of Author cannot be unpacked as a pair.
-    author, book = authors[0]  # type: ignore[misc]  # pyright: ignore
+    author, book = authors[0]  # type: ignore[misc]
 
-    pairs = await engine.fetch_all(
-        Query(Author, Book).join(Book, Book.author_id == Author.id)
-    )
+    pairs = await engine.fetch_all(Query(Author, Book).join(Book, Book.author_id == Author.id))
     # And a tuple row has no model attributes.
-    pairs[0].name  # type: ignore[attr-defined]  # pyright: ignore
+    pairs[0].name  # type: ignore[attr-defined]
 
 
 # --------------------------------------------------------------------------
@@ -140,34 +139,34 @@ async def row_type_is_enforced(engine: DatabaseEngine) -> None:
 # --------------------------------------------------------------------------
 
 # Arithmetic keeps the column's type, so the result is still checked.
-Book.id * "two"  # type: ignore[operator]  # pyright: ignore[reportOperatorIssue]
-Book.id + "one"  # type: ignore[operator]  # pyright: ignore[reportOperatorIssue]
-(Book.id * 2) > "abc"  # type: ignore[operator]  # pyright: ignore[reportOperatorIssue]
+Book.id * "two"  # type: ignore[operator]
+Book.id + "one"  # type: ignore[operator]
+(Book.id * 2) > "abc"  # type: ignore[operator]
 
 # case() takes (predicate, value) pairs, not a bare predicate.
-case(Book.id > 1)  # type: ignore[arg-type]  # pyright: ignore
+case(Book.id > 1)  # type: ignore[arg-type]
 
 # A window is built from a function, and over() lives on those rather than on a
 # plain column.
-Book.id.over()  # type: ignore[attr-defined]  # pyright: ignore
+Book.id.over()  # type: ignore[attr-defined]
 
 
 # --------------------------------------------------------------------------
 # Set operations
 # --------------------------------------------------------------------------
 
-Query(Author).union("SELECT 1")  # type: ignore[arg-type]  # pyright: ignore
-Query(Author).union(Query(Author)).limit("5")  # type: ignore[arg-type]  # pyright: ignore
+Query(Author).union("SELECT 1")  # type: ignore[arg-type]
+Query(Author).union(Query(Author)).limit("5")  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------
 # DML
 # --------------------------------------------------------------------------
 
-Insert("authors")  # type: ignore[arg-type]  # pyright: ignore
-Update(Author).set(name="z").where("id = 1")  # type: ignore[arg-type]  # pyright: ignore
-Delete(Author).where("id = 1")  # type: ignore[arg-type]  # pyright: ignore
-Insert(Author).values(name="a").returning("id")  # type: ignore[arg-type]  # pyright: ignore
+Insert("authors")  # type: ignore[arg-type]
+Update(Author).set(name="z").where("id = 1")  # type: ignore[arg-type]
+Delete(Author).where("id = 1")  # type: ignore[arg-type]
+Insert(Author).values(name="a").returning("id")  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------
@@ -197,10 +196,10 @@ Insert(Author).values(name="a").returning("id")  # type: ignore[arg-type]  # pyr
 # CTEs
 # --------------------------------------------------------------------------
 
-Query(Author).cte(5)  # type: ignore[arg-type]  # pyright: ignore
-Query(Author).with_(Query(Author))  # type: ignore[arg-type]  # pyright: ignore
-Query(Author).with_("c")  # type: ignore[arg-type]  # pyright: ignore
-recursive_cte("t", "SELECT 1", lambda cte: Query(Author))  # type: ignore[arg-type]  # pyright: ignore
+Query(Author).cte(5)  # type: ignore[arg-type]
+Query(Author).with_(Query(Author))  # type: ignore[arg-type]
+Query(Author).with_("c")  # type: ignore[arg-type]
+recursive_cte("t", "SELECT 1", lambda cte: Query(Author))  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------
@@ -208,24 +207,24 @@ recursive_cte("t", "SELECT 1", lambda cte: Query(Author))  # type: ignore[arg-ty
 # --------------------------------------------------------------------------
 
 # set_ is required: on_conflict_do_update() without it is do_nothing() spelled wrong.
-Insert(Author).values(name="a").on_conflict_do_update(Author.id)  # type: ignore[call-arg]  # pyright: ignore
+Insert(Author).values(name="a").on_conflict_do_update(Author.id)  # type: ignore[call-arg]
 # A predicate, not a string.
-Insert(Author).values(name="a").on_conflict_do_update(Author.id, set_={"name": "x"}, where="active")  # type: ignore[arg-type]  # pyright: ignore
+Insert(Author).values(name="a").on_conflict_do_update(Author.id, set_={"name": "x"}, where="active")  # type: ignore[arg-type]
 # An index element is a column or a name, not a model.
-Insert(Author).values(name="a").on_conflict_do_nothing(Author)  # type: ignore[arg-type]  # pyright: ignore
+Insert(Author).values(name="a").on_conflict_do_nothing(Author)  # type: ignore[arg-type]
 # constraint= is a name, not a column.
-Insert(Author).values(name="a").on_conflict_do_nothing(constraint=Author.id)  # type: ignore[arg-type]  # pyright: ignore
+Insert(Author).values(name="a").on_conflict_do_nothing(constraint=Author.id)  # type: ignore[arg-type]
 # excluded() takes a column, not a name.
-excluded("name")  # type: ignore[arg-type]  # pyright: ignore
+excluded("name")  # type: ignore[arg-type]
 # And it keeps the column's type, so a wrong-typed comparison is still caught.
-excluded(Author.id) > "abc"  # type: ignore[operator]  # pyright: ignore
+excluded(Author.id) > "abc"  # type: ignore[operator]
 
 
 # --------------------------------------------------------------------------
 # UPDATE ... FROM and DELETE ... USING
 # --------------------------------------------------------------------------
 
-Update(Author).set(name="z").from_("books")  # type: ignore[arg-type]  # pyright: ignore
-Update(Author).set(name="z").from_(Author.id)  # type: ignore[arg-type]  # pyright: ignore
-Delete(Author).using("books")  # type: ignore[arg-type]  # pyright: ignore
-Delete(Author).using(Author.id)  # type: ignore[arg-type]  # pyright: ignore
+Update(Author).set(name="z").from_("books")  # type: ignore[arg-type]
+Update(Author).set(name="z").from_(Author.id)  # type: ignore[arg-type]
+Delete(Author).using("books")  # type: ignore[arg-type]
+Delete(Author).using(Author.id)  # type: ignore[arg-type]

@@ -13,23 +13,23 @@ from rowform import (
     Alias,
     BinaryOp,
     Case,
-    CompoundSelect,
-    Delete,
-    FunctionCall,
-    Insert,
-    Over,
-    UnaryOp,
-    Update,
     Column,
     ColumnExpr,
+    CompoundSelect,
     Condition,
     DatabaseEngine,
+    Delete,
     Excluded,
+    FunctionCall,
     InClause,
+    Insert,
     ModelMeta,
+    Over,
     Predicate,
     Query,
     Subquery,
+    UnaryOp,
+    Update,
     and_,
     avg,
     case,
@@ -94,7 +94,7 @@ def instance_attributes(author: Author) -> None:
 
 assert_type(Author.id > 5, Condition)
 assert_type(Author.id == 5, Condition)
-assert_type(Author.name == None, Condition)  # noqa: E711
+assert_type(Author.name == None, Condition)
 assert_type(Author.name.like("a%"), Condition)
 assert_type(Author.id.is_null(), Condition)
 assert_type(Book.author_id == Author.id, Condition)
@@ -147,7 +147,7 @@ assert_type(Query(Author, mgr), Query[tuple[Author, Author]])
 assert_type(
     Query(Author, Book)
     .join(Book, Book.author_id == Author.id)
-    .where(Author.active == True)  # noqa: E712
+    .where(Author.active == True)
     .order_by(Book.title)
     .limit(10)
     .offset(5)

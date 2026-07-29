@@ -10,7 +10,6 @@ from rowform import (
     Alias,
     Delete,
     Insert,
-    Query,
     Update,
     max_rows_per_statement,
 )
@@ -167,7 +166,7 @@ class TestUpdate:
 
     def test_several_where_clauses_and(self):
         sql, _ = (Update(Author).set(name="z")
-                  .where(Author.id > 1).where(Author.active == True)  # noqa: E712
+                  .where(Author.id > 1).where(Author.active == True)
                   .to_sql(placeholder="$"))
         assert sql.endswith("WHERE id > $2 AND active = $3")
 

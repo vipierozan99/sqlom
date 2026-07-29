@@ -90,7 +90,7 @@ async def make_engine(limit, pool_size, conditional, dirty_every=0):
 
 async def make_raw(limit, pool_size, reset):
     """asyncpg directly: reset=None means the library default."""
-    kw = dict(min_size=pool_size, max_size=pool_size)
+    kw = {"min_size": pool_size, "max_size": pool_size}
     if reset is not None:
         kw["reset"] = reset
     pool = await asyncpg.create_pool(DSN, **kw)
@@ -175,7 +175,7 @@ async def main():
             request, teardown, db = await factory()
             try:
                 before = db.reset_count if db else 0
-                rps, cpu, util = await load(request, args.concurrency,
+                rps, cpu, _util = await load(request, args.concurrency,
                                             args.duration, args.warmup)
                 trials.append((rps, cpu))
                 if db is not None and name in instrumented:

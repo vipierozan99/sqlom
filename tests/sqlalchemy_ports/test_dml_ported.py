@@ -376,7 +376,7 @@ class TestDeleteUsingVariations:
         book_alias = Alias(Book, "b")
         statement = (Delete(book_alias).using(Author)
                      .where(Author.id == book_alias.author_id,
-                            Author.active == True))  # noqa: E712
+                            Author.active == True))
         sql, params = statement.to_sql(placeholder="$")
         assert sql == (
             "DELETE FROM t_books AS b USING t_authors "

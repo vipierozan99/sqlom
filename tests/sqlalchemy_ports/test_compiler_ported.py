@@ -71,7 +71,6 @@ from rowform import (
 )
 from tests.conftest import Author, Book, Tag
 
-
 # --------------------------------------------------------------------------
 # Basic SELECT rendering — test_table_select
 # --------------------------------------------------------------------------
@@ -138,13 +137,13 @@ class TestWhereClause:
 
     # Ported from test/sql/test_compiler.py::SelectTest.test_where_multiple (SQLAlchemy 2.0.51)
     def test_null_equality_renders_is_null(self):
-        sql, params = Query(Book).where(Book.title == None).to_sql()  # noqa: E711
+        sql, params = Query(Book).where(Book.title == None).to_sql()
         assert sql.endswith("WHERE title IS NULL")
         assert params == ()
 
     # Ported from test/sql/test_compiler.py::SelectTest.test_where_multiple (SQLAlchemy 2.0.51)
     def test_null_inequality_renders_is_not_null(self):
-        sql, params = Query(Book).where(Book.title != None).to_sql()  # noqa: E711
+        sql, params = Query(Book).where(Book.title != None).to_sql()
         assert sql.endswith("WHERE title IS NOT NULL")
         assert params == ()
 
@@ -303,7 +302,7 @@ class TestJoins:
         sql, params = (
             Query(Author, mgr)
             .join(mgr, Author.id == mgr.id)
-            .where(and_(Author.active == True, mgr.name == "ada"))  # noqa: E712
+            .where(and_(Author.active == True, mgr.name == "ada"))
             .to_sql(placeholder="$")
         )
         assert sql == (
@@ -457,7 +456,7 @@ class TestLabelsAndAlias:
         sql, params = (
             Query(Author.name, mgr.name.label("manager_name"))
             .join(mgr, Author.id == mgr.id)
-            .where(mgr.active == True)  # noqa: E712
+            .where(mgr.active == True)
             .order_by(Author.name)
             .limit(5)
             .to_sql(placeholder="$")
@@ -822,8 +821,8 @@ class TestCompoundSelects:
     # Ported from test/sql/test_compiler.py::SelectTest.test_compound_selects (SQLAlchemy 2.0.51)
     def test_union_of_two_selects(self):
         sql, params = (
-            Query(Author.name).where(Author.active == True)  # noqa: E712
-            .union(Query(Author.name).where(Author.active == False))  # noqa: E712
+            Query(Author.name).where(Author.active == True)
+            .union(Query(Author.name).where(Author.active == False))
             .to_sql(placeholder="$")
         )
         assert sql == (
@@ -842,7 +841,7 @@ class TestCompoundSelects:
     def test_except_removes_matching_rows(self):
         sql, params = (
             Query(Author.name)
-            .except_(Query(Author.name).where(Author.active == False))  # noqa: E712
+            .except_(Query(Author.name).where(Author.active == False))
             .to_sql(placeholder="$")
         )
         assert sql == (

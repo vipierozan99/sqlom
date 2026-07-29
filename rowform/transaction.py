@@ -77,7 +77,7 @@ class Transaction:
     """One connection, held for the life of the block. Driver-specific subclasses
     supply the three primitives; everything else is shared."""
 
-    __slots__ = ("_engine", "connection", "_token", "_depth")
+    __slots__ = ("_depth", "_engine", "_token", "connection")
 
     # Supplied by the driver-specific subclasses; declared here because the shared
     # read methods below use them.

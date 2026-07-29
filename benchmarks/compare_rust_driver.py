@@ -56,7 +56,7 @@ async def noop_reset(con):
 
 async def make_asyncpg(limit, pool_size, fair):
     dsn = DSN_ASYNCPG + ("?sslmode=disable" if fair else "")
-    kw = dict(min_size=pool_size, max_size=pool_size)
+    kw = {"min_size": pool_size, "max_size": pool_size}
     if fair:
         kw["reset"] = noop_reset
     pool = await asyncpg.create_pool(dsn, **kw)

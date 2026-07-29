@@ -12,7 +12,6 @@ import sqlite3
 import pytest
 
 from rowform import Alias, Column, Insert, ModelMeta, Query, excluded
-
 from tests.conftest import Author, Book
 
 

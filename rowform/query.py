@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Generic, Iterable, Self, TypeVar, Union, overload
+from typing import Any, Generic, Self, TypeVar, Union, overload
 
 from .dialects import Dialect, current_dialect, dialect_scope, resolve_placeholder
 from .expr import (
@@ -8,8 +8,8 @@ from .expr import (
     Aggregate,
     Alias,
     ColumnExpr,
-    Expression,
     ExistsClause,
+    Expression,
     Labelled,
     Predicate,
     ScalarSubquery,
@@ -17,7 +17,6 @@ from .expr import (
     _bare,
     _collect_ctes,
     _OrderingExpr,
-    and_,
     from_sql,
     source_name,
     source_prefix,
@@ -1297,10 +1296,10 @@ class CompoundSelect(Generic[R]):
 def select(entity: type[M], /) -> Query[M]: ...  # type: ignore[overload-overlap]
 
 @overload
-def select(entity: "Alias[M]", /) -> Query[M]: ...  # type: ignore[overload-overlap]
+def select(entity: Alias[M], /) -> Query[M]: ...  # type: ignore[overload-overlap]
 
 @overload
-def select(entity: "Expression[T]", /) -> Query[tuple[T]]: ...
+def select(entity: Expression[T], /) -> Query[tuple[T]]: ...
 
 @overload
 def select(e1: _Sel[T], e2: _Sel[T2], /) -> Query[tuple[T, T2]]: ...

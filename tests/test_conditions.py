@@ -45,12 +45,12 @@ class TestNullPredicates:
     """`x = NULL` is never true in SQL, so equality against None must become IS."""
 
     def test_eq_none_renders_is_null_and_binds_nothing(self):
-        clause, params = (Author.name == None).to_sql("$1")  # noqa: E711
+        clause, params = (Author.name == None).to_sql("$1")
         assert clause == "name IS NULL"
         assert params == ()
 
     def test_ne_none_renders_is_not_null(self):
-        clause, params = (Author.name != None).to_sql("$1")  # noqa: E711
+        clause, params = (Author.name != None).to_sql("$1")
         assert clause == "name IS NOT NULL"
         assert params == ()
 

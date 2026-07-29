@@ -50,7 +50,6 @@ Skipped entirely, and why:
 from rowform import Query, count, literal, literal_column
 from tests.conftest import Author, Book
 
-
 # --------------------------------------------------------------------------
 # Single entity vs. multiple entities/columns — test_query.py's
 # OnlyReturnTuplesTest tests an ORM Query's `.only_return_tuples()`/`.tuples()`
@@ -117,7 +116,7 @@ class TestFilterResults:
     def test_a_boolean_column_filter_returns_exactly_the_matching_instances(
         self, run_query
     ):
-        authors = run_query(Query(Author).where(Author.active == True).order_by(Author.id))  # noqa: E712
+        authors = run_query(Query(Author).where(Author.active == True).order_by(Author.id))
         assert [a.name for a in authors] == ["ada", "brian", "dan"]
 
 
@@ -135,7 +134,7 @@ class TestCountResults:
 
     # Ported from test/orm/test_query.py::CountTest.test_basic (SQLAlchemy 2.0.51)
     def test_count_with_a_filter(self, run_query):
-        rows = run_query(Query(count(Author)).where(Author.active == True))  # noqa: E712
+        rows = run_query(Query(count(Author)).where(Author.active == True))
         assert rows[0][0] == 3
 
     # Ported from test/orm/test_query.py::CountTest.test_multiple_entity (SQLAlchemy 2.0.51)

@@ -8,7 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import Boolean, Column as SAColumn, Integer, String, Table, MetaData
+from sqlalchemy import Boolean, Integer, MetaData, String, Table
+from sqlalchemy import Column as SAColumn
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from rowform import Column, ModelMeta, model

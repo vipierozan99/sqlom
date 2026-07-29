@@ -149,7 +149,7 @@ def test_adding_the_missing_join_condition_fixes_it():
         Query(Author, Book, Tag)
         .join(Book, Book.author_id == Author.id)
         .join(Tag, Tag.book_id == Book.id)
-        .where(Author.active == True)  # noqa: E712
+        .where(Author.active == True)
     )
     sql, params = sql_of(query)
     assert sql == (
@@ -174,7 +174,7 @@ def test_adding_the_missing_join_condition_fixes_it():
 def test_joining_a_subquery_with_an_unrelated_on_clause_is_rejected():
     busy = Query(Book.author_id).subquery("busy")
     with pytest.raises(ValueError, match="cross join"):
-        Query(Author).join(busy, Author.active == True)  # noqa: E712
+        Query(Author).join(busy, Author.active == True)
 
 
 # Ported from test/sql/test_from_linter.py::TestFindUnmatchingFroms.test_now_connect_it (SQLAlchemy 2.0.51)
@@ -227,4 +227,4 @@ def test_there_is_no_escape_hatch_for_an_intentional_cartesian_product():
     # a deliberate design decision (README §12), not an oversight. There is
     # no rowform spelling of "cross join, and I mean it".
     with pytest.raises(ValueError, match="cross join"):
-        Query(Author).join(Book, Author.active == True)  # noqa: E712
+        Query(Author).join(Book, Author.active == True)

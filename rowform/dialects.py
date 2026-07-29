@@ -39,7 +39,7 @@ from typing import Any
 _CURRENT_DIALECT: ContextVar[Any] = ContextVar("rowform_current_dialect", default=None)
 
 
-def current_dialect() -> "Dialect | None":
+def current_dialect() -> Dialect | None:
     """The `Dialect` a render is currently happening under, or `None` outside
     any render, or when `to_sql()` was called with no `dialect=`. Dialect-
     sensitive nodes (`IsDistinctFrom`, the `ilike()`/`with_for_update()`/etc.

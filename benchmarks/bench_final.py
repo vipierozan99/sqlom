@@ -45,8 +45,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from benchmarks.benchargs import validate
-from benchmarks.models import UserORM, users_table
-from benchmarks.models import User
+from benchmarks.models import User, UserORM, users_table
 from rowform import DatabaseEngine, Query, compile_json_default
 
 DSN = "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
@@ -54,8 +53,8 @@ SA_DSN = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/rowform_bench"
 
 
 def sa_engine(pool_size, tuned):
-    kwargs = dict(pool_size=pool_size, max_overflow=0,
-                  connect_args={"ssl": False})
+    kwargs = {"pool_size": pool_size, "max_overflow": 0,
+                  "connect_args": {"ssl": False}}
     if tuned:
         # 3 statements/request -> 1. See module docstring.
         kwargs["isolation_level"] = "AUTOCOMMIT"

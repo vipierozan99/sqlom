@@ -114,7 +114,7 @@ def seed_database(db_path, authors, rng_seed=42):
 def rowform_query(limit):
     return (Query(Author, Post)
             .join(Post, Post.author_id == Author.id)
-            .where(Author.is_active == True)     # noqa: E712 - builds SQL, not a bool
+            .where(Author.is_active == True)
             .where(Post.score > 100)
             .limit(limit))
 
@@ -122,7 +122,7 @@ def rowform_query(limit):
 def core_statement(limit):
     return (select(authors_table, posts_table)
             .join(posts_table, posts_table.c.author_id == authors_table.c.id)
-            .where(authors_table.c.is_active == True)   # noqa: E712
+            .where(authors_table.c.is_active == True)
             .where(posts_table.c.score > 100)
             .limit(limit))
 
@@ -130,7 +130,7 @@ def core_statement(limit):
 def orm_statement(limit):
     return (select(AuthorORM, PostORM)
             .join(PostORM, PostORM.author_id == AuthorORM.id)
-            .where(AuthorORM.is_active == True)         # noqa: E712
+            .where(AuthorORM.is_active == True)
             .where(PostORM.score > 100)
             .limit(limit))
 

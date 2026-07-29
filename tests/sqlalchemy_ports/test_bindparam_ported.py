@@ -84,7 +84,7 @@ class TestDeferredRendering:
 class TestRepeatedBindparam:
     # Ported from test/sql/test_query.py::QueryTest.test_repeated_bindparams (SQLAlchemy 2.0.51)
     def test_the_same_bindparam_used_twice_resolves_from_one_override(self):
-        from rowform import and_, or_
+        from rowform import or_
 
         param = bindparam("name")
         query = Query(Author).where(

@@ -5,7 +5,6 @@ of bug that unit-testing either half alone would miss: a select list and a
 hydrator that disagree on column order or width.
 """
 
-import pytest
 
 from rowform import Query
 from tests.conftest import Author, Book, Tag
@@ -33,7 +32,7 @@ class TestInnerJoin:
         rows = run_query(
             Query(Author, Book)
             .join(Book, Book.author_id == Author.id)
-            .where(Author.active == True)  # noqa: E712
+            .where(Author.active == True)
             .order_by(Book.id)
         )
         assert [b.title for _, b in rows] == ["structures", "algorithms", "compilers"]
@@ -171,15 +170,15 @@ class TestSingleModelUnchanged:
         assert all(isinstance(a, Author) for a in rows)
 
     def test_where_and_limit(self, run_query):
-        rows = run_query(Query(Author).where(Author.active == True).order_by("id").limit(2))  # noqa: E712
+        rows = run_query(Query(Author).where(Author.active == True).order_by("id").limit(2))
         assert [a.name for a in rows] == ["ada", "brian"]
 
     def test_is_null_predicate_against_real_data(self, db, run_query):
         db.execute("INSERT INTO t_authors VALUES (99, NULL, 1)")
         try:
-            rows = run_query(Query(Author).where(Author.name == None))  # noqa: E711
+            rows = run_query(Query(Author).where(Author.name == None))
             assert [a.id for a in rows] == [99]
-            rows = run_query(Query(Author).where(Author.name != None))  # noqa: E711
+            rows = run_query(Query(Author).where(Author.name != None))
             assert 99 not in {a.id for a in rows}
         finally:
             db.execute("DELETE FROM t_authors WHERE id = 99")

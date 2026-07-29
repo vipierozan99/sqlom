@@ -34,11 +34,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from benchmarks.benchargs import validate
 import orjson
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User, UserORM, users_table
 from rowform import SQLITE_CONVERTERS, Query, compile_batch_hydrator, compile_json_default
 

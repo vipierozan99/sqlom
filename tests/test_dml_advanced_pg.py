@@ -380,7 +380,7 @@ class TestCtes:
         # than an error, which is why this asserts data and not SQL.
         await seed(engine)
         body = (Query(Main.id, Main.score).where(Main.score > 15).cte("high"))
-        sql, params = Query(body.id).where(body.score < 25).to_sql(placeholder="$")
+        _sql, params = Query(body.id).where(body.score < 25).to_sql(placeholder="$")
         assert params == (15, 25)
         assert await engine.fetch_all(Query(body.id).where(body.score < 25)) == [(2,)]
 

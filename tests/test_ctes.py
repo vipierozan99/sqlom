@@ -27,7 +27,6 @@ from rowform import (
     recursive_cte,
     sum_,
 )
-
 from tests.conftest import Author, Book
 
 

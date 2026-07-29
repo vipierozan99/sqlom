@@ -58,7 +58,7 @@ JSON = "application/json"
 
 
 def sa_engine(tuned):
-    kwargs = dict(pool_size=POOL, max_overflow=0, connect_args={"ssl": False})
+    kwargs = {"pool_size": POOL, "max_overflow": 0, "connect_args": {"ssl": False}}
     if tuned:
         # Without this SQLAlchemy sends BEGIN + SELECT + ROLLBACK per request —
         # 3 statements against rowform's 1. See benchmarks/bench_final.py.

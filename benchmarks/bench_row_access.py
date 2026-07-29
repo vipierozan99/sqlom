@@ -16,8 +16,14 @@ Postgres sections are skipped if no server is reachable.
 
 Results: benchmarks/results/row_access.txt
 """
-import asyncio, sqlite3, statistics, sys, tempfile, time
+import asyncio
+import sqlite3
+import statistics
+import sys
+import tempfile
+import time
 from pathlib import Path
+
 sys.path.insert(0, "/home/user/rowform")
 
 ROWS, N = 1000, 300

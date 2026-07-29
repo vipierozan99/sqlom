@@ -17,9 +17,9 @@ psycopg3, which suits the positional hydrator directly.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-
-from typing import Any, AsyncIterator, Callable, TypeVar, Union, overload
+from typing import Any, TypeVar, Union, overload
 
 from .compile import (
     PSYCOPG_CONVERTERS,

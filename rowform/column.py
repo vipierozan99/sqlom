@@ -22,7 +22,8 @@ descriptor protocol, so `Column` can behave as a live instance accessor
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Generic, Sequence, TypeVar, overload
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, overload
 
 # ColumnExpr, Condition and the predicate tree live in expr.py, which grew out of
 # this module once aliases, OR-groups and aggregates arrived. They are re-exported
@@ -41,8 +42,8 @@ from .expr import (  # noqa: F401
     Not,
     Predicate,
     Subquery,
-    _TableSource,
     _bare,
+    _TableSource,
     and_,
     avg,
     count,

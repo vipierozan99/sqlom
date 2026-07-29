@@ -100,7 +100,7 @@ async def run(args):
     try:
         await worker(args.host, args.port, args.path, warm_deadline, [],
                      args.timeout, sizes)
-    except (LoadError, asyncio.TimeoutError, OSError) as exc:
+    except (TimeoutError, LoadError, OSError) as exc:
         print(f"FAIL {args.path}: warmup failed: {exc}", file=sys.stderr)
         return 1
 

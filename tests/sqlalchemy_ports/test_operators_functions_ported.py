@@ -117,8 +117,8 @@ class TestNullAndIsOperators:
     def test_is_matches_eq_none_and_is_not_matches_ne_none(self):
         # SQLAlchemy's `.is_()`/`.is_not()` are just spellings of `==`/`!=`
         # against NULL; rowform keeps that equivalence but only for None.
-        assert Book.title.is_(None).to_sql("?") == (Book.title == None).to_sql("?")  # noqa: E711
-        assert Book.title.is_not(None).to_sql("?") == (Book.title != None).to_sql("?")  # noqa: E711
+        assert Book.title.is_(None).to_sql("?") == (Book.title == None).to_sql("?")
+        assert Book.title.is_not(None).to_sql("?") == (Book.title != None).to_sql("?")
 
     # Ported from test/sql/test_operators.py::BooleanEvalTest.test_is_true_literal (SQLAlchemy 2.0.51)
     @pytest.mark.parametrize("bad", [True, False, 0, "x"])
@@ -458,7 +458,7 @@ class TestBooleanComposition:
     def test_or_wrapped_inside_and(self):
         clause, params = where_of(
             Query(Author).where(
-                or_(and_(Author.id == 1, Author.active == True), Author.id == 2)  # noqa: E712
+                or_(and_(Author.id == 1, Author.active == True), Author.id == 2)
             )
         )
         assert clause == "((id = $1 AND active = $2) OR id = $3)"
@@ -472,7 +472,7 @@ class TestBooleanComposition:
         # of reasoning about relative precedence.
         clause, params = where_of(
             Query(Author).where(
-                and_(Author.id == 1, or_(Author.active == True, Author.id == 2))  # noqa: E712
+                and_(Author.id == 1, or_(Author.active == True, Author.id == 2))
             )
         )
         assert clause == "(id = $1 AND (active = $2 OR id = $3))"
@@ -489,7 +489,7 @@ class TestBooleanComposition:
     def test_not_of_and_wraps_the_whole_clause(self):
         clause, params = where_of(
             Query(Author).where(
-                not_(and_(Author.active == True, or_(Author.id == 1, Author.id == 2)))  # noqa: E712
+                not_(and_(Author.active == True, or_(Author.id == 1, Author.id == 2)))
             )
         )
         assert clause == "NOT ((active = $1 AND (id = $2 OR id = $3)))"
@@ -509,7 +509,7 @@ class TestBooleanComposition:
     def test_mixed_and_or_operator_overloads_nest_correctly(self):
         clause, params = where_of(
             Query(Author).where(
-                (Author.id == 1) | ((Author.active == True) & (Author.id == 2))  # noqa: E712
+                (Author.id == 1) | ((Author.active == True) & (Author.id == 2))
             )
         )
         assert clause == "(id = $1 OR (active = $2 AND id = $3))"

@@ -26,7 +26,7 @@ class TestSingleModel:
         assert params == (5, 3)
 
     def test_null_predicate_does_not_consume_a_placeholder_number(self):
-        query = Query(Author).where(Author.name == None).where(Author.id > 7).limit(2)  # noqa: E711
+        query = Query(Author).where(Author.name == None).where(Author.id > 7).limit(2)
         sql, params = query.to_sql(placeholder="$")
         assert sql.endswith("WHERE name IS NULL AND id > $1 LIMIT $2")
         assert params == (7, 2)

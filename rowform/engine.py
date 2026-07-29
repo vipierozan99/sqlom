@@ -3,9 +3,9 @@ from __future__ import annotations
 import itertools
 import re
 import weakref
+from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-
-from typing import Any, AsyncIterator, Callable, TypeVar, Union, overload
+from typing import Any, TypeVar, Union, overload
 
 from .compile import (
     ASYNCPG_CONVERTERS,
@@ -213,9 +213,8 @@ class DatabaseEngine:
         kwargs: dict[str, Any] = {"readonly": readonly, "deferrable": deferrable}
         if isolation is not None:
             kwargs["isolation"] = isolation
-        async with self.acquire() as conn:
-            async with _asyncpg_block(self, conn, 0, kwargs) as tx:
-                yield tx
+        async with self.acquire() as conn, _asyncpg_block(self, conn, 0, kwargs) as tx:
+            yield tx
 
     def _hydrator_for(self, query):
         """Compiled once per query *shape*, then reused for every row of every

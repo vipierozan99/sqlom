@@ -10,7 +10,7 @@ rowform-original tests (no SQLAlchemy equivalent) — this is rowform's own
 propagation mechanism, not a SQLAlchemy-ported behaviour.
 """
 
-from rowform import POSTGRES, Query, SQLITE, exists
+from rowform import POSTGRES, SQLITE, Query, exists
 from rowform.dialects import current_dialect
 from rowform.expr import Expression, _bare
 from tests.conftest import Author, Book
@@ -49,7 +49,7 @@ def _build_query(sink):
         Query(Author.id, _DialectSpy(Author.name, sink))
         .join(sub, sub.aid == Author.id)
         .join(cte, cte.bid == Author.id)
-        .where(_DialectSpy(Author.active, sink) == True)  # noqa: E712
+        .where(_DialectSpy(Author.active, sink) == True)
         .where(exists(inner_exists))
     )
 

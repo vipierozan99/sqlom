@@ -60,7 +60,6 @@ from rowform import (
 )
 from tests.conftest import Author, Book, Tag
 
-
 # --------------------------------------------------------------------------
 # Basic construction
 # --------------------------------------------------------------------------
@@ -453,7 +452,7 @@ def test_correlation_must_be_declared_or_the_reference_is_rejected():
 
 # rowform-original test (no SQLAlchemy equivalent)
 def test_select_from_a_cte_with_a_where_clause():
-    active_authors = Query(Author).where(Author.active == True).cte("active_authors")  # noqa: E712
+    active_authors = Query(Author).where(Author.active == True).cte("active_authors")
     sql, params = Query(active_authors.name).where(active_authors.id > 1).to_sql(placeholder="$")
     assert sql == (
         "WITH active_authors AS (SELECT id, name, active FROM t_authors "
@@ -582,7 +581,7 @@ def test_where_combines_and_of_or_across_a_three_way_join():
         .join(Tag, Tag.book_id == Book.id)
         .where(
             and_(
-                Author.active == True,  # noqa: E712
+                Author.active == True,
                 or_(Book.title == "compilers", Tag.label == "classic"),
             )
         )
@@ -659,7 +658,7 @@ def test_correlated_scalar_subquery_end_to_end(run_query):
 
 # rowform-original test (no SQLAlchemy equivalent)
 def test_cte_end_to_end(run_query):
-    active_authors = Query(Author).where(Author.active == True).cte("active_authors")  # noqa: E712
+    active_authors = Query(Author).where(Author.active == True).cte("active_authors")
     rows = run_query(
         Query(active_authors.name).order_by(active_authors.id)
     )
@@ -704,7 +703,7 @@ def test_add_columns_of_an_unjoined_source_is_rejected_at_render():
 
 # rowform-original test (no SQLAlchemy equivalent)
 def test_with_only_columns_replaces_the_select_list():
-    stmt = Query(Author).where(Author.active == True).with_only_columns(  # noqa: E712
+    stmt = Query(Author).where(Author.active == True).with_only_columns(
         Author.name
     )
     sql, params = stmt.to_sql()
@@ -828,7 +827,7 @@ def test_joins_cross_join_guard_is_unaffected_by_select_from_existing():
     # select_from()'s existence must not weaken join()'s own guard: join()
     # still always refuses an ON clause that links nothing.
     with pytest.raises(ValueError, match="cross join"):
-        Query(Author).join(Book, Author.active == True)  # noqa: E712
+        Query(Author).join(Book, Author.active == True)
 
 
 # rowform-original test (no SQLAlchemy equivalent)

@@ -25,7 +25,6 @@ import statistics
 import sys
 import tempfile
 import time
-from dataclasses import fields as dc_fields
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -35,7 +34,6 @@ import orjson
 from benchmarks.benchargs import validate
 from benchmarks.models import DDL, TABLE_NAME, User
 from rowform import (
-    DATACLASS_DUMP_OPTION,
     SQLITE_CONVERTERS,
     Query,
     compile_batch_hydrator,

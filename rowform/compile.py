@@ -11,13 +11,14 @@ Both factories attach the generated source to the returned function as
 `__source__` so the codegen stays inspectable rather than being magic.
 """
 
-from typing import Any, Callable, Dict
+from collections.abc import Callable
+from typing import Any
 
 # Converters applied per column *type* during hydration. Drivers differ in
 # what they hand back: sqlite3 returns 0/1 for booleans, whereas asyncpg
 # returns real Python bools. Passing the right map keeps output identical
 # across backends instead of silently leaking driver-native types into JSON.
-Converters = Dict[type, Callable[[Any], Any]]
+Converters = dict[type, Callable[[Any], Any]]
 
 SQLITE_CONVERTERS: Converters = {bool: bool}
 ASYNCPG_CONVERTERS: Converters = {}

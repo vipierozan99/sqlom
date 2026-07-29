@@ -35,7 +35,7 @@ class TestOrAnd:
     def test_nested_or_inside_and(self):
         clause, params = where_of(
             Query(Author).where(
-                and_(Author.active == True, or_(Author.id == 1, Author.id == 2))  # noqa: E712
+                and_(Author.active == True, or_(Author.id == 1, Author.id == 2))
             )
         )
         assert clause == "(active = $1 AND (id = $2 OR id = $3))"
@@ -208,7 +208,7 @@ class TestEndToEnd:
         assert [a.name for a in rows] == ["ada", "dan"]
 
     def test_not_against_real_rows(self, run_query):
-        rows = run_query(Query(Author).where(~(Author.active == True)))  # noqa: E712
+        rows = run_query(Query(Author).where(~(Author.active == True)))
         assert [a.name for a in rows] == ["carol"]
 
     def test_in_against_real_rows(self, run_query):
@@ -245,7 +245,7 @@ class TestEndToEnd:
     def test_complex_mixed_predicate(self, run_query):
         rows = run_query(
             Query(Author)
-            .where(or_(and_(Author.active == True, Author.id.in_([1, 2])),  # noqa: E712
+            .where(or_(and_(Author.active == True, Author.id.in_([1, 2])),
                        Author.name == "carol"))
             .order_by("id")
         )

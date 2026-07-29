@@ -27,17 +27,14 @@ sources by identity.
 from __future__ import annotations
 
 import re
-
+from collections.abc import Callable, Iterable
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Generic,
-    Iterable,
     Protocol,
     TypeVar,
     Union,
-    overload,
 )
 from typing import cast as _type_narrow
 
@@ -115,7 +112,7 @@ class Alias(Generic[M]):
     all the way through rendering.
     """
 
-    __slots__ = ("model", "alias", "__columns__", "__tablename__")
+    __slots__ = ("__columns__", "__tablename__", "alias", "model")
 
     if TYPE_CHECKING:
         model: type[M]
@@ -187,7 +184,7 @@ class _SubqueryColumn:
     """Stands in for a `Column` on a subquery's output, so a `Subquery` can be
     used everywhere a model source can."""
 
-    __slots__ = ("name", "py_type", "_storage_name")
+    __slots__ = ("_storage_name", "name", "py_type")
 
     def __init__(self, name, py_type):
         self.name = name
@@ -203,7 +200,7 @@ class Subquery:
     no model to hydrate into, so select its columns individually.
     """
 
-    __slots__ = ("query", "alias", "__columns__", "__tablename__")
+    __slots__ = ("__columns__", "__tablename__", "alias", "query")
 
     def __init__(self, query: Select, alias: str) -> None:
         if not alias or not isinstance(alias, str):
@@ -246,8 +243,15 @@ class CTE:
     `recursive_cte()` builds the self-referencing form.
     """
 
-    __slots__ = ("query", "alias", "recursive", "column_names", "__columns__",
-                 "__tablename__", "_body")
+    __slots__ = (
+        "__columns__",
+        "__tablename__",
+        "_body",
+        "alias",
+        "column_names",
+        "query",
+        "recursive",
+    )
 
     def __init__(self, query: Select, alias: str,
                  recursive: bool = False) -> None:
@@ -389,7 +393,7 @@ def walk_nodes(node: Any) -> Any:
     stack: list[Any] = list(_child_values(node))
     while stack:
         current = stack.pop()
-        if isinstance(current, _ATOMS) or isinstance(current, type):
+        if isinstance(current, (_ATOMS, type)):
             continue
         key = id(current)
         if key in visited:
@@ -431,7 +435,7 @@ def _collect_ctes(node: Any) -> list[CTE]:
     visited: set[int] = set()
 
     def walk(current: Any) -> None:
-        if isinstance(current, _ATOMS) or isinstance(current, type):
+        if isinstance(current, (_ATOMS, type)):
             return
         key = id(current)
         if key in visited:
@@ -572,7 +576,7 @@ class Expression(Generic[T]):
             )
         return self.is_not_null()
 
-    def is_distinct_from(self, other: Any) -> "IsDistinctFrom":
+    def is_distinct_from(self, other: Any) -> IsDistinctFrom:
         """`self IS DISTINCT FROM other` — null-safe inequality: unlike `!=`,
         two `NULL`s compare as *not* distinct (i.e. this is `False`), and
         `NULL` vs. a real value compares as distinct (`True`). Needs a
@@ -581,7 +585,7 @@ class Expression(Generic[T]):
         """
         return IsDistinctFrom(self, other)
 
-    def is_not_distinct_from(self, other: Any) -> "IsDistinctFrom":
+    def is_not_distinct_from(self, other: Any) -> IsDistinctFrom:
         """`self IS NOT DISTINCT FROM other` — null-safe equality, the
         negation of `is_distinct_from()`. Also needs a dialect."""
         return IsDistinctFrom(self, other, negated=True)
@@ -590,11 +594,11 @@ class Expression(Generic[T]):
         """Name this expression in the select list (`AS name`)."""
         return Labelled(self, name)
 
-    def desc(self) -> "_OrderingExpr[T]":
+    def desc(self) -> _OrderingExpr[T]:
         """Mark this expression as descending, for `order_by()`."""
         return _OrderingExpr(self, True)
 
-    def asc(self) -> "_OrderingExpr[T]":
+    def asc(self) -> _OrderingExpr[T]:
         """Mark this expression as ascending, for `order_by()`."""
         return _OrderingExpr(self, False)
 
@@ -657,7 +661,7 @@ class Expression(Generic[T]):
             )
         return BinaryOp(self, operator, other)
 
-    def cast(self, type_name: str, py_type: Any = None) -> "Cast[Any]":
+    def cast(self, type_name: str, py_type: Any = None) -> Cast[Any]:
         """`CAST(self AS type_name)` — SQLAlchemy's `col.cast(Type)`.
 
         `type_name` is a plain SQL type name (`"numeric"`, `"integer"`,
@@ -679,7 +683,7 @@ class _OrderingExpr(Generic[T]):
     — it carries no `to_sql()` of its own.
     """
 
-    __slots__ = ("expression", "descending")
+    __slots__ = ("descending", "expression")
 
     def __init__(self, expression: Expression[T], descending: bool) -> None:
         self.expression = expression
@@ -697,7 +701,7 @@ class ColumnExpr(Expression[T]):
     reads naturally when there is no alias involved.
     """
 
-    __slots__ = ("source", "name", "py_type")
+    __slots__ = ("name", "py_type", "source")
 
     if TYPE_CHECKING:
         source: Any
@@ -802,7 +806,7 @@ class Cast(Expression[T]):
     name (`numeric`, `integer`, `numeric(12, 9)`) rather than trusted.
     """
 
-    __slots__ = ("expr", "type_name", "py_type")
+    __slots__ = ("expr", "py_type", "type_name")
 
     def __init__(self, expr: Any, type_name: str, py_type: Any = None) -> None:
         import re
@@ -853,7 +857,7 @@ class Literal(Expression[T]):
     not required.
     """
 
-    __slots__ = ("value", "py_type")
+    __slots__ = ("py_type", "value")
 
     def __init__(self, value: T, py_type: Any = None) -> None:
         self.value = value
@@ -928,7 +932,7 @@ class LiteralColumn(Expression[T]):
     ordinary column reference. That's the deliberate trade of using it.
     """
 
-    __slots__ = ("text", "py_type")
+    __slots__ = ("py_type", "text")
 
     def __init__(self, text: str, py_type: Any = None) -> None:
         self.text = text
@@ -988,7 +992,7 @@ class Tuple(Expression[Any]):
                 found += element.sources()
         return found
 
-    def _as_tuple(self, other: Any) -> "Expression[Any]":
+    def _as_tuple(self, other: Any) -> Expression[Any]:
         if isinstance(other, Expression):
             return other  # another Tuple, a ScalarSubquery, ...
         if isinstance(other, (tuple, list)):
@@ -998,10 +1002,10 @@ class Tuple(Expression[Any]):
             f"Python tuple of the same width, got {other!r}"
         )
 
-    def __eq__(self, other: Any) -> Condition:  # type: ignore[override]
+    def __eq__(self, other: object) -> Condition:  # type: ignore[override]
         return Condition(self, "=", self._as_tuple(other))
 
-    def __ne__(self, other: Any) -> Condition:  # type: ignore[override]
+    def __ne__(self, other: object) -> Condition:  # type: ignore[override]
         return Condition(self, "!=", self._as_tuple(other))
 
     def in_(self, values: Any) -> InClause:
@@ -1038,7 +1042,7 @@ def tuple_(*elements: Any) -> Tuple:
 class Aggregate(Expression[T]):
     """`count(x)`, `sum(x)`, and friends. Usable in a select list and in HAVING."""
 
-    __slots__ = ("func", "operand", "distinct")
+    __slots__ = ("distinct", "func", "operand")
 
     def __init__(self, func: str, operand: Any = None,
                  distinct: bool = False) -> None:
@@ -1264,7 +1268,7 @@ class IsDistinctFrom(Predicate):
     guessing if rendered with no dialect in effect. See `rowform/dialects.py`.
     """
 
-    __slots__ = ("left", "right", "negated")
+    __slots__ = ("left", "negated", "right")
 
     def __init__(self, left: Expression[Any], right: Any,
                  negated: bool = False) -> None:
@@ -1327,13 +1331,13 @@ class TextClause(Predicate):
     that, and rowform cannot know what it references.
     """
 
-    __slots__ = ("text", "_bindparams")
+    __slots__ = ("_bindparams", "text")
 
     def __init__(self, text: str, bindparams: dict[str, Any] | None = None) -> None:
         self.text = text
         self._bindparams: dict[str, Any] = dict(bindparams) if bindparams else {}
 
-    def bindparams(self, *positional: Any, **kwargs: Any) -> "TextClause":
+    def bindparams(self, *positional: Any, **kwargs: Any) -> TextClause:
         """Supply values for this text's `:name` tokens, in place — matches
         every other builder method in this library (mutate, return `self`),
         rather than `text()`'s own generative style in SQLAlchemy.
@@ -1406,7 +1410,7 @@ class _Deferred:
     before the params tuple is sent anywhere.
     """
 
-    __slots__ = ("key", "default")
+    __slots__ = ("default", "key")
 
     def __init__(self, key: str, default: Any = _MISSING) -> None:
         self.key = key
@@ -1432,7 +1436,7 @@ class BindParameter(Expression[T]):
     no deferred row count/offset in rowform.
     """
 
-    __slots__ = ("key", "value", "py_type")
+    __slots__ = ("key", "py_type", "value")
 
     def __init__(self, key: str, value: Any = _MISSING, py_type: Any = None) -> None:
         if not isinstance(key, str) or not key:
@@ -1552,7 +1556,7 @@ class Not(Predicate):
 class InClause(Predicate):
     """`x IN (...)` over a sequence of values or a subquery."""
 
-    __slots__ = ("left", "values", "negated")
+    __slots__ = ("left", "negated", "values")
 
     def __init__(self, left: Expression[Any], values: Any,
                  negated: bool = False) -> None:
@@ -1610,7 +1614,7 @@ class InClause(Predicate):
 class ExistsClause(Predicate):
     """`EXISTS (subquery)`."""
 
-    __slots__ = ("query", "negated")
+    __slots__ = ("negated", "query")
 
     def __init__(self, query: Query[Any], negated: bool = False) -> None:
         self.query = query
@@ -1775,7 +1779,7 @@ class FunctionCall(Expression[T]):
     than trusted.
     """
 
-    __slots__ = ("name", "args", "py_type")
+    __slots__ = ("args", "name", "py_type")
 
     def __init__(self, name: str, *args: Any, py_type: Any = None) -> None:
         import re
@@ -1855,7 +1859,7 @@ class Case(Expression[T]):
     predicate of its own.
     """
 
-    __slots__ = ("whens", "else_", "value")
+    __slots__ = ("else_", "value", "whens")
 
     def __init__(self, whens: Any, else_: Any = None, value: Any = None) -> None:
         self.whens = list(whens)
@@ -1934,7 +1938,7 @@ class Over(Expression[T]):
     CURRENT ROW"`, since the grammar is large and mostly not worth modelling.
     """
 
-    __slots__ = ("function", "partition_by", "order_by", "frame")
+    __slots__ = ("frame", "function", "order_by", "partition_by")
 
     def __init__(self, function: Expression[T], partition_by: Any = (),
                  order_by: Any = (), frame: str | None = None) -> None:

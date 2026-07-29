@@ -28,20 +28,16 @@ import asyncio
 import cProfile
 import os
 import pstats
-import re
 import subprocess
 import sys
 import time
-from io import StringIO
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from benchmarks.benchargs import validate
 from benchmarks.bench_pg_load import CONTENDERS, DEFAULT_DSN
-
-from benchmarks import profkit
-from benchmarks.profkit import categorize, rollup, top_functions
+from benchmarks.benchargs import validate
+from benchmarks.profkit import rollup, top_functions
 
 
 def pin(client_cores, db_cores):
@@ -205,15 +201,15 @@ def report(result, args):
     print(f"  saturated (c={args.concurrency}):  {result['wall_ms']:.3f} ms wall/req, "
           f"{result['cpu_ms']:.3f} ms CPU/req, utilization {result['utilization']:.2f}, "
           f"{result['throughput']:.0f} rps")
-    print(f"      -> utilization near 1.0 means the core is saturated and DB wait is")
-    print(f"         fully hidden behind other requests; CPU/req now sets throughput")
+    print("      -> utilization near 1.0 means the core is saturated and DB wait is")
+    print("         fully hidden behind other requests; CPU/req now sets throughput")
 
     total = result["profiled_cpu"]
     inflation = (total * 1000 / result["n"]) / result["cpu_ms"] if result["cpu_ms"] else 0
     print(f"\n  CPU by library — cProfile, process_time timer, {result['n']} requests.")
     print(f"  Profiled cost is {total * 1000 / result['n']:.3f} ms/req vs {result['cpu_ms']:.3f} "
           f"unprofiled ({inflation:.1f}x instrumentation overhead), so read shares, not ms.")
-    print(f"  C builtins are attributed to their callers.\n")
+    print("  C builtins are attributed to their callers.\n")
     print(f"    {'library':<22}{'share':>8}{'flat':>8}")
     print(f"    {'-' * 38}")
     flat = dict(rollup(result["stats"], attribute_builtins=False))
@@ -223,7 +219,7 @@ def report(result, args):
         print(f"    {lib:<22}{secs / total * 100:>7.1f}%{flat.get(lib, 0) / total * 100:>7.1f}%")
 
     if result.get("sampled"):
-        print(f"\n  Sampling cross-check (pyinstrument, 0.5 ms interval, wall≈CPU here):")
+        print("\n  Sampling cross-check (pyinstrument, 0.5 ms interval, wall≈CPU here):")
         for line in result["sampled"].splitlines()[:args.top + 6]:
             print(f"    {line}")
 
@@ -236,8 +232,8 @@ def report(result, args):
 
 def compare(a, b):
     print(f"\n{'=' * 78}\nWHERE THE DIFFERENCE GOES\n{'=' * 78}")
-    ta = a["profiled_cpu"] / a["n"]
-    tb = b["profiled_cpu"] / b["n"]
+    a["profiled_cpu"] / a["n"]
+    b["profiled_cpu"] / b["n"]
     ra = dict(rollup(a["stats"]))
     rb = dict(rollup(b["stats"]))
     libs = sorted(set(ra) | set(rb), key=lambda l: -(rb.get(l, 0) / b["n"] - ra.get(l, 0) / a["n"]))
@@ -256,8 +252,8 @@ def compare(a, b):
           f"{b['cpu_ms'] - a['cpu_ms']:>+11.3f}")
     print(f"  {'throughput (rps)':<22}{a['throughput']:>17.0f}{b['throughput']:>17.0f}"
           f"{b['throughput'] - a['throughput']:>+11.0f}")
-    print(f"\n  Shares are rescaled onto each side's measured CPU/req, so columns are")
-    print(f"  comparable even though cProfile inflates each differently.")
+    print("\n  Shares are rescaled onto each side's measured CPU/req, so columns are")
+    print("  comparable even though cProfile inflates each differently.")
 
 
 async def main():

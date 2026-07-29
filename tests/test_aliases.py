@@ -117,7 +117,7 @@ class TestSelfJoinEndToEnd:
 
     def test_alias_only_query(self, run_query):
         a = Alias(Author, "a")
-        rows = run_query(Query(a).where(a.active == True).order_by(a.id))  # noqa: E712
+        rows = run_query(Query(a).where(a.active == True).order_by(a.id))
         assert [x.name for x in rows] == ["ada", "brian", "dan"]
         assert all(isinstance(x, Author) for x in rows)
 

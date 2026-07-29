@@ -8,7 +8,7 @@ rowform's is deliberately a much smaller "common core + a few overridable
 flags/methods" — see rowform/dialects.py's module docstring for why.
 """
 
-from rowform import SQLITE, POSTGRES, Dialect, PostgresDialect, SqliteDialect
+from rowform import POSTGRES, SQLITE, Dialect, PostgresDialect, SqliteDialect
 from rowform.dialects import current_dialect
 
 

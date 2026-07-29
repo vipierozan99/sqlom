@@ -62,12 +62,12 @@ class TestFetchAll:
 
     async def test_where_and_limit(self, engine):
         rows = await engine.fetch_all(
-            Query(Author).where(Author.active == True).order_by("id").limit(2)  # noqa: E712
+            Query(Author).where(Author.active == True).order_by("id").limit(2)
         )
         assert [a.name for a in rows] == ["ada", "brian"]
 
     async def test_is_null_predicate(self, engine):
-        rows = await engine.fetch_all(Query(Author).where(Author.name == None))  # noqa: E711
+        rows = await engine.fetch_all(Query(Author).where(Author.name == None))
         assert rows == []
 
     async def test_empty_result(self, engine):
@@ -220,7 +220,7 @@ class TestNewQueryFeaturesOnPostgres:
 
         rows = await engine.fetch_all(
             Query(Author)
-            .where(or_(and_(Author.active == True, Author.id == 1),  # noqa: E712
+            .where(or_(and_(Author.active == True, Author.id == 1),
                        ~(Author.name != "carol")))
             .order_by("id")
         )

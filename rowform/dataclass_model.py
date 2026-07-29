@@ -48,7 +48,7 @@ class _FieldColumn:
     shadow storage name to indirect through.
     """
 
-    __slots__ = ("name", "py_type", "_storage_name")
+    __slots__ = ("_storage_name", "name", "py_type")
 
     def __init__(self, name, py_type):
         self.name = name

@@ -7,67 +7,50 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-asyncpg = [
-    "asyncpg>=0.29",
-]
-psycopg = [
-    "psycopg[binary]>=3.1",
-    "psycopg-pool>=3.2",
-]
-orjson = [
-    "orjson>=3.9",
-]
+asyncpg = ["asyncpg>=0.29"]
+psycopg = ["psycopg[binary]>=3.1", "psycopg-pool>=3.2"]
+orjson = ["orjson>=3.9"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.mypy]
-python_version = "3.11"
-# The point of the typing tests: an ignore that stops being necessary becomes an
-# error, which is what makes tests/typing/negative.py a test rather than a comment.
-warn_unused_ignores = true
-warn_redundant_casts = true
-warn_unused_configs = true
-strict_equality = true
-no_implicit_reexport = false
-
-[[tool.mypy.overrides]]
-module = ["asyncpg.*", "psycopg.*", "psycopg_pool.*", "uvloop.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-# The library body is not annotated end to end yet; the public surface is. These
-# keep mypy from demanding annotations on internals while still checking the calls
-# that tests/typing/ makes against them.
-module = "rowform.*"
-disallow_untyped_defs = false
-check_untyped_defs = false
-
-[tool.pyright]
-pythonVersion = "3.11"
-typeCheckingMode = "basic"
-# The other half of the negative tests: a `# pyright: ignore` that suppresses
-# nothing becomes an error, so an expected error that stops happening fails.
-reportUnnecessaryTypeIgnoreComment = "error"
-# mypy's `# type: ignore` comments are for mypy. Left enabled, pyright would judge
-# them by its own diagnostics and report every one as unnecessary.
-enableTypeIgnoreComments = false
-# tests/typing/negative.py is deliberately a list of bare expressions.
-reportUnusedExpression = "none"
-include = ["rowform", "tests/typing"]
-extraPaths = ["."]
 
 [dependency-groups]
 dev = [
     "asyncpg>=0.29",
+    "basedpyright>=1.39.9",
     "coverage>=7.15.2",
-    "mypy>=2.3.0",
     "orjson>=3.9",
     "psycopg-pool>=3.2",
     "psycopg[binary]>=3.1",
-    "pyright>=1.1.411",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
+    "ruff>=0.16.0",
 ]
+
+
+[tool.pyright]
+typeCheckingMode = "standard"
+enableExperimentalFeatures = true
+reportIncompatibleVariableOverride = false
+reportIncompatibleMethodOverride = false
+reportUnnecessaryTypeIgnoreComment = "error"
+include = ["rowform", "tests/typing"]
+extraPaths = ["."]
+
+
+[tool.ruff]
+line-length = 100
+preview = true
+
+[tool.ruff.lint]
+extend-select = ["E303", "TID", "S"]
+ignore = [
+    "E711",
+    "PLC0414",
+    "B008",
+    "S101",    # assert is this codebase's idiom for internal invariants/type-narrowing, never auth/permission checks
+]
+task-tags = ["TODO", "FIXME", "XXX", "NOTE"]

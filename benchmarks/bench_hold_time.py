@@ -51,12 +51,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from benchmarks.benchargs import validate
-
 import orjson
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from benchmarks.benchargs import validate
 from benchmarks.models import User, users_table
 from rowform import PsycopgEngine, Query, compile_json_default
 
