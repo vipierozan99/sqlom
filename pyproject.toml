@@ -9,6 +9,7 @@ dependencies = []
 [project.optional-dependencies]
 asyncpg = ["asyncpg>=0.29"]
 psycopg = ["psycopg[binary]>=3.1", "psycopg-pool>=3.2"]
+sqlite = ["aiosqlite>=0.19"]
 orjson = ["orjson>=3.9"]
 
 [build-system]
@@ -18,6 +19,8 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "aiosqlite>=0.19",
+    "async-typer>=0.2.1",
     "asyncpg>=0.29",
     "basedpyright>=1.39.9",
     "coverage>=7.15.2",
@@ -30,6 +33,31 @@ dev = [
     "ruff>=0.16.0",
 ]
 
+# Contenders and load generators. Kept out of `dev` so a plain `uv sync` does not
+# pull SQLAlchemy/FastAPI, but declared so that `just bench` is reproducible —
+# previously these were a manual `pip install` line in docs/METHODOLOGY.md.
+bench = [
+    "fastapi>=0.115",
+    "locust>=2.32",
+    "psutil>=6.0",
+    "rich>=13.0",
+    "sqlalchemy>=2.0",
+    # async-typer 0.2.1 imports `typer.clear`, removed in typer 0.26 — cap until
+    # async-typer publishes a release that drops it (see PLAN.md discoveries).
+    "typer>=0.15,<0.26",
+    "uvicorn[standard]>=0.34",
+]
+
+profile = [
+    "austin-dist>=3.6",
+    # provides the `austin2speedscope` converter (the `austin` sampler binary
+    # itself, from austin-dist, only writes its binary "mojo" format).
+    "austin-python>=2.2",
+    "py-spy>=0.4.2",
+    "pyinstrument>=5.0",
+    "yappi>=1.6.10",
+]
+
 
 [tool.pyright]
 typeCheckingMode = "standard"
@@ -37,7 +65,7 @@ enableExperimentalFeatures = true
 reportIncompatibleVariableOverride = false
 reportIncompatibleMethodOverride = false
 reportUnnecessaryTypeIgnoreComment = "error"
-include = ["rowform", "tests/typing"]
+include = ["rowform", "benchmarks", "tests/typing"]
 extraPaths = ["."]
 
 
@@ -60,4 +88,4 @@ task-tags = ["TODO", "FIXME", "XXX", "NOTE"]
 # names and exec() are the same codegen the library itself uses (see rowform/compile.py),
 # random.Random seeds synthetic benchmark data, and subprocess/except-Exception calls
 # drive or clean up after local, hardcoded commands rather than user input.
-"benchmarks/*" = ["S102", "S110", "S311", "S404", "S603", "S607", "S608", "BLE001", "PLW1510"]
+"benchmarks/**" = ["S102", "S110", "S311", "S404", "S603", "S607", "S608", "BLE001", "PLW1510"]

@@ -1,11 +1,35 @@
 # rowform benchmark results
 
-Every number here was produced by a script in [`benchmarks/`](../benchmarks/), on the
-machine described in each section. Raw output artifacts are checked in under
+Every number here was produced by a script in `benchmarks/`, on the machine
+described in each section. Raw output artifacts are checked in under
 [`benchmarks/results/`](../benchmarks/results/).
 
 Read [METHODOLOGY.md](METHODOLOGY.md) before quoting any of this — several
 figures in earlier revisions were wrong, and the reasons are instructive.
+
+> **This document is a historical record.** The 28 standalone scripts every
+> figure below cites (`bench_sqlite.py`, `bench_pg_load.py`, `profile_pg.py`,
+> `httpload.py`, …) were deleted in the benchmark suite rewrite (see PLAN.md)
+> and replaced by one CLI, `python -m benchmarks` (`just bench`). Nothing on
+> this page has been re-derived or re-verified with the new suite (PLAN.md
+> D3/D5: no old-vs-new agreement gate, nothing republished) — every command
+> line quoted below is preserved exactly as it was run, and still works if you
+> check out the commit the scripts last existed in (`git checkout 32ad4a1 --
+> benchmarks/`). The table below is the mapping from each old script to its
+> new-suite equivalent, for anyone who wants to *reproduce the shape* of a
+> measurement (not its number) going forward.
+>
+> | old script | new command |
+> |---|---|
+> | `bench_sqlite.py`, `bench_sqlite_async.py` | `bench micro run --shape flat` |
+> | `bench_sqlite_join.py` | `bench micro run --shape join` |
+> | `bench_pg_load.py` | `bench db up && bench db seed --shape flat`, then a Postgres-backed `bench load`/`bench micro` (Postgres backend not yet wired into `bench micro`/`bench load` — sqlite and Postgres provisioning exist, `bench db up/seed`; the contenders/CLI plumbing to point `micro`/`load` at Postgres is follow-up work) |
+> | `httpload.py`, `verify_concurrency.sh` | `bench load run --generator httpload`, `bench load audit` |
+> | `bench_locust.sh` | `bench load run --generator locust` |
+> | `fastapi_app.py`, `pin_and_run.sh` | `bench service run` (routes generated from the contender registry; `--cores` pins each worker via `taskset`) |
+> | `profile_pg.py`, `profile_sqlite.py`, `profile_stages.py` | `bench profile micro`, `bench profile load` |
+> | `ab_setup_cost.py`, `estimate_ceilings.py` | `bench micro decompose` (stage decomposition) and the `MockEngine` mapper-floor contenders (`bench micro run --only MockEngine`) |
+> | `optimize_pg.py`, `optimize_sqlite.py`, `compare_rust_driver.py`, `bench_final.py`, `bench_conditional_reset.py`, `bench_pipeline_reset.py`, `bench_psycopg.py`, `bench_hold_time.py` | exploratory/one-off investigations, not ported — recoverable at commit `32ad4a1` if needed again |
 
 **Environment** (all runs)
 

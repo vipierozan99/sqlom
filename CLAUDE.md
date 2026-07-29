@@ -61,3 +61,4 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - Run linting with: `just lint --fix` (`--fix` will already fix fixable errors)
 - Run typechecking with: `just typecheck`
 - Run tests with: `just test <test_selector>`
+- When you find an interesting benchmark result, make a branch and commit the results there, such that I can always go back to a commit an reproduce a benchmark. Also keep a document of those runs and their commits and results in the main branch

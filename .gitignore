@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .serena
+
+# PLAN.md D15: bench results/runs/ are ephemeral, gitignored on main; `bench
+# record` commits chosen artifacts to a dated branch instead.
+benchmarks/results/runs/

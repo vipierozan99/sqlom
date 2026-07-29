@@ -1,5 +1,19 @@
 # How to benchmark this honestly
 
+> **Historical record, like BENCHMARKS.md.** The scripts named throughout this
+> document (`bench_pg_load.py`, `bench_locust.sh`, `pin_and_run.sh`,
+> `bench_sqlite.py`, `bench_psycopg.py`, `profile_stages.py`,
+> `verify_concurrency.sh`, …) were deleted in the benchmark suite rewrite and
+> replaced by `python -m benchmarks` (`just bench`) — see the mapping table at
+> the top of [BENCHMARKS.md](BENCHMARKS.md) and `PLAN.md`. The *practices* this
+> document describes (equivalence gates, GC control, physical-core-aware
+> pinning, the Little's Law/socket-count/scaling-knee concurrency audit, …) are
+> exactly what the new suite's `benchmarks/harness/` package mechanises —
+> that consolidation was the whole point of the rewrite (see PLAN.md §1, §4).
+> Command lines below are preserved as the historical record of what was
+> actually run; recovering the scripts themselves needs
+> `git checkout 32ad4a1 -- benchmarks/`.
+
 Eight claims published in this repo turned out to be wrong. Each was caught by
 attacking the benchmark rather than trusting it, and each came from a distinct
 methodological flaw. They are recorded here because the flaws generalize well

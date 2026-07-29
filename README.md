@@ -15,7 +15,7 @@
 * **Multi-dialect:** a small `Dialect` core with Postgres/sqlite overrides — `IS DISTINCT FROM`, `FOR UPDATE`, `DELETE ... USING` and `ON CONFLICT ... ON CONSTRAINT` are validated per dialect rather than just documented.
 * **Writes:** `Insert`/`Update`/`Delete` with `RETURNING`, bulk insert in one statement, expression assignments, `ON CONFLICT` upserts with `excluded()`, and `UPDATE ... FROM` / `DELETE ... USING` across tables.
 * **Transactions and savepoints:** `async with db.transaction() as tx:` on both engines, with nesting as savepoints and isolation levels.
-* **Async-first:** native `asyncpg` pool integration, ~3.3x SQLAlchemy's async ORM under concurrent load through a real FastAPI stack — see [Performance](#-performance).
+* **Async-first:** native `asyncpg` pool integration, ~3.3x SQLAlchemy's async ORM under concurrent load through a real FastAPI stack — see [Performance](#-performance). A third engine, `SqliteEngine` (`aiosqlite`, WAL mode, `sqlite` extra), gives the same API with no server for tests and local dev.
 * **Extensively guarded:** an unjoined table in `where()`, a cross join with no linking condition, an unlabelled aggregate in a CTE, a bulk insert past the parameter limit — all raise client-side with a clear message instead of producing plausible-looking wrong SQL. See [What's checked for you](#whats-checked-for-you).
 
 ---
@@ -33,7 +33,7 @@ q = rf.select(User).where(User.active == True)
 results = await conn.execute(q)   # list[User] — same call for reads and writes
 ```
 
-`conn` is a `DatabaseEngine`/`PsycopgEngine`, or a `Transaction` from `db.transaction()`. `execute()` hydrates and returns rows for a `select()`/`Query` or a RETURNING `insert()`/`update()`/`delete()` — same as `fetch_all()`, still available if you'd rather name the row-returning case explicitly. Anything else (a write with no `returning()`) runs and returns the driver's own status report instead.
+`conn` is a `DatabaseEngine`/`PsycopgEngine`/`SqliteEngine`, or a `Transaction` from `db.transaction()`. `execute()` hydrates and returns rows for a `select()`/`Query` or a RETURNING `insert()`/`update()`/`delete()` — same as `fetch_all()`, still available if you'd rather name the row-returning case explicitly. Anything else (a write with no `returning()`) runs and returns the driver's own status report instead.
 
 ```python
 from rowform import select, insert, update, delete, and_, or_, not_, func

@@ -86,6 +86,7 @@ from .expr import (
 )
 from .psycopg_engine import PsycopgEngine
 from .query import CompoundSelect, Query, json_bytes, select
+from .sqlite_engine import SqliteEngine
 from .transaction import Transaction, active_transaction
 
 __all__ = [
@@ -130,6 +131,7 @@ __all__ = [
     "Query",
     "ScalarSubquery",
     "SqliteDialect",
+    "SqliteEngine",
     "Subquery",
     "TextClause",
     "Transaction",

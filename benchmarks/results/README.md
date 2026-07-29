@@ -3,6 +3,13 @@
 Output from the runs quoted in [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md).
 Committed as evidence so the tables there can be traced to a real run.
 
+Every file below was produced by one of the 28 scripts deleted in the
+benchmark suite rewrite — see the migration table at the top of
+`docs/BENCHMARKS.md`. Kept (PLAN.md D2): deleting these would orphan every
+number the tables above cite. New runs from the current suite land under
+`results/runs/` instead (gitignored on main — PLAN.md D15; `bench record`
+commits chosen ones to a dated branch, indexed in `docs/RUNS.md`).
+
 | file | what it is |
 |---|---|
 | `core_idiom.txt` | **The largest correction in this suite.** Every published "vs SQLAlchemy Core" ratio was inflated 1.6-2.6x because the harness shaped Core's rows through `.mappings()`, whose `quoted_name` keys force a per-key `str()` cast that orjson requires and rowform never pays. Measured in all five configurations, plus how the join benchmark exposed it. The ORM ratios are unaffected. Read this before quoting any Core figure. |
