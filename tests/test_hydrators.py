@@ -1,5 +1,7 @@
 """Code generation: what the compilers emit and how it behaves."""
 
+from typing import ClassVar
+
 import pytest
 
 from rowform import (
@@ -59,7 +61,7 @@ class TestSingleModelHydrators:
     def test_a_model_with_no_columns_is_refused(self):
         class Empty:
             __tablename__ = "empty"
-            __columns__ = {}
+            __columns__: ClassVar = {}
 
         with pytest.raises(ValueError, match="declares no columns"):
             compile_batch_hydrator(Empty)
@@ -202,7 +204,7 @@ class TestJoinHydrator:
     def test_a_model_entity_with_no_columns_is_refused(self):
         class Empty:
             __tablename__ = "empty"
-            __columns__ = {}
+            __columns__: ClassVar = {}
 
         with pytest.raises(ValueError, match="declares no columns"):
             compile_join_hydrator([("model", Empty, False)])

@@ -120,7 +120,7 @@ class TestFunctions:
 
     def test_dunder_attributes_are_not_functions(self):
         with pytest.raises(AttributeError):
-            func._private
+            func._private  # noqa: B018
 
 
 class TestCase:

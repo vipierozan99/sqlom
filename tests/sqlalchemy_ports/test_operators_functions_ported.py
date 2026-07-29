@@ -435,7 +435,7 @@ class TestTupleComparisons:
     # rowform-original test (no SQLAlchemy equivalent)
     def test_tuple_comparison_rejects_a_mismatched_value(self):
         with pytest.raises(TypeError, match="tuple_"):
-            tuple_(Author.id) == 5
+            tuple_(Author.id) == 5  # noqa: B015
 
     # rowform-original test (no SQLAlchemy equivalent)
     def test_tuple_needs_at_least_one_element(self):
@@ -620,7 +620,7 @@ class TestGenericFunctions:
         # attribute access on it fails — rowform has no equivalent feature,
         # this just documents the boundary rather than a bug to fix.
         with pytest.raises(AttributeError):
-            func.foo.bar
+            func.foo.bar  # noqa: B018
 
     # rowform-original test (no SQLAlchemy equivalent)
     @pytest.mark.parametrize("bad", ["1abc", "a b", "lower(x)", ""])

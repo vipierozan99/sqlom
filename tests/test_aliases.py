@@ -17,7 +17,7 @@ class TestAliasBasics:
     def test_unknown_column_raises_rather_than_rendering(self):
         a = Alias(Author, "a")
         with pytest.raises(AttributeError, match="has no column 'nope'"):
-            a.nope
+            a.nope  # noqa: B018
 
     def test_alias_needs_a_model_and_a_name(self):
         with pytest.raises(TypeError, match="takes a model"):

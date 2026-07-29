@@ -562,7 +562,7 @@ class Insert(_Statement):
                 placeholders.append(sql)
                 params.extend(extra)
             groups.append(f"({', '.join(placeholders)})")
-        sql = (f"{with_sql}INSERT INTO {self._table_sql()} "
+        sql = (f"{with_sql}INSERT INTO {self._table_sql()} "  # noqa: S608 -- table/column names, not user input
                f"({', '.join(self._columns)}) VALUES {', '.join(groups)}")
         sql += self._conflict_sql(nxt, params)
         sql += self._returning_sql(nxt, params)
@@ -708,7 +708,7 @@ class Update(_Statement):
             sql, extra = _operand_sql(value, nxt, resolve)
             params.extend(extra)
             parts.append(f"{name} = {sql}")
-        sql = f"{with_sql}UPDATE {self._table_sql()} SET {', '.join(parts)}"
+        sql = f"{with_sql}UPDATE {self._table_sql()} SET {', '.join(parts)}"  # noqa: S608 -- table/column names, not user input
         sql += self._extra_sources_sql("FROM")
         if self._conditions:
             sql += " WHERE " + _and_join(self._conditions, nxt, resolve, params)
@@ -802,7 +802,7 @@ class Delete(_Statement):
         resolve = self._resolver()
         params: list[Any] = []
         with_sql = _with_clause(self, nxt, params)
-        sql = f"{with_sql}DELETE FROM {self._table_sql()}"
+        sql = f"{with_sql}DELETE FROM {self._table_sql()}"  # noqa: S608 -- table name, not user input
         sql += self._extra_sources_sql("USING")
         if self._conditions:
             sql += " WHERE " + _and_join(self._conditions, nxt, resolve, params)

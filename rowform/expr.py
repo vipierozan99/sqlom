@@ -33,8 +33,8 @@ from typing import (
     Any,
     Generic,
     Protocol,
+    TypeAlias,
     TypeVar,
-    Union,
 )
 from typing import cast as _type_narrow
 
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     # What a CTE or a derived table may wrap: a select, or a set operation over
     # selects. Spelled here rather than imported from query.py because that module
     # imports this one.
-    Select = Union["Query[Any]", "CompoundSelect[Any]"]
+    Select: TypeAlias = "Query[Any] | CompoundSelect[Any]"
 
 T = TypeVar("T")
 M = TypeVar("M")
@@ -508,13 +508,13 @@ class Expression(Generic[T]):
     # the same type), so `User.id > "abc"` is a type error.
     #
     # `__eq__`/`__ne__` returning something other than bool is an incompatible
-    # override of `object`, and unavoidable for a query builder — SQLAlchemy has
-    # the same ignore for the same reason. `__hash__` is redefined below so these
-    # objects stay usable as dict keys.
-    def __eq__(self, other: T | Expression[T] | None) -> Condition:  # type: ignore[override]
+    # override of `object`, and unavoidable for a query builder — SQLAlchemy does
+    # the same, which is why reportIncompatibleMethodOverride is off project-wide.
+    # `__hash__` is redefined below so these objects stay usable as dict keys.
+    def __eq__(self, other: T | Expression[T] | None) -> Condition:
         return Condition(self, "=", other)
 
-    def __ne__(self, other: T | Expression[T] | None) -> Condition:  # type: ignore[override]
+    def __ne__(self, other: T | Expression[T] | None) -> Condition:
         return Condition(self, "!=", other)
 
     def __gt__(self, other: T | Expression[T]) -> Condition:
@@ -1002,10 +1002,10 @@ class Tuple(Expression[Any]):
             f"Python tuple of the same width, got {other!r}"
         )
 
-    def __eq__(self, other: object) -> Condition:  # type: ignore[override]
+    def __eq__(self, other: object) -> Condition:
         return Condition(self, "=", self._as_tuple(other))
 
-    def __ne__(self, other: object) -> Condition:  # type: ignore[override]
+    def __ne__(self, other: object) -> Condition:
         return Condition(self, "!=", self._as_tuple(other))
 
     def in_(self, values: Any) -> InClause:

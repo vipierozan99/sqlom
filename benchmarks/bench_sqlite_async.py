@@ -216,7 +216,7 @@ def main():
                     outs[name] = request()
                     teardown()
                 else:
-                    async def once():
+                    async def once(setup=setup, request=request, teardown=teardown):
                         if setup:
                             await setup()
                         try:

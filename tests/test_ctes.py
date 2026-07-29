@@ -63,7 +63,7 @@ class TestConstruction:
     def test_unknown_column_names_what_is_available(self):
         counts = book_counts()
         with pytest.raises(AttributeError, match="exposes author_id, n"):
-            counts.total
+            counts.total  # noqa: B018
 
     def test_referencing_an_unjoined_cte_names_it_in_the_error(self):
         # source_name() has a dedicated branch for a CTE (as for Subquery)

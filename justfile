@@ -2,7 +2,7 @@ lint *args='':
     uv run ruff check . {{ args }}
 
 typecheck *args='':
-    uv run basedpyright . {{ args }}
+    uv run basedpyright {{ args }}
 
 test regex="." *args='':
     #!/usr/bin/env bash

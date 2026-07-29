@@ -964,7 +964,7 @@ class Query(Generic[R]):
         if spec.get("text_cast"):
             agg = f"({agg})::text"
 
-        result = (f"SELECT {agg} FROM ({inner}) AS t", tuple(params))
+        result = (f"SELECT {agg} FROM ({inner}) AS t", tuple(params))  # noqa: S608 -- compiled subquery SQL, values are bound params
         self._sql_cache[("json", dialect)] = result
         return result
 
@@ -1079,8 +1079,7 @@ def _columns_in(expression):
                 child = getattr(node, attribute, None)
                 if isinstance(child, Expression):
                     stack.append(child)
-            for child in getattr(node, "parts", ()):
-                stack.append(child)
+            stack.extend(getattr(node, "parts", ()))
     return found
 
 
@@ -1296,7 +1295,7 @@ class CompoundSelect(Generic[R]):
 def select(entity: type[M], /) -> Query[M]: ...  # type: ignore[overload-overlap]
 
 @overload
-def select(entity: Alias[M], /) -> Query[M]: ...  # type: ignore[overload-overlap]
+def select(entity: Alias[M], /) -> Query[M]: ...
 
 @overload
 def select(entity: Expression[T], /) -> Query[tuple[T]]: ...

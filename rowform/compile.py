@@ -51,7 +51,7 @@ def compile_hydrator(model_cls, converters=None):
     lines.append("    return obj")
     source = "\n".join(lines)
 
-    exec(source, namespace)
+    exec(source, namespace)  # noqa: S102 -- compiling our own generated source, not external input
     fn = namespace["_hydrate"]
     fn.__source__ = source
     return fn
@@ -104,7 +104,7 @@ def compile_batch_hydrator(model_cls, converters=None):
     lines += ["        append(obj)", "    return out"]
     source = "\n".join(lines)
 
-    exec(source, namespace)
+    exec(source, namespace)  # noqa: S102 -- compiling our own generated source, not external input
     fn = namespace["_hydrate_all"]
     fn.__source__ = source
     return fn
@@ -140,7 +140,7 @@ def compile_join_hydrator(entities, converters=None, wrap=True):
     it without the outer join.
     """
     converters = converters or {}
-    namespace = {"_new": object.__new__}
+    namespace: dict[str, Any] = {"_new": object.__new__}
 
     # One field variable per selected column, across all entities.
     total = 0
@@ -209,7 +209,7 @@ def compile_join_hydrator(entities, converters=None, wrap=True):
     lines.append("    return out")
     source = "\n".join(lines)
 
-    exec(source, namespace)
+    exec(source, namespace)  # noqa: S102 -- compiling our own generated source, not external input
     fn = namespace["_hydrate_join"]
     fn.__source__ = source
     return fn
@@ -230,7 +230,7 @@ def compile_json_default(model_cls):
     source = f"def _default(obj):\n    return {{{items}}}"
 
     namespace = {}
-    exec(source, namespace)
+    exec(source, namespace)  # noqa: S102 -- compiling our own generated source, not external input
     fn = namespace["_default"]
     fn.__source__ = source
     return fn

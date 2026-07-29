@@ -149,7 +149,7 @@ class TestDerivedTables:
     def test_unknown_output_column_raises(self):
         sub = Query(Book.author_id).subquery("s")
         with pytest.raises(AttributeError, match="has no output column"):
-            sub.nope
+            sub.nope  # noqa: B018
 
     def test_renders_as_a_parenthesised_derived_table(self):
         sub = Query(Book.author_id, count().label("n")).group_by(Book.author_id).subquery("s")

@@ -22,10 +22,10 @@ class Boom(Exception):
 async def engine(request, pg_schema):
     if request.param == "asyncpg":
         eng = DatabaseEngine(dsn=pg_schema, min_size=1, max_size=4)
-        insert = f"INSERT INTO {PROBE} VALUES ($1, $2)"
+        insert = f"INSERT INTO {PROBE} VALUES ($1, $2)"  # noqa: S608 -- PROBE is a hardcoded test-only table name
     else:
         eng = PsycopgEngine(pg_schema, min_size=1, max_size=4)
-        insert = f"INSERT INTO {PROBE} VALUES (%s, %s)"
+        insert = f"INSERT INTO {PROBE} VALUES (%s, %s)"  # noqa: S608 -- PROBE is a hardcoded test-only table name
     await eng.connect()
     eng._test_insert = insert
     async with eng.acquire() as conn:
@@ -43,8 +43,8 @@ async def count(engine):
     """Row count on a *fresh* pooled connection — what another request would see."""
     async with engine.acquire() as conn:
         if hasattr(conn, "fetchval"):
-            return await conn.fetchval(f"SELECT count(*) FROM {PROBE}")
-        cur = await conn.execute(f"SELECT count(*) FROM {PROBE}")
+            return await conn.fetchval(f"SELECT count(*) FROM {PROBE}")  # noqa: S608 -- PROBE is a hardcoded test-only table name
+        cur = await conn.execute(f"SELECT count(*) FROM {PROBE}")  # noqa: S608 -- PROBE is a hardcoded test-only table name
         return (await cur.fetchone())[0]
 
 
@@ -74,7 +74,7 @@ class TestVisibility:
     async def test_reads_its_own_uncommitted_writes(self, engine):
         async with engine.transaction() as tx:
             await tx.execute(engine._test_insert, 1, 10)
-            rows = await tx._fetch_rows(f"SELECT count(*) FROM {PROBE}", ())
+            rows = await tx._fetch_rows(f"SELECT count(*) FROM {PROBE}", ())  # noqa: S608 -- PROBE is a hardcoded test-only table name
             assert rows[0][0] == 1
 
     async def test_invisible_to_other_connections_until_commit(self, engine):
@@ -222,7 +222,7 @@ class TestIsolation:
 
         for _ in range(8):
             async with engine.transaction() as tx:
-                await tx.execute(f"DELETE FROM {PROBE} WHERE id = -1")
+                await tx.execute(f"DELETE FROM {PROBE} WHERE id = -1")  # noqa: S608 -- PROBE is a hardcoded test-only table name
         assert await count(engine) == 0
 
     async def test_deferrable_is_accepted(self, engine):
@@ -244,7 +244,7 @@ class TestIsolation:
 
         for _ in range(8):
             async with engine.transaction() as tx:
-                await tx.execute(f"DELETE FROM {PROBE} WHERE id = -1")
+                await tx.execute(f"DELETE FROM {PROBE} WHERE id = -1")  # noqa: S608 -- PROBE is a hardcoded test-only table name
         assert await count(engine) == 0
 
     async def test_isolation_level_does_not_leak_either(self, engine):

@@ -16,9 +16,7 @@ class TestSingletons:
     # rowform-original test (no SQLAlchemy equivalent)
     def test_sqlite_and_postgres_are_shared_instances(self):
         assert SqliteDialect() is not SQLITE
-        assert SQLITE is SQLITE
         assert PostgresDialect() is not POSTGRES
-        assert POSTGRES is POSTGRES
 
     # rowform-original test (no SQLAlchemy equivalent)
     def test_names_and_default_placeholders(self):

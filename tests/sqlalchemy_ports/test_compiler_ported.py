@@ -132,7 +132,7 @@ class TestWhereClause:
         ]
         for condition, op in cases:
             sql, params = Query(Book).where(condition).to_sql()
-            assert sql == f"SELECT id, author_id, title FROM t_books WHERE id {op} ?"
+            assert sql == f"SELECT id, author_id, title FROM t_books WHERE id {op} ?"  # noqa: S608 -- expected-SQL literal for comparison, not executed
             assert params == (5,)
 
     # Ported from test/sql/test_compiler.py::SelectTest.test_where_multiple (SQLAlchemy 2.0.51)
@@ -238,7 +238,7 @@ class TestBooleanComposition:
         # producing the wrong SQL. This is the same trap SQLAlchemy has and for
         # the same reason; the fix is always to parenthesise each comparison.
         with pytest.raises(TypeError):
-            Book.id > 1 & Book.id < 9
+            Book.id > 1 & Book.id < 9  # noqa: B015
 
 
 # --------------------------------------------------------------------------
