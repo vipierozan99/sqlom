@@ -20,11 +20,14 @@ from pathlib import Path
 
 import typer
 
-import benchmarks.contenders  # noqa: F401 -- registration side-effects
+import benchmarks.micro.contenders  # noqa: F401 -- registration side-effects
+from benchmarks.backends.provision import provision as provision_backend
 from benchmarks.backends.sqlite import EphemeralSqlite
 from benchmarks.harness import registry
 from benchmarks.harness import seed as seed_module
-from benchmarks.load.httpload import run as httpload_run
+from benchmarks.harness.registry import ContenderInit
+from benchmarks.load import registry as load_registry
+from benchmarks.load.locust import run as locust_run
 from benchmarks.profiling import attribution, render
 from benchmarks.profiling.austin import AustinProfiler
 from benchmarks.profiling.cprofile import CProfileProfiler
@@ -42,7 +45,9 @@ def micro(
     limit: int = typer.Option(500),
     only: str | None = typer.Option(None, help=registry.ONLY_HELP),
     iterations: int = typer.Option(200),
-    out_dir: str = typer.Option("benchmarks/results/runs/profiles", help="where to write speedscope JSON"),
+    out_dir: str = typer.Option(
+        "benchmarks/results/runs/profiles", help="where to write speedscope JSON"
+    ),
 ) -> None:
     """Profile one sqlite contender: unprofiled baseline, cProfile, and
     pyinstrument, over the same `iterations` calls."""
@@ -57,7 +62,7 @@ def micro(
         db = EphemeralSqlite.create(shape, rows)
         ok = True
         try:
-            request, teardown = await spec.factory(db.path, limit)
+            request, teardown = await spec.factory(ContenderInit(handle=db.path, limit=limit))
             try:
                 for _ in range(10):
                     await request()  # warm up: hydrator/JIT-ish caches, pool
@@ -67,7 +72,9 @@ def micro(
                     await request()
                 baseline_cpu = time.process_time() - cpu0
                 baseline_ms_per_req = baseline_cpu / iterations * 1000
-                typer.echo(f"contender: {spec.name!r}  unprofiled: {baseline_ms_per_req:.4f} ms/req")
+                typer.echo(
+                    f"contender: {spec.name!r}  unprofiled: {baseline_ms_per_req:.4f} ms/req"
+                )
 
                 cprofiler = CProfileProfiler()
                 cprofiler.start()
@@ -78,7 +85,11 @@ def micro(
                 # (attribution.py and `bench profile` both rely on it) that
                 # typeshed doesn't declare.
                 cprofile_total = sum(v[2] for v in stats.stats.values())  # type: ignore[reportAttributeAccessIssue]
-                inflation = (cprofile_total / iterations * 1000) / baseline_ms_per_req if baseline_ms_per_req else 0.0
+                inflation = (
+                    (cprofile_total / iterations * 1000) / baseline_ms_per_req
+                    if baseline_ms_per_req
+                    else 0.0
+                )
                 typer.echo(
                     f"cprofile (instrumented): {cprofile_total / iterations * 1000:.4f} ms/req "
                     f"({inflation:.1f}x baseline)"
@@ -143,26 +154,34 @@ def micro(
 
 @app.command()
 def load(
-    shape: str = typer.Option("flat", help=f"one of {seed_module.SHAPES} — {registry.SHAPE_HELP}"),
+    case: str = typer.Option("sqlite-flat-rowform", help=registry.CASE_HELP),
     rows: int = typer.Option(20_000),
     limit: int = typer.Option(500),
-    only: str | None = typer.Option(None, help=registry.ONLY_HELP),
-    concurrency: int = typer.Option(8),
+    concurrency: int = typer.Option(8, help="locust users generating background traffic"),
     duration: float = typer.Option(6.0),
     port: int = typer.Option(8020),
-    out_dir: str = typer.Option("benchmarks/results/runs/profiles", help="where to write speedscope JSON"),
+    out_dir: str = typer.Option(
+        "benchmarks/results/runs/profiles", help="where to write speedscope JSON"
+    ),
 ) -> None:
-    """Attach py-spy and austin to a live worker under `httpload` traffic,
+    """Attach py-spy and austin to a live worker under locust traffic,
     concurrently, and each render a flamegraph (speedscope JSON)."""
-    if shape not in seed_module.SHAPES:
-        raise typer.BadParameter(f"shape must be one of {seed_module.SHAPES}")
 
     async def go() -> bool:
-        path = _path_for(shape, only)
-        db = EphemeralSqlite.create(shape, rows)
+        spec = registry.get(case)
+        if spec.backend not in ("sqlite", "postgres"):
+            raise typer.BadParameter(
+                f"{case!r} is a {spec.backend!r}-backend contender; bench profile load only "
+                f"provisions sqlite/postgres backends"
+            )
+        load_case = load_registry.get(case)
+        env, teardown = await provision_backend(spec.backend, spec.shape, rows)
         workers = await launch(
-            "benchmarks.service.app:app", base_port=port, workers=1, cores=[],
-            backend="sqlite", shape=shape, handle=db.path, limit=limit,
+            "benchmarks.service.app:app",
+            base_port=port,
+            workers=1,
+            cores=[],
+            env=env,
         )
         worker = workers[0]
         ok = True
@@ -173,9 +192,16 @@ def load(
             austin_out = str(out / "austin.speedscope.json")
 
             load_task = asyncio.ensure_future(
-                httpload_run(port=worker.port, path=path, connections=concurrency, duration=duration + 2)
+                locust_run(
+                    host=f"http://127.0.0.1:{worker.port}",
+                    locustfile=load_case.file,
+                    users=concurrency,
+                    duration=duration + 2,
+                    limit=limit,
+                    warmup=1.0,
+                )
             )
-            await asyncio.sleep(1.0)  # let load ramp up before attaching
+            await asyncio.sleep(2.0)  # let locust ramp up before attaching
 
             pyspy_task = PySpyProfiler().attach(worker.proc.pid, duration, pyspy_out)
             austin_task = AustinProfiler().attach(worker.proc.pid, duration, austin_out)
@@ -185,7 +211,8 @@ def load(
             await load_task
 
             for name, result, path_str in (
-                ("py-spy", pyspy_result, pyspy_out), ("austin", austin_result, austin_out),
+                ("py-spy", pyspy_result, pyspy_out),
+                ("austin", austin_result, austin_out),
             ):
                 if isinstance(result, BaseException):
                     typer.echo(f"  ! {name} failed: {result}")
@@ -207,15 +234,8 @@ def load(
         finally:
             for worker in workers:
                 await worker.stop()
-            db.close()
+            await teardown()
         return ok
 
     if not asyncio.run(go()):
         raise typer.Exit(1)
-
-
-def _path_for(shape: str, only: str | None) -> str:
-    specs = registry.select(backend="sqlite", shape=shape, only=only)
-    if not specs:
-        raise typer.BadParameter(f"no sqlite contenders match shape={shape!r} only={only!r}")
-    return f"/{specs[0].slug}"

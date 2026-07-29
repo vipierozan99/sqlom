@@ -10,7 +10,7 @@ import json
 
 import typer
 
-import benchmarks.contenders  # noqa: F401 -- registration side-effects
+import benchmarks.micro.contenders  # noqa: F401 -- registration side-effects
 from benchmarks.harness import registry
 from benchmarks.harness import seed as seed_module
 
@@ -31,17 +31,23 @@ def list_contenders(
     specs = registry.select(backend=backend, shape=shape, only=only)
 
     if as_json:
-        typer.echo(json.dumps(
-            [
-                {
-                    "slug": s.slug, "name": s.name, "description": s.description,
-                    "backend": s.backend, "shape": s.shape, "shipped": s.shipped,
-                    "tags": list(s.tags),
-                }
-                for s in specs
-            ],
-            indent=2,
-        ))
+        typer.echo(
+            json.dumps(
+                [
+                    {
+                        "slug": s.slug,
+                        "name": s.name,
+                        "description": s.description,
+                        "backend": s.backend,
+                        "shape": s.shape,
+                        "shipped": s.shipped,
+                        "tags": list(s.tags),
+                    }
+                    for s in specs
+                ],
+                indent=2,
+            )
+        )
         return
 
     if not specs:

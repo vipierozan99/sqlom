@@ -1,9 +1,8 @@
-"""Three timing modes, one implementation each (PLAN.md §5) — the old suite had
-five mutually incompatible timing-loop dialects for one concept.
+"""Timing modes, one implementation each (PLAN.md §5) — the old suite had five
+mutually incompatible timing-loop dialects for one concept.
 
     per_iteration()   micro latency samples: N calls, each timed individually
     closed_loop()     rps + cpu_ms + utilization + percentiles under concurrency
-    best_of()         timeit-style floor, for stage decomposition
 
 Plus `gc_control()`: PLAN.md §4 records that disabling GC collapsed stdev
 5-10x on the join shape (~2000 allocations/iteration) — first-order enough to
@@ -102,19 +101,3 @@ async def closed_loop(
         "p99_ms": pct[99] * 1000,
     }
 
-
-async def best_of(fn: Callable[[], Awaitable[Any]], number: int, repeat: int) -> float:
-    """timeit-style floor: run `fn()` `number` times per repeat, `repeat`
-    times, and return the *minimum* per-call time across repeats — timeit's
-    own rationale applies (system noise only ever adds time, so the minimum is
-    the closest estimate of the fastest the code can actually run). Used for
-    stage decomposition, where the sum-of-parts is compared against a
-    separately measured whole (PLAN.md §4's residual check)."""
-    best = float("inf")
-    for _ in range(repeat):
-        start = time.perf_counter()
-        for _ in range(number):
-            await fn()
-        elapsed = time.perf_counter() - start
-        best = min(best, elapsed / number)
-    return best

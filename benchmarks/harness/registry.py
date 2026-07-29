@@ -2,17 +2,35 @@
 
 The old suite defined `Query(User).where(...)` ~10 times and the SA Core
 `.mappings()` idiom ~7 times, one of which carried a verbatim-duplicated 8-line
-docstring. `@contender` registers a factory once; `bench micro`, `bench
-service` and `bench profile` all read from the same `REGISTRY`, so a fix or a
-new contender is written in one place and is visible to every tier.
+docstring. `@contender` registers a factory once; `bench micro` and the
+FastAPI worker (`service/app.py`) both read from the same `REGISTRY`, so a fix
+or a new contender is written in one place and is visible to both.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
+
+
+class ContenderInit(NamedTuple):
+    """The one argument every contender factory takes, regardless of backend
+    — `handle` is a sqlite db path (`str`) for `backend="sqlite"` contenders
+    or precomputed rows (`list[tuple[Any, ...]]`) for `backend="mock"` ones.
+    One shape for every factory, rather than sqlite contenders taking
+    `(path, limit)` and mock ones taking `(rows, limit)`, is what makes
+    `Callable[[ContenderInit], ...]` a single type the decorator can check
+    instead of `Callable[..., Any]`."""
+
+    handle: Any
+    limit: int
+
+
+Target = Callable[[], Awaitable[bytes]]
+Teardown = Callable[[], Awaitable[None]]
+ContenderFactory = Callable[[ContenderInit], Awaitable[tuple[Target, Teardown]]]
 
 # Keyed by slug (see `_kebab`/`ContenderSpec.slug`), which is unique by
 # construction — {backend}-{shape}-{kebab(name)} — so a flat-shape and a
@@ -35,10 +53,10 @@ def _kebab(text: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ContenderSpec:
-    """One entry per contender. `factory` is async and returns
-    `(request, teardown)` — `request()` runs one unit of work and returns
-    response-ready bytes (for the equivalence gate); `teardown()` releases
-    whatever the factory opened (pool, engine, connection)."""
+    """One entry per contender. `factory` takes one `ContenderInit` and
+    returns `(target, teardown)` — `target()` runs one unit of work and
+    returns response-ready bytes (for the equivalence gate); `teardown()`
+    releases whatever the factory opened (pool, engine, connection)."""
 
     name: str
     slug: str  # unique kebab-case id: "{backend}-{shape}-{kebab(name)}"
@@ -46,27 +64,33 @@ class ContenderSpec:
     backend: str  # "sqlite" | "postgres" | "mock" | "none" (pure-Python tier)
     shape: str  # "flat" | "join" | "n/a"
     shipped: bool  # False for a floor/baseline that ships nothing (e.g. raw asyncpg)
-    factory: Callable[..., Any]
+    factory: ContenderFactory
     tags: tuple[str, ...] = field(default_factory=tuple)
 
 
 def contender(
     name: str, *, backend: str, shape: str, description: str, shipped: bool = True,
     tags: tuple[str, ...] = (),
-):
+) -> Callable[[ContenderFactory], ContenderFactory]:
     """Register an async contender factory under a slug derived from
     `name`/`backend`/`shape` — see `ContenderSpec.slug`.
+
+    Typed as `ContenderFactory -> ContenderFactory` (the decorator returns
+    the function unchanged) rather than `Callable[..., Any]`, so a factory
+    with the wrong shape — wrong `init` type, or not returning
+    `tuple[Target, Teardown]` — is a type error at the `@contender(...)` site,
+    not a runtime surprise the first time something calls it.
 
     Re-registering the same slug is a mistake, not a redefinition — it means
     two files think they own the same contender — so it raises rather than
     silently letting the second one win. `description` is required (not
     defaulted to the factory's docstring): a docstring is for whoever reads
     the source, `description` is for `bench contenders list`, which is meant
-    to stand on its own without anyone opening `contenders/*.py`.
+    to stand on its own without anyone opening `contenders.py`.
     """
     slug = f"{backend}-{shape}-{_kebab(name)}"
 
-    def decorator(factory):
+    def decorator(factory: ContenderFactory) -> ContenderFactory:
         if slug in REGISTRY:
             raise ValueError(
                 f"contender slug {slug!r} is already registered "

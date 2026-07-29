@@ -42,8 +42,7 @@ def _port_in_use(port: int, host: str = "127.0.0.1") -> bool:
 
 async def launch(
     app_target: str, *, base_port: int, workers: int, cores: list[int],
-    backend: str, shape: str, handle: str, limit: int, loop: str = "uvloop",
-    env_extra: dict[str, str] | None = None, quiet: bool = False,
+    env: dict[str, str] | None = None, loop: str = "uvloop", quiet: bool = False,
 ) -> list[ServiceWorker]:
     """Start `workers` uvicorn subprocesses on consecutive ports from
     `base_port`, each pinned to one physical core from `cores` (round-robin if
@@ -84,13 +83,10 @@ async def launch(
             "uvicorn", app_target, "--port", str(port), "--loop", loop,
             "--http", "httptools", "--no-access-log",
         ]
-        env = {
-            **os.environ, "BENCH_BACKEND": backend, "BENCH_SHAPE": shape,
-            "BENCH_HANDLE": handle, "BENCH_LIMIT": str(limit), **(env_extra or {}),
-        }
+        worker_env = {**os.environ, **(env or {})}
         stdout = asyncio.subprocess.DEVNULL if quiet else None
         stderr = asyncio.subprocess.DEVNULL if quiet else None
-        proc = await asyncio.create_subprocess_exec(*cmd, env=env, stdout=stdout, stderr=stderr)
+        proc = await asyncio.create_subprocess_exec(*cmd, env=worker_env, stdout=stdout, stderr=stderr)
         workers_list.append(ServiceWorker(proc=proc, port=port, cores=worker_cores))
 
     await _wait_ready(workers_list)

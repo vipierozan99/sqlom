@@ -24,11 +24,10 @@ figures in earlier revisions were wrong, and the reasons are instructive.
 > | `bench_sqlite.py`, `bench_sqlite_async.py` | `bench micro run --shape flat` |
 > | `bench_sqlite_join.py` | `bench micro run --shape join` |
 > | `bench_pg_load.py` | `bench db up && bench db seed --shape flat`, then a Postgres-backed `bench load`/`bench micro` (Postgres backend not yet wired into `bench micro`/`bench load` — sqlite and Postgres provisioning exist, `bench db up/seed`; the contenders/CLI plumbing to point `micro`/`load` at Postgres is follow-up work) |
-> | `httpload.py`, `verify_concurrency.sh` | `bench load run --generator httpload`, `bench load audit` |
-> | `bench_locust.sh` | `bench load run --generator locust` |
+> | `httpload.py`, `verify_concurrency.sh`, `bench_locust.sh` | `bench load run --case <slug>` — locust is now the only generator (see PLAN.md, "each contender is a locust file"); the old httpload<->locust cross-check no longer exists since there's only one generator, and `bench load run`/`bench load audit` have merged into one command |
 > | `fastapi_app.py`, `pin_and_run.sh` | `bench service run` (routes generated from the contender registry; `--cores` pins each worker via `taskset`) |
 > | `profile_pg.py`, `profile_sqlite.py`, `profile_stages.py` | `bench profile micro`, `bench profile load` |
-> | `ab_setup_cost.py`, `estimate_ceilings.py` | `bench micro decompose` (stage decomposition) and the `MockEngine` mapper-floor contenders (`bench micro run --only MockEngine`) |
+> | `ab_setup_cost.py`, `estimate_ceilings.py` | the `MockEngine` mapper-floor contenders (`bench micro run --only MockEngine`) — `bench micro decompose` (stage decomposition) was itself removed in a later pass, see PLAN.md |
 > | `optimize_pg.py`, `optimize_sqlite.py`, `compare_rust_driver.py`, `bench_final.py`, `bench_conditional_reset.py`, `bench_pipeline_reset.py`, `bench_psycopg.py`, `bench_hold_time.py` | exploratory/one-off investigations, not ported — recoverable at commit `32ad4a1` if needed again |
 
 **Environment** (all runs)

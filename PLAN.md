@@ -1003,6 +1003,284 @@ Verified live:
 - `just lint`/`just typecheck`/`just test`: all green throughout (995
   passed, 235 skipped).
 
+### Post-implementation tweak — CPU monitor: measure silently, print the average once
+
+User request: stop printing a CPU line every second; keep measuring, print
+only the average at the end of the run.
+
+`harness/monitor.py`: `_sample()` no longer calls `print_fn` — it still
+appends every sample to `self.samples` (nothing lost from the JSON record).
+Added `averages()` (mean utilization per role, computed only over the
+samples where that role was actually being tracked — a role added partway
+through, like a locust subprocess, isn't diluted by samples from before it
+existed) and `print_averages()`, the one thing the monitor prints now.
+`to_dict()` includes the computed `averages` alongside the raw `samples`, so
+`--name`'s JSON has both. `cli/load.py` calls `monitor.print_averages()`
+once, after the `finally` block (workers stopped, monitor task cancelled),
+in both `run` and `audit`.
+
+Verified: `load run --case sqlite-flat-rowform --concurrency 4,8 --name
+avgtest` printed zero per-second lines and exactly one summary line
+(`server(pid=…) 155.8% avg cpu  generator(pid=…) 21.7% avg cpu`) after the
+per-level results; the saved JSON still had all 6 raw samples plus the
+computed averages. `load audit` likewise quiet except its own per-level
+gate rows and one final averages line. `just lint`/`just typecheck`/`just
+test` green (995 passed, 235 skipped).
+
+### Post-implementation refactor — locust-only load testing, per-case locustfiles, contenders consolidated
+
+User request, six parts: (1) locust is the only load generator; (2) each
+contender is a locust file; (3) the worker stays one FastAPI app, route per
+case; (4) merge `bench load run`/`audit` into one command, dropping the
+httpload<->locust cross-check; (5) a new registry for the loadtest that
+scans a directory of locustfiles; (6) for `bench micro`, keep the existing
+registry, drop the "decomposition" feature, collapse to one file, and type
+the `@contender` decorator so it enforces the `(init) -> (target, teardown)`
+shape.
+
+**`bench micro` side (parts 6):**
+- `harness/registry.py`: added `ContenderInit` (a `NamedTuple` — `handle`,
+  `limit`; `handle` is a sqlite path or precomputed mock rows depending on
+  backend, unified into one shape so every factory has the same signature),
+  `Target`/`Teardown`/`ContenderFactory` type aliases. `@contender(...)` is
+  now typed `Callable[[ContenderFactory], ContenderFactory]` — a factory
+  with the wrong argument or return shape is a type error at the decorator
+  site. `ContenderSpec.factory: ContenderFactory` (was `Callable[..., Any]`).
+- `contenders/flat.py` + `contenders/join.py` merged into one
+  `benchmarks/contenders.py` (10 factories, `flat_*`/`join_*` naming,
+  `_flat_query`/`_join_query` helpers deduped from the two files' near-
+  identical `_rowform_query`s). Old package deleted.
+- Removed the decomposition feature entirely: `bench micro decompose`
+  command, both `rowform_stages()` functions, `harness/timing.best_of()`
+  (now unused). `bench micro run` and its `--record`/`--gc` behavior are
+  unchanged.
+- `service/app.py` and `cli/profile.py`'s `micro` command updated to build
+  `ContenderInit(handle=..., limit=...)` and call `spec.factory(init)`
+  (single positional arg) instead of `spec.factory(handle, limit)`.
+- basedpyright caught the stale two-arg call site in `cli/profile.py`
+  immediately (`Expected 1 positional argument`) — exactly what a typed
+  decorator is for.
+
+**`bench load` side (parts 1-5), the larger piece:**
+- Deleted `load/httpload.py` outright (no fallback, no `--generator` flag —
+  locust is the only path now).
+- `load/locust.py`: dropped the single generic `BenchUser` (path selected via
+  `LOCUST_PATH` env var) in favor of `CaseUser`, a base class every file
+  under the new `benchmarks/loadtests/` package subclasses with its own
+  `path`. `run()` takes `locustfile: str` instead of `path: str` — the route
+  is now a property of *which file* you point `locust -f` at, not a runtime
+  parameter.
+- **`benchmarks/loadtests/`** (new package): one module per sqlite-backend
+  case (8 total — mock-backend contenders have no HTTP route to hit, so no
+  loadtest file), each ~6 lines: `CASE = "<slug>"`, `class User(CaseUser):
+  path = f"/{CASE}"`. Plus `_noop.py` (no `CASE` constant, so it's excluded
+  from discovery — the framework-floor file `bench load run`'s headroom
+  check hits directly).
+- **`load/registry.py`** (new): `discover()` walks `benchmarks.loadtests` via
+  `pkgutil.iter_modules`, imports each module, and collects the ones with a
+  `CASE` attribute into `{slug: LoadCase(slug, module, file)}`. Deliberately
+  a *different* registry from `harness/registry.py` — documented explicitly
+  (in `loadtests/__init__.py` and `load/registry.py`) as two sources of
+  truth that can drift: adding a new `harness/registry.py` contender doesn't
+  automatically get a loadtest file. `bench load cases` (new command) lists
+  what `discover()` finds, specifically so that drift is visible rather than
+  silent.
+- `load/audit.py`: `check_littles_law`/`find_scaling_knee` regeneralized to
+  take plain numbers (`rps`, `mean_ms`, `concurrency`) / `list[tuple[int,
+  float]]` instead of `HttpLoadResult`-typed results — no reason for this
+  module to know which generator produced the numbers. `check_generator_agreement`
+  deleted outright (nothing left to cross-check against). `ConcurrencyCheck.connections`
+  renamed to `.concurrency` (was httpload-specific terminology).
+- **Generator-saturation measurement redesigned, not just ported**: the old
+  per-level check used `time.process_time()` on *our own* process, which was
+  correct for in-process httpload but meaningless for an external `locust`
+  subprocess. Realized during this refactor that a subprocess's CPU can't be
+  read via `/proc/<pid>/stat` *after* it exits (the file disappears the
+  moment it's reaped) — so a naive before/after bracket on the child's own
+  pid would always read 0 for "after". Fixed with
+  `harness/cpuacct.children_cpu_seconds()`
+  (`resource.getrusage(RUSAGE_CHILDREN)`), which accumulates cumulative CPU
+  of every *reaped* child for the process's whole lifetime — bracketing it
+  before/after one locust invocation (or one `asyncio.gather` of several, for
+  multi-worker) gives that invocation's total CPU correctly, since nothing
+  else reaps a child concurrently in that window.
+- `cli/load.py` rewritten: `run`+`audit` merged into one `run` command.
+  `--case` resolves through *both* registries (`harness/registry.py` for
+  shape/backend/route validity, `load/registry.py` for the locustfile) via
+  `_resolve_case()`. `_locust_across()`/`_aggregate_locust()` (multi-worker
+  concurrency splitting) kept from the previous turn's design, adapted to
+  take a `locustfile` path instead of a route string. `--generator` option
+  removed entirely.
+
+**A real, significant bug found only by running the merged command end to
+end** (not caught by lint/typecheck/unit tests — this is exactly the kind of
+thing PLAN.md's methodology section exists to catch by *running* things):
+`CaseUser` was not marked `abstract = True`. locust auto-spawns every
+concrete `User` subclass it finds when loading a file with `-f`, and because
+each case file does `from benchmarks.load.locust import CaseUser`, that
+import brought the *base class itself* into the file's namespace as a second
+spawnable class — locust ran both `CaseUser` (hitting its hardcoded default
+`/noop`) and the real `User` subclass (hitting the actual case route)
+simultaneously, silently splitting the requested concurrency roughly in half
+between the two. Symptom: `sqlite-flat-rowform` runs showed implausibly rich
+"generator CPU 105-98%" saturation failures and a `/noop` headroom of only
+~1.1-1.25x (previously 5-19x with other generators) — because `/noop`'s own
+measurement run suffered the same double-spawn (harmlessly, since both
+classes happened to hit `/noop` there) while every real case's measurement
+had only half its requested users actually hitting the real route, and
+locust's aggregate CSV row blends every task name together, corrupting both
+the per-level numbers and the headroom ratio. Confirmed via a direct
+`locust -f ... --headless` run showing `"All users spawned: {"CaseUser": 8,
+"User": 8}"` for 16 requested users. Fixed with one line (`abstract = True`
+on `CaseUser`) and reverified with the same direct invocation showing
+`{"User": 16}` only.
+
+Verified live, after the fix:
+- `bench contenders list` (10 entries) and `bench load cases` (8 sqlite
+  cases) both enumerate correctly and agree on slugs.
+- `load run --case sqlite-flat-rowform --levels 1,4,16` (rows=20000,
+  limit=500, CLI defaults for duration/warmup): every level's Little's Law
+  check OK, generator CPU 19-31% (sane), scaling knee at 4, `/noop` headroom
+  7.39x — all thresholds passed, exit 0. (Re-confirmed the exit code itself
+  with a non-piped run after an earlier `| tail` obscured a real `exit=1` on
+  a failing run, same lesson as the phase-4 bug report — never trust a
+  pipeline's exit code for the upstream command.)
+- `load run --case sqlite-join-sqlalchemy-async-orm --name join-smoke`:
+  passes, `/noop` headroom 19.94x, JSON written correctly.
+- `load run --case sqlite-flat-rowform --workers 2 --levels 4,16`: both
+  `server-0`/`server-1` and `generator-locust-0`/`generator-locust-1` roles
+  tracked at distinct pids; concurrency correctly split and summed.
+- `profile load --case sqlite-flat-rowform`: py-spy (97 frames/1222 samples)
+  and austin (383 frames/200396 samples) both still attach and render
+  flamegraphs, now driven by locust instead of httpload.
+- `profile micro --only "raw aiosqlite"`: unaffected by the `contenders.py`
+  merge — impossible-row tripwire and instrumented/sampling cross-check both
+  still correct.
+- `bench service run --shape join`: `/sqlite-join-rowform` and `/noop` both
+  serve correctly (route-per-case design unaffected by the load-testing
+  side's rewrite, confirming part 3 needed no worker-side change).
+- `just lint`/`just typecheck`/`just test`: all green throughout (995
+  passed, 235 skipped) — basedpyright caught one real stale call site
+  (`cli/profile.py`'s old two-arg factory call) immediately after the
+  `ContenderInit` change, before any runtime test would have.
+- Updated the `docs/BENCHMARKS.md` migration table (added in an earlier
+  pass) to stop pointing at `--generator httpload|locust`/`bench load audit`,
+  which no longer exist, and to note `bench micro decompose`'s removal.
+
+### Post-implementation refactor — hand-written FastAPI load-test app, `import rowform as rf` idiom
+
+**Problem:** `service/app.py` was generated from `harness/registry.py`'s
+`@contender` factories — convenient to write once, but a flamegraph full of
+`registry.contender.<locals>.decorator.<locals>.route`/`<locals>.target`
+frames is much harder to read than a real, named function with a real
+breakpoint. Asked for: a hand-written, single-file FastAPI app, `limit` read
+per request via `Query()` (not baked into a query built once at startup),
+each route acquiring its connection from a pool opened once in `lifespan()`.
+
+- `service/app.py` rewritten: real `@app.get(...)` routes, one named
+  `async def` per case, mirroring `contenders.py`'s queries/hydration by
+  duplication on purpose (documented in the module docstring) rather than by
+  import — the whole point was to stop sharing code that made profiles
+  confusing to read. Configured from one env var, `BENCH_HANDLE`.
+- `EphemeralSqlite.create_all_shapes()` added — `service/app.py`'s routes
+  cover both shapes unconditionally now (not parameterized by `--shape` the
+  way `bench micro` is), so `bench service run` seeds both.
+- `launch()`'s signature simplified to one `env: dict[str, str] | None`
+  param, replacing the old `backend`/`shape`/`handle`/`limit`/`env_extra`
+  params — there's only one app target now, so a generic env dict is all any
+  caller needs.
+- `cli/service.py` simplified to match: no `--shape`/`--backend`/`--dsn`/
+  `--limit` options.
+- **Separately, applied a coding-style directive**: prefer rowform's
+  documented consumer idiom (`import rowform as rf; q = rf.select(...)`,
+  README's "the two-letter import") over `from rowform import X, Y, Z` in
+  benchmark code. Applied to `contenders.py` and `service/app.py` (the two
+  files that build queries against a real rowform engine). Deliberately
+  *not* applied to `engines/mock.py`'s `from rowform.engine import
+  DatabaseEngine` — that's subclassing an internal engine class for
+  engine-internals work, not the query-building consumer idiom the README's
+  idiom is about.
+
+Verified live: `just lint`/`just typecheck` clean; `bench micro run --shape
+flat` (equivalence PASS for both sqlite and mock backend groups); `bench
+service run` with `curl` against `/sqlite-flat-rowform`, `/sqlite-join-
+rowform`, and `/noop` all returning correct JSON; `just test` (995 passed,
+235 skipped).
+
+### Post-implementation addition — postgres load test: contenders, API endpoints, locustfiles, container lifecycle
+
+Sqlite was the only backend `bench load`/`bench profile load` could drive
+traffic at; `harness/registry.py` already anticipated `backend="postgres"`
+in its docstring but nothing populated it. Wired up the full postgres path,
+mirroring the sqlite one contender-for-contender:
+
+- **New contenders** (`contenders.py`): 8 postgres entries, one per sqlite
+  counterpart — `rowform`, `raw asyncpg + dict` (floor, `shipped=False`),
+  `SQLAlchemy async Core (.mappings())`, `SQLAlchemy async Core
+  (positional)`, `SQLAlchemy async ORM` for the flat shape; `rowform`,
+  `SQLAlchemy async Core (positional)`, `SQLAlchemy async ORM` for join
+  (skipping `.mappings()` there, same as sqlite — it collides on the shared
+  `id` column). `init.handle` is the postgres DSN string for this backend.
+  Added `_sa_dsn_pg()`: converts the psycopg-style DSN
+  (`postgresql://...?sslmode=disable`) to what SQLAlchemy's asyncpg dialect
+  wants — swaps the driver prefix and *drops the query string*, since that
+  dialect forwards query params verbatim to `asyncpg.connect()`, which has
+  no `sslmode` kwarg (would raise `TypeError` otherwise). `bench micro`
+  still has no postgres runner and skips the group with its existing
+  message — out of scope for this change, not requested.
+- **New API endpoints** (`service/app.py`): 8 `/postgres-*` routes mirroring
+  the `/sqlite-*` ones, reading `BENCH_PG_DSN` in `lifespan()`. Pools
+  (`pg_rowform`, `pg_asyncpg`, `pg_sa_engine`) are only opened if
+  `BENCH_PG_DSN` is set — `bench service run` doesn't provision postgres, so
+  its worker leaves them `None` and never serves a `/postgres-*` route
+  (no explicit guard added in the routes themselves — not a case that
+  happens in practice, since every caller that sets up postgres routes also
+  sets the env var).
+- **New locustfiles** (`benchmarks/loadtests/`): 8 files, one per postgres
+  case, identical shape to the sqlite ones (`CASE = "postgres-..."`,
+  `path = f"/{CASE}"`) — `load/registry.py`'s directory scan picks them up
+  with no registry change needed.
+- **Container lifecycle** — the actual ask: a shared
+  `benchmarks/backends/provision.py` added, one `provision(backend, shape,
+  rows, ...) -> (env, teardown)` entry point used by both `cli/load.py` and
+  `cli/profile.py`'s `load` command, replacing each's own sqlite-only
+  `EphemeralSqlite.create(...)`/`db.close()` pair. For `backend="postgres"`
+  it starts an `EphemeralPostgres` container, seeds it for `shape`, and
+  returns a `teardown` that stops it — called from a `finally`, so the
+  container comes down whether the run passes, fails, or raises.
+  `_resolve_case()`/`bench profile load`'s backend check both relaxed from
+  "must be sqlite" to "must be sqlite or postgres" (still rejecting `mock`).
+  Added `--pg-port` (default 5432) to `bench load run` for the ephemeral
+  container's host port.
+
+Verified live (docker available locally):
+- `bench contenders list`: all 8 `/postgres-*` slugs present with correct
+  `shipped`/`tags`/description.
+- `bench load cases`: all 8 postgres locustfiles discovered alongside the 8
+  sqlite ones.
+- `bench load run --case postgres-flat-rowform --levels 1,2`: container
+  (`rowform-bench-<hex>`) confirmed running mid-run via `docker ps`, exit 0,
+  every level's Little's Law check OK, `/noop` headroom 3.48x — and gone
+  from `docker ps -a` immediately after the process exits.
+- `bench load run --case postgres-join-sqlalchemy-async-orm`: same result
+  for the join shape; container torn down cleanly.
+- `bench profile load --case postgres-flat-raw-asyncpg-dict`: py-spy (181
+  frames/294 samples) and austin (505 frames/116736 samples) both attach and
+  render against the postgres-backed worker; container torn down.
+- `bench load run --case sqlite-flat-rowform`: sqlite path unaffected by the
+  shared-provisioning refactor.
+- Found and fixed one unrelated latent lint issue while touching
+  `cli/load.py`: the `case == "all"` sweep's per-case status line closed
+  over the outer `for _case in cases:` loop variable inside the `async def
+  go(case)` closure (`f"case={_case!r} ..."`) — ruff's B023
+  (`function-uses-loop-variable`) flagged it once this file was edited
+  again. Harmless in practice (`go` is always awaited synchronously within
+  the same iteration, so `_case` and `case` were always equal at call time),
+  but fixed by referencing the closure's own `case` parameter instead of the
+  loop variable, removing the hazard rather than suppressing the lint.
+- `just lint`/`just typecheck`/`just test`: all green (995 passed, 235
+  skipped).
+
 ## 14. Accepted risks
 
 - **D3 removes the strongest available check on the port.** The refactor changes what sits

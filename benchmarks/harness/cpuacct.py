@@ -8,9 +8,25 @@ the client-only version is what the old suite's `run_load()` had.
 from __future__ import annotations
 
 import os
+import resource
 from pathlib import Path
 
 _CLOCK_TICKS = os.sysconf("SC_CLK_TCK")
+
+
+def children_cpu_seconds() -> float:
+    """Cumulative utime+stime of every *reaped* child process, ever, in this
+    process's lifetime (`resource.getrusage(RUSAGE_CHILDREN)`). Unlike
+    `read_pid_cpu_seconds`, this stays readable *after* a subprocess exits —
+    `/proc/<pid>/stat` disappears the moment a process is reaped, so bracketing
+    a short-lived subprocess (e.g. one `locust` invocation) with before/after
+    calls to this function is the only way to get its total CPU, not a
+    before/after read of its own pid. Safe to use as a delta across one
+    subprocess as long as nothing else reaps a child concurrently in that
+    window — true here, since callers await each subprocess (or a
+    `asyncio.gather` of a known, fixed set of them) before starting the next."""
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return usage.ru_utime + usage.ru_stime
 
 
 def read_pid_cpu_seconds(pid: int) -> float:
