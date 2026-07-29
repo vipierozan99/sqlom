@@ -1,76 +1,81 @@
-"""`Column`-typed models backed by a real slotted dataclass.
+"""`Column`-typed models backed by a slotted dataclass, via a metaclass.
 
-Putting a `Column` descriptor at class scope right next to a same-named
-dataclass field doesn't work: `@dataclass(slots=True)` reclaims that name for
-a `__slots__` entry, and a class attribute of the same name collides with it
-(`ValueError: 'id' in __slots__ conflicts with class variable`).
+    @model
+    class User:
+        id: Column[int] = Column(int)
+        name: Column[str] = Column(str)
 
-This sidesteps the collision instead of routing around it with a metaclass.
-Give the dataclass storage the shadow name (`_rf_id`) and put the real
-`Column` descriptor on a *subclass* of that dataclass, under the public name
-(`id`). No collision -- they're different names on different classes in the
-MRO -- so `Model.id` / `instance.id` resolve exactly the way a checker
-already understands descriptor overloads: `Column.__get__` returns
-`ColumnExpr[T]` at class scope (`obj is None`) and `T` at instance scope.
+    User.id            -> ColumnExpr[int]     (class access, via metaclass)
+    User(id=1, ...)    -> instance            (dataclass __init__)
+    user.id            -> 1                    (instance access, raw slot)
+    user.name = "x"    -> raw slot write       (no descriptor)
 
-Two things make the constructor and the storage layer line up with that,
-neither of which is optional:
 
-1. `@dataclass_transform(field_specifiers=(Column,))` on `model()`, plus an
-   explicit `id: Column[int] = Column(int)` annotation (not bare `id =
-   Column(int)`) on every field. This is "descriptor-typed fields" -- the
-   same mechanism SQLAlchemy's `Mapped[T]` / `mapped_column()` and msgspec's
-   own stubs rely on. A checker sees the `Column[int]` annotation, infers the
-   constructor parameter's type from `Column.__set__`'s value parameter
-   (`int`), and still resolves class-level access through `Column.__get__`'s
-   own overload (`ColumnExpr[int]`) rather than the annotation. `wrap()`
-   below never sees any of this: `dataclass_transform` has zero runtime
-   effect, it only stamps `__dataclass_transform__` on the function.
-   Known gap: this only type-checks the `@model` bare-decorator form, not
-   `@model(tablename=...)` -- pyright doesn't propagate the field-specifier
-   synthesis through the intermediate `wrap` closure for that call shape.
-   Nothing in this codebase calls it that way (every model passes
-   `tablename` via `__tablename__` in the class body instead), so it's
-   undiagnosed rather than worked around.
+WHY A METACLASS
+---------------
+`__slots__` creates C member descriptors named per field. So there are two
+distinct access paths:
 
-2. The rebuilt class must declare its own `__slots__ = ()`. Skipping this is
-   an easy trap: a subclass that doesn't declare `__slots__` gets an
-   (empty) per-instance `__dict__` by default even though the storage base
-   is fully slotted. That silent `__dict__` is what orjson's native
-   serializer keys off of -- finding it empty, it takes orjson's *faster*
-   `__dict__`-reading path instead of the `__dataclass_fields__` fallback
-   path (which does `getattr()` per field and would have reached `Column`
-   correctly), and emits `{}` instead of raising. With `__slots__ = ()` in
-   place, `obj.__dict__` doesn't exist at all, orjson takes the fallback
-   path, and bare `orjson.dumps(instance)` -- no options, no custom hook --
-   produces correct output. `DATACLASS_DUMP_OPTION` below is still worth
-   using: it routes serialization through the compiled, model-specific
-   `compile_json_default` hook instead of orjson's generic per-field
-   `getattr` loop, which is measurably faster, but it is a speed choice now,
-   not a correctness requirement.
+  * `instance.id` -> object.__getattribute__ -> raw slot descriptor -> value.
+    Never consults the metaclass.
+  * `Model.id`    -> type.__getattribute__ -> ColumnMeta.__getattribute__ ->
+    returns the pre-built ColumnExpr. Only on explicit class access (queries).
 
-`repr()` and `dataclasses.fields()` would otherwise surface the shadow names
-(`_rf_id`), because those are what the storage dataclass actually declared --
-fixed below by giving the model its own `__repr__` and its own
-`__dataclass_fields__`, both keyed by the public name. The Field objects are
-shallow copies of the storage's own (renaming the shared original would
-corrupt the storage class), so `dataclasses.fields(Author)` and
-`dataclasses.asdict(author)` both work against the public names -- the
-latter via a copied Field's `.name` being `"id"`, so its internal
-`getattr(obj, "id")` reaches the `Column` descriptor, not the raw slot.
+Instance access is raw-slot fast (no `Column.__get__`/`__set__` in the hot
+path at all): the `Column` written in the class body is read once for its
+`py_type` and then discarded -- it is never installed as an attribute on the
+built class, so there is no shadow-name/subclass trick and no name collision
+between a `Column` class variable and the `__slots__` entry of the same name.
 
-`compile.py`'s codegen needs zero changes to target this storage: hydration
-still builds instances via `object.__new__` + direct slot assignment on the
-shadow name, exactly as it does today -- ordinary Python class, no
-restriction like the one a `msgspec.Struct` base would impose.
+
+THE SEQUENCING TRAP (must be respected)
+----------------------------------------
+`@dataclass` discovers field defaults via `getattr(cls, field_name, MISSING)`.
+If the metaclass were intercepting field names at that moment, dataclass would
+see a `ColumnExpr` as each field's "default" and fail:
+    ValueError: mutable default <ColumnExpr> for field id is not allowed
+So the build runs `dataclass()` with interception OFF, then switches it on:
+  1. build the class with `ColumnMeta` but WITHOUT `__column_exprs__`
+     (=> `__getattribute__` finds nothing, delegates everything), and with no
+     class-level value at all for any column name (so the default probe sees
+     MISSING, not a `Column` instance either);
+  2. apply `dataclass(slots=True)` (rebuilds via `cls.__class__(...)`, which
+     preserves `ColumnMeta` and creates the slot descriptors);
+  3. set `__column_exprs__` afterwards to turn interception on.
+
+
+HOW THE TYPING SURVIVES
+------------------------
+The checker types `Model.id` / `m.id` / the ctor purely from the *source*
+`id: Column[int] = Column(int)` + `@dataclass_transform(field_specifiers=(Column,))`.
+It never sees the runtime build, so whether `Column` ends up installed as a
+descriptor or discarded is invisible to it. Known gap: only the bare `@model`
+form gets full field-specifier typing, not `@model(tablename=...)` -- pyright
+doesn't propagate the field-specifier synthesis through the intermediate
+`wrap` closure for that call shape. Nothing in this codebase calls it that
+way (every model passes `tablename` via `__tablename__` in the class body
+instead), so it's undiagnosed rather than worked around.
+
+
+WHAT THIS GETS FOR FREE, PUBLIC-NAMED
+--------------------------------------
+Because the built class's fields are the real public names (no `_rf_id`
+shadow storage), `@dataclass(slots=True)` already produces a correct,
+public-keyed `__init__`, `__repr__` and `__dataclass_fields__` on its own --
+none of those need hand-generation or re-keying here. `dataclasses.fields()`
+and `dataclasses.asdict()` work natively, as does `orjson.dumps()` (real
+dataclass, real slots, no stray `__dict__`).
 """
 
-import copy
-from dataclasses import dataclass, fields
-from typing import Any, cast, dataclass_transform
+from __future__ import annotations
 
-from .column import STORAGE_PREFIX, Column
-from .utils import compile_source
+import dataclasses
+from collections.abc import Callable
+from typing import Any, TypeVar, dataclass_transform, overload
+
+from .column import Column, ColumnExpr
+
+T = TypeVar("T")
 
 try:  # orjson is optional at import time; only needed to serialize.
     import orjson
@@ -80,81 +85,85 @@ except ImportError:  # pragma: no cover
     DATACLASS_DUMP_OPTION = 2048
 
 
+class ColumnMeta(type):
+    """Metaclass mapping class-level column access to `ColumnExpr`.
+
+    Subclasses the PUBLIC `type` (dataclasses impose no metaclass of their
+    own), so there is no private-API dependency. Interception is gated on
+    `__column_exprs__` existing, which is set only AFTER `dataclass()` runs
+    (see module docstring's sequencing trap).
+    """
+
+    def __getattribute__(cls, name: str) -> Any:
+        try:
+            exprs = type.__getattribute__(cls, "__column_exprs__")
+        except AttributeError:
+            exprs = None  # not yet enabled (during @dataclass) -> delegate all
+        if exprs is not None and name in exprs:
+            return exprs[name]
+        return type.__getattribute__(cls, name)
+
+
+@overload
+def model(cls: type[T], /) -> type[T]: ...
+@overload
+def model(*, tablename: str | None = ...) -> Callable[[type[T]], type[T]]: ...
 @dataclass_transform(field_specifiers=(Column,))
 def model(cls=None, *, tablename=None):
-    """Class decorator: real slotted-dataclass storage + class-scope `Column`s."""
+    """Class decorator: slotted dataclass storage + class-scope `Column`s via metaclass."""
 
     def wrap(cls):
         columns: dict[str, Column[Any]] = {
-            key: value for key, value in cls.__dict__.items() if isinstance(value, Column)
+            name: value for name, value in vars(cls).items() if isinstance(value, Column)
         }
         if not columns:
             raise ValueError(f"{cls.__name__} declares no columns")
 
-        # 1. A slotted dataclass holding only the shadow-named fields. Built from
-        #    a fresh class rather than a namespace dict, so `dataclass()` can find
-        #    `__annotations__` the normal way.
-        storage_annotations = {column._storage_name: column.py_type for column in columns.values()}
-        storage_cls = type(
-            f"{STORAGE_PREFIX}{cls.__name__}Storage", (), {"__annotations__": storage_annotations}
-        )
-        storage = dataclass(slots=True)(storage_cls)
+        # Carry over everything the user wrote (custom __repr__/__init__/other
+        # methods, __tablename__, ...) except the Columns themselves -- those
+        # must be absent so @dataclass's default probe sees MISSING for each
+        # field name instead of a Column instance (or, once enabled, a
+        # ColumnExpr) -- and except __dict__/__weakref__, which slots=True
+        # replaces.
+        namespace: dict[str, Any] = {
+            key: value
+            for key, value in vars(cls).items()
+            if key not in columns and key not in ("__dict__", "__weakref__")
+        }
+        namespace["__annotations__"] = {name: col.py_type for name, col in columns.items()}
 
-        # 2. Rebuild the model to inherit from that dataclass. The Column
-        #    instances already live in cls.__dict__ under their public names --
-        #    nothing about them needs to change, since "id" here and "_rf_id" on
-        #    `storage` never collide.
-        namespace = dict(cls.__dict__)
-        namespace.pop("__dict__", None)
-        namespace.pop("__weakref__", None)
-        # See module docstring point 2: without this, the rebuilt class gets its
-        # own (empty) __dict__ by default, which breaks orjson's native path.
-        namespace["__slots__"] = ()
-        rebuilt = type(cls)(cls.__name__, (storage, *cls.__bases__), namespace)
+        # Typed as Any: a direct `ColumnMeta(...)` call ties the static type to
+        # the metaclass itself, which neither matches the `type[T]` the
+        # overloads above promise callers nor has the extra attributes
+        # attached below -- same as the untyped `type(cls)(...)` call this
+        # replaced.
+        base: Any = ColumnMeta(cls.__name__, cls.__bases__, namespace)
 
-        rebuilt.__tablename__ = (
+        # dataclass(slots=True) rebuilds via base.__class__(...) -> preserves
+        # ColumnMeta and creates the real, public-named slot descriptors. With
+        # interception off, its getattr(cls, field_name) default probe sees
+        # MISSING, so every field ends up required (matching the source,
+        # which never assigns a real default -- `Column(int)` is a marker,
+        # not a default value).
+        built = dataclasses.dataclass(slots=True)(base)
+
+        # Enable interception + attach metadata (class attrs are allowed
+        # despite __slots__; only *instance* attrs are restricted).
+        built.__column_exprs__ = {
+            name: ColumnExpr(built, name, col.py_type) for name, col in columns.items()
+        }
+        built.__columns__ = columns
+        built.__tablename__ = (
             tablename or getattr(cls, "__tablename__", None) or cls.__name__.lower()
         )
-        rebuilt.__columns__ = columns
         # json_default() (the generic hook for heterogeneous payloads) dispatches
         # on this per model_cls; compiled once here rather than lazily on first
         # use, since there's no metaclass __getattr__ to hook that the way
         # ModelMeta used to.
         from .compile import compile_json_default
 
-        rebuilt.__json_default__ = compile_json_default(rebuilt)
+        built.__json_default__ = compile_json_default(built)
 
-        # 3. Re-key __dataclass_fields__ and __repr__ to the public names. Copy
-        #    each Field rather than mutate it in place -- it's shared with
-        #    `storage`, whose own fields() must keep reporting the shadow names.
-        storage_fields = {field.name: field for field in fields(cast(Any, storage))}
-        renamed_fields = {}
-        for name, column in columns.items():
-            field = copy.copy(storage_fields[cast(str, column._storage_name)])
-            field.name = name
-            renamed_fields[name] = field
-        rebuilt.__dataclass_fields__ = renamed_fields
-
-        if "__repr__" not in cls.__dict__:
-
-            def __repr__(self, columns=columns):
-                parts = ", ".join(f"{name}={getattr(self, name)!r}" for name in columns)
-                return f"{self.__class__.__qualname__}({parts})"
-
-            rebuilt.__repr__ = __repr__
-
-        # 4. Public-name __init__. `storage`'s own generated __init__ takes the
-        #    shadow names (_rf_id, ...) as parameters, so User(id=1) would fail
-        #    without this. Doesn't touch hydration's speed: hydrate()/
-        #    compile_hydrator() build instances via object.__new__ + slot
-        #    assignment and never call __init__ at all. This is purely for
-        #    hand-constructing instances.
-        if "__init__" not in cls.__dict__:
-            params = ", ".join(columns)
-            body = "\n".join(f"    self.{name} = {name}" for name in columns)
-            source = f"def __init__(self, {params}):\n{body}"
-            rebuilt.__init__ = compile_source(source, "__init__")
-
-        return rebuilt
+        return built
 
     return wrap(cls) if cls is not None else wrap

@@ -8,9 +8,10 @@ an instance:
     user.id    ->  int               (obj is an instance)
 
 That overload is the whole trick, and it's what makes `Model.id` statically typed
-as `ColumnExpr[int]` while `instance.id` is `int` -- see `model.py` for how a real
-slotted dataclass ends up holding the actual storage while `Column` sits on a
-subclass under the public name.
+as `ColumnExpr[int]` while `instance.id` is `int` -- see `model.py` for how a
+metaclass reads `Column.py_type` at build time and discards the `Column`
+instance itself, so the built class's `id` is a real, public-named slot with no
+descriptor in the way at runtime.
 """
 
 from __future__ import annotations
@@ -53,31 +54,20 @@ from .expr import (  # noqa: F401
 T = TypeVar("T")
 M = TypeVar("M", bound=_TableSource)
 
-# The prefix a public column name is stored under, e.g. "id" -> "_rf_id". A named
-# constant rather than an inline literal because model.py's synthesized storage
-# dataclass has to use this exact same convention for its own field names to line
-# up with what Column.__get__/__set__ read and write.
-STORAGE_PREFIX = "_rf_"
-
 
 class Column(Generic[T]):
     """A declared column. `Column(int)` is a `Column[int]`."""
 
     if TYPE_CHECKING:
         py_type: type[T]
-        # Both are None until __set_name__ runs, which is why they are not
-        # declared as plain `str`.
-        name: str | None
-        _storage_name: str | None
+        name: str | None  # None until __set_name__ runs
 
     def __init__(self, py_type: type[T]) -> None:
         self.py_type = py_type
         self.name = None
-        self._storage_name = None
 
     def __set_name__(self, owner: type[Any], name: str) -> None:
         self.name = name
-        self._storage_name = f"{STORAGE_PREFIX}{name}"
 
     @overload
     def __get__(self, obj: None, owner: type[Any]) -> ColumnExpr[T]: ...
@@ -86,17 +76,17 @@ class Column(Generic[T]):
     def __get__(self, obj: object, owner: type[Any] | None = None) -> T: ...
 
     def __get__(self, obj, owner=None):
+        # Dead at runtime for @model-built classes -- the metaclass never
+        # installs this descriptor on the built class (see model.py). Kept so
+        # the overloads above have a body for the type checker to attach to.
+        assert self.name is not None  # __set_name__ runs before class-level access
         if obj is None:
-            assert self.name is not None  # __set_name__ runs before class-level access
             return ColumnExpr(owner, self.name, self.py_type)
-        assert self._storage_name is not None  # ditto for instance access
-        return getattr(obj, self._storage_name)
+        return getattr(obj, self.name)
 
     def __set__(self, obj: object, value: T) -> None:
-        # _storage_name is set by __set_name__, which the interpreter runs at class
-        # creation; a Column reachable as a descriptor has always been through it.
-        assert self._storage_name is not None
-        setattr(obj, self._storage_name, value)
+        assert self.name is not None
+        setattr(obj, self.name, value)
 
 
 def hydrate(model_cls: type[M], row: Sequence[Any]) -> M:
@@ -116,8 +106,8 @@ def hydrate(model_cls: type[M], row: Sequence[Any]) -> M:
             f"({', '.join(columns)}) but the row has {len(row)} values"
         )
     obj = object.__new__(model_cls)
-    for column, value in zip(columns.values(), row):
-        setattr(obj, column._storage_name, value)
+    for name, value in zip(columns, row):
+        setattr(obj, name, value)
     return obj
 
 
@@ -127,7 +117,5 @@ def as_dict(obj: Any) -> dict[str, Any]:
     is the generic fallback `json_default` uses."""
     cls = type(obj)
     if hasattr(cls, "__columns__"):
-        return {
-            name: getattr(obj, column._storage_name) for name, column in cls.__columns__.items()
-        }
+        return {name: getattr(obj, name) for name in cls.__columns__}
     raise TypeError(f"Cannot serialize {cls!r}")

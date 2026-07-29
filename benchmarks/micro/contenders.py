@@ -23,7 +23,7 @@ import this module either.
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 
 import orjson
 from sqlalchemy import select
@@ -77,11 +77,10 @@ async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     engine = rf.SqliteEngine(init.handle, min_size=1, max_size=4)
     await engine.connect()
     query = _flat_query(init.limit)
-    to_dict = rf.compile_json_default(User)
 
     async def target() -> bytes:
         rows = await engine.fetch_all(query)
-        return orjson.dumps(rows, default=to_dict, option=rf.DATACLASS_DUMP_OPTION)
+        return orjson.dumps(rows, default=rf.json_default, option=rf.DATACLASS_DUMP_OPTION)
 
     return target, engine.close
 
@@ -100,11 +99,10 @@ async def flat_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
 
     engine = MockEngine(init.handle)
     query = _flat_query(init.limit)
-    to_dict = rf.compile_json_default(User)
 
     async def target() -> bytes:
         rows = await engine.fetch_all(query)
-        return orjson.dumps(rows, default=to_dict, option=rf.DATACLASS_DUMP_OPTION)
+        return orjson.dumps(rows, default=rf.json_default, option=rf.DATACLASS_DUMP_OPTION)
 
     async def teardown() -> None:
         return None
@@ -419,11 +417,9 @@ async def join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     engine = rf.SqliteEngine(init.handle, min_size=1, max_size=4)
     await engine.connect()
     query = _join_query(init.limit)
-    author_default = rf.compile_json_default(Author)
-    post_default = rf.compile_json_default(Post)
 
     def _default(obj):
-        return author_default(obj) if type(obj) is Author else post_default(obj)
+        return rf.json_default(obj) if is_dataclass(obj) else obj
 
     async def target() -> bytes:
         pairs = await engine.fetch_all(query)

@@ -184,12 +184,11 @@ class _SubqueryColumn:
     """Stands in for a `Column` on a subquery's output, so a `Subquery` can be
     used everywhere a model source can."""
 
-    __slots__ = ("_storage_name", "name", "py_type")
+    __slots__ = ("name", "py_type")
 
     def __init__(self, name, py_type):
         self.name = name
         self.py_type = py_type
-        self._storage_name = name
 
 
 class Subquery:
