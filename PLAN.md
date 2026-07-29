@@ -266,13 +266,14 @@ the current suite cannot produce.
 `DatabaseEngine.fetch_all` (`rowform/engine.py:270`) touches the driver in one place:
 
 ```python
-self._reject_if_in_transaction("fetch_all")                      # real
-_require_rows(query)                                             # real
-sql, params = query.to_sql(placeholder="$", dialect=POSTGRES)     # real
-if has_deferred_params(params): params = bind_params(params, **overrides)   # real
-async with self._require_pool().acquire() as conn:               # ← the only seam
+self._reject_if_in_transaction("fetch_all")  # real
+_require_rows(query)  # real
+sql, params = query.to_sql(placeholder="$", dialect=POSTGRES)  # real
+if has_deferred_params(params):
+    params = bind_params(params, **overrides)  # real
+async with self._require_pool().acquire() as conn:  # ← the only seam
     rows = await conn.fetch(sql, *params)
-return self._hydrator_for(query)(rows)                           # real
+return self._hydrator_for(query)(rows)  # real
 ```
 
 `MockEngine(DatabaseEngine)` overrides **only `_require_pool()`**, returning a fake pool
@@ -1262,7 +1263,7 @@ Verified live (docker available locally):
   (`rowform-bench-<hex>`) confirmed running mid-run via `docker ps`, exit 0,
   every level's Little's Law check OK, `/noop` headroom 3.48x — and gone
   from `docker ps -a` immediately after the process exits.
-- `bench load run --case postgres-join-sqlalchemy-async-orm`: same result
+- `bench load run --case postgres-join-sqlalchemy-orm`: same result
   for the join shape; container torn down cleanly.
 - `bench profile load --case postgres-flat-raw-asyncpg-dict`: py-spy (181
   frames/294 samples) and austin (505 frames/116736 samples) both attach and

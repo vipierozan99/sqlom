@@ -349,25 +349,39 @@ grow or when objects are built without being serialized.
 ### Code-generate the orjson hook
 
 `compile_json_default` emits a straight-line dict literal with the keys baked in,
-rather than a comprehension over the column map. Cached lazily on the class as
-`__json_default__` via the metaclass's `__getattr__`.
+rather than a comprehension over the column map. Compiled once in `model()` and
+attached to the class as `__json_default__`.
 
-### Two model styles, no performance difference
+### The `@model` metaclass
 
-The README originally claimed stdlib `@dataclass(slots=True)` could not carry a
-class-level query descriptor. That is false. The `__slots__`-vs-class-variable
-collision only bites because both names live on *the class*; attribute lookup on a
-class consults `type(cls).__mro__` first, and **a data descriptor on the metaclass
-wins over the class's own entry**. `@dataclass(slots=True)` rebuilds the class via
+Stdlib `@dataclass(slots=True)` *can* carry a class-level query descriptor. The
+`__slots__`-vs-class-variable collision people expect only bites because both
+names would live on *the class*; attribute lookup on a class consults
+`type(cls).__mro__` first, and **a data descriptor on the metaclass wins over
+the class's own entry**. `@dataclass(slots=True)` rebuilds the class via
 `cls.__class__(...)`, preserving a custom metaclass, so the two compose:
 
 ```python
-User.id      # -> ColumnExpr  (metaclass data descriptor wins)
-user.id      # -> 1           (plain slot read)
+User.id  # -> ColumnExpr  (metaclass data descriptor wins)
+user.id  # -> 1           (plain slot read)
 ```
 
-Both styles measure the same (72 B/object; 1.06 vs 1.05 ms — a tie). Pick on ergonomics —
-the dataclass style gets `asdict`, `replace`, `==`, `repr`, pattern matching.
+`model()` goes one step further than installing a descriptor: the `Column(int)`
+class-body value is read once for its `py_type` and then discarded rather than
+kept as a real class attribute. So there's no shadow-named storage field (no
+`_rf_id`) and nothing to collide with `__slots__` in the first place — `id` is a
+real, public-named slot, and `Column.__get__`/`__set__` never run. That imposes
+one build-order constraint: `@dataclass` discovers field defaults via
+`getattr(cls, field_name, MISSING)`, so the metaclass's `ColumnExpr`-returning
+interception can only switch on *after* `dataclass()` runs — turn it on before,
+and the default probe sees a `ColumnExpr` and raises `ValueError: mutable
+default ... is not allowed`.
+
+Being public-named means `dataclasses.fields()`/`asdict()`, `__repr__` and
+`__init__` all come from `@dataclass` unmodified, with no re-keying. One typing
+gap remains: only the bare `@model` form gets full field-specifier typing, not
+`@model(tablename=...)` — pyright doesn't propagate the `dataclass_transform`
+synthesis through the intermediate closure for that call shape.
 
 ---
 
@@ -432,7 +446,7 @@ Worse, orjson's fast path dumps whatever is in `__dict__` minus underscore-prefi
 keys, so a stray runtime attribute
 [leaks into the JSON](https://github.com/ijl/orjson/issues/83); the slots path
 correctly filters on `__dataclass_fields__`. Faster, looser, hungrier — and not
-something `model()` exposes a toggle for: the storage dataclass it synthesizes is
+something `model()` exposes a toggle for: the dataclass it builds is
 unconditionally `slots=True`, so this remains a measured tradeoff rather than an
 available knob.
 

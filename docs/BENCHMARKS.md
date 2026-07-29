@@ -234,12 +234,10 @@ The last row is the trap — see [FINDINGS.md](FINDINGS.md#the-orjson-dataclass-
 | `@model` (slots) | 72 |
 | dataclass without slots | 113 |
 
-The two rows this table used to carry for `ModelMeta` and `@model` (both 72
-bytes) collapsed into one after the two model strategies merged into a single
-`@model`-only implementation — they were identical because both were slotted
-the same way. Re-measure before trusting the exact figure for a size-sensitive
-decision: the new `@model` subclasses a synthesized storage dataclass rather
-than declaring slots flat on one class, and this row hasn't been re-profiled
+`@model` builds one real `@dataclass(slots=True)` class with public-named
+slots (no synthesized storage subclass — see
+[FINDINGS](FINDINGS.md#the-model-metaclass)). Re-measure before trusting the
+exact figure for a size-sensitive decision: this row hasn't been re-profiled
 against the original script (not retained) that produced it.
 
 ---
@@ -594,8 +592,9 @@ Exact call counts (cProfile, 800 requests × 100 rows) show where the shape come
 | 80,000 | 51.5 | `_default` (generated, once per row) |
 
 `_default` runs once per *row* because orjson calls back into Python for every
-object. That is the cost of not being a stdlib dataclass — and the reason
-`OPT_PASSTHROUGH_DATACLASS` matters if you use the `@model` style
+object. That is the cost of forcing orjson off its native (but slower, for a
+slotted dataclass) dataclass fast path via `OPT_PASSTHROUGH_DATACLASS` — worth
+paying anyway, since the native fallback is slower still
 ([FINDINGS](FINDINGS.md#the-orjson-dataclass-trap)).
 
 ### What SQLAlchemy spends it on here

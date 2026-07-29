@@ -10,7 +10,7 @@
 
 * **Compiled hydration:** a per-model `row -> object` function is code-generated once and reused for every row — plain attribute stores, no reflective `setattr()` loop, no dict per row.
 * **Statically typed query builder:** `User.id` is `ColumnExpr[int]`, `user.id` is `int`, `await db.execute(select(User, Post))` is `list[tuple[User, Post]]`. Verified against **both mypy and pyright**.
-* **Two schema styles:** a custom-metaclass model, or real stdlib `@dataclass(slots=True)` models that still support `User.id > 100`.
+* **`@model`:** a metaclass-backed, real stdlib `@dataclass(slots=True)` model that still supports `User.id > 100`.
 * **A real query builder:** multi-model selects, all four join kinds, aliases and self-joins, `or_`/`and_`/`not_`, `in_`/`exists`/scalar subqueries, `GROUP BY`/`HAVING`, derived tables, set operations, window functions, `CASE`, arithmetic and SQL functions, CTEs (including recursive), `text()`/`literal_column()`/`bindparam()`.
 * **Multi-dialect:** a small `Dialect` core with Postgres/sqlite overrides — `IS DISTINCT FROM`, `FOR UPDATE`, `DELETE ... USING` and `ON CONFLICT ... ON CONSTRAINT` are validated per dialect rather than just documented.
 * **Writes:** `Insert`/`Update`/`Delete` with `RETURNING`, bulk insert in one statement, expression assignments, `ON CONFLICT` upserts with `excluded()`, and `UPDATE ... FROM` / `DELETE ... USING` across tables.
@@ -73,7 +73,7 @@ class User:
     is_active: Column[bool] = Column(bool)
 ```
 
-The `Column` descriptor sits on the model class itself, and the actual storage lives on a synthesized dataclass base underneath it — no metaclass involved. See [Architecture](#-architecture) for how. Serializing with orjson works natively (`orjson.dumps(user)` needs no options or hooks); passing `rowform.DATACLASS_DUMP_OPTION` routes it through the compiled `compile_json_default` hook instead, which is faster but not required for correctness.
+The `Column(int)` value is only read for its type and discarded; a small metaclass makes `User.id` still resolve to a query expression, while `id` on the instance is a real, public-named dataclass slot. See [Architecture](#-architecture) for how, and [docs/FINDINGS.md](docs/FINDINGS.md#the-model-metaclass) for the design rationale. Serializing with orjson works natively (`orjson.dumps(user)` needs no options or hooks); passing `rowform.DATACLASS_DUMP_OPTION` routes it through the compiled `compile_json_default` hook instead, which is faster but not required for correctness.
 
 ### Querying, joins, aliases
 

@@ -1,70 +1,15 @@
-"""`Column`-typed models backed by a slotted dataclass, via a metaclass.
+"""`Column`-typed models: a metaclass-backed, real stdlib `@dataclass(slots=True)`.
 
     @model
     class User:
         id: Column[int] = Column(int)
-        name: Column[str] = Column(str)
 
-    User.id            -> ColumnExpr[int]     (class access, via metaclass)
-    User(id=1, ...)    -> instance            (dataclass __init__)
-    user.id            -> 1                    (instance access, raw slot)
-    user.name = "x"    -> raw slot write       (no descriptor)
+    User.id  -> ColumnExpr[int]   (class access, via ColumnMeta)
+    user.id  -> 1                  (instance access, plain dataclass slot)
 
-
-WHY A METACLASS
----------------
-`__slots__` creates C member descriptors named per field. So there are two
-distinct access paths:
-
-  * `instance.id` -> object.__getattribute__ -> raw slot descriptor -> value.
-    Never consults the metaclass.
-  * `Model.id`    -> type.__getattribute__ -> ColumnMeta.__getattribute__ ->
-    returns the pre-built ColumnExpr. Only on explicit class access (queries).
-
-Instance access is raw-slot fast (no `Column.__get__`/`__set__` in the hot
-path at all): the `Column` written in the class body is read once for its
-`py_type` and then discarded -- it is never installed as an attribute on the
-built class, so there is no shadow-name/subclass trick and no name collision
-between a `Column` class variable and the `__slots__` entry of the same name.
-
-
-THE SEQUENCING TRAP (must be respected)
-----------------------------------------
-`@dataclass` discovers field defaults via `getattr(cls, field_name, MISSING)`.
-If the metaclass were intercepting field names at that moment, dataclass would
-see a `ColumnExpr` as each field's "default" and fail:
-    ValueError: mutable default <ColumnExpr> for field id is not allowed
-So the build runs `dataclass()` with interception OFF, then switches it on:
-  1. build the class with `ColumnMeta` but WITHOUT `__column_exprs__`
-     (=> `__getattribute__` finds nothing, delegates everything), and with no
-     class-level value at all for any column name (so the default probe sees
-     MISSING, not a `Column` instance either);
-  2. apply `dataclass(slots=True)` (rebuilds via `cls.__class__(...)`, which
-     preserves `ColumnMeta` and creates the slot descriptors);
-  3. set `__column_exprs__` afterwards to turn interception on.
-
-
-HOW THE TYPING SURVIVES
-------------------------
-The checker types `Model.id` / `m.id` / the ctor purely from the *source*
-`id: Column[int] = Column(int)` + `@dataclass_transform(field_specifiers=(Column,))`.
-It never sees the runtime build, so whether `Column` ends up installed as a
-descriptor or discarded is invisible to it. Known gap: only the bare `@model`
-form gets full field-specifier typing, not `@model(tablename=...)` -- pyright
-doesn't propagate the field-specifier synthesis through the intermediate
-`wrap` closure for that call shape. Nothing in this codebase calls it that
-way (every model passes `tablename` via `__tablename__` in the class body
-instead), so it's undiagnosed rather than worked around.
-
-
-WHAT THIS GETS FOR FREE, PUBLIC-NAMED
---------------------------------------
-Because the built class's fields are the real public names (no `_rf_id`
-shadow storage), `@dataclass(slots=True)` already produces a correct,
-public-keyed `__init__`, `__repr__` and `__dataclass_fields__` on its own --
-none of those need hand-generation or re-keying here. `dataclasses.fields()`
-and `dataclasses.asdict()` work natively, as does `orjson.dumps()` (real
-dataclass, real slots, no stray `__dict__`).
+See docs/FINDINGS.md ("The `@model` metaclass") for the design rationale --
+why a metaclass, the dataclass default-probe sequencing trap, and the
+`@model(tablename=...)` typing gap.
 """
 
 from __future__ import annotations
