@@ -431,8 +431,10 @@ only a **5% win** (0.873 vs 0.913 ms) for **55% more memory** (113 vs 72 B/objec
 Worse, orjson's fast path dumps whatever is in `__dict__` minus underscore-prefixed
 keys, so a stray runtime attribute
 [leaks into the JSON](https://github.com/ijl/orjson/issues/83); the slots path
-correctly filters on `__dataclass_fields__`. Faster, looser, hungrier. Available as
-`@model(slots=False)` for serialization-dominated workloads.
+correctly filters on `__dataclass_fields__`. Faster, looser, hungrier — and not
+something `model()` exposes a toggle for: the storage dataclass it synthesizes is
+unconditionally `slots=True`, so this remains a measured tradeoff rather than an
+available knob.
 
 ### Streaming the cursor instead of `fetchall()`
 

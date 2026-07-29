@@ -49,11 +49,12 @@ class TestSingleModelHydrators:
     def test_a_single_column_model_is_not_nested(self):
         """Same trailing-comma trap as the join hydrator: a one-column model used
         to hydrate its only field from the whole row tuple."""
-        from rowform import Column, ModelMeta
+        from rowform import Column, model
 
-        class Single(metaclass=ModelMeta):
+        @model
+        class Single:
             __tablename__ = "single"
-            id = Column(int)
+            id: Column[int] = Column(int)
 
         objs = compile_batch_hydrator(Single)([(1,), (2,)])
         assert [o.id for o in objs] == [1, 2]

@@ -24,7 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from rowform import Column, ModelMeta, model
+from rowform import Column, model
 
 PG_DSN = os.environ.get(
     "ROWFORM_TEST_DSN",
@@ -46,37 +46,31 @@ def pytest_addoption(parser):
 # --------------------------------------------------------------------------
 
 
-class Author(metaclass=ModelMeta):
+@model
+class Author:
     __tablename__ = "t_authors"
 
-    id = Column(int)
-    name = Column(str)
-    active = Column(bool)
-
-
-class Book(metaclass=ModelMeta):
-    __tablename__ = "t_books"
-
-    id = Column(int)
-    author_id = Column(int)
-    title = Column(str)
-
-
-class Tag(metaclass=ModelMeta):
-    __tablename__ = "t_tags"
-
-    id = Column(int)
-    book_id = Column(int)
-    label = Column(str)
+    id: Column[int] = Column(int)
+    name: Column[str] = Column(str)
+    active: Column[bool] = Column(bool)
 
 
 @model
-class AuthorDC:
-    __tablename__ = "t_authors"
+class Book:
+    __tablename__ = "t_books"
 
-    id: int
-    name: str
-    active: bool
+    id: Column[int] = Column(int)
+    author_id: Column[int] = Column(int)
+    title: Column[str] = Column(str)
+
+
+@model
+class Tag:
+    __tablename__ = "t_tags"
+
+    id: Column[int] = Column(int)
+    book_id: Column[int] = Column(int)
+    label: Column[str] = Column(str)
 
 
 DDL = [

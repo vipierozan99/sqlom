@@ -231,9 +231,16 @@ The last row is the trap — see [FINDINGS.md](FINDINGS.md#the-orjson-dataclass-
 
 | model | bytes/object |
 |---|---|
-| `ModelMeta` (slots) | 72 |
-| `@model` dataclass (slots) | 72 |
+| `@model` (slots) | 72 |
 | dataclass without slots | 113 |
+
+The two rows this table used to carry for `ModelMeta` and `@model` (both 72
+bytes) collapsed into one after the two model strategies merged into a single
+`@model`-only implementation — they were identical because both were slotted
+the same way. Re-measure before trusting the exact figure for a size-sensitive
+decision: the new `@model` subclasses a synthesized storage dataclass rather
+than declaring slots flat on one class, and this row hasn't been re-profiled
+against the original script (not retained) that produced it.
 
 ---
 

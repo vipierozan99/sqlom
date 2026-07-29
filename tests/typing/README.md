@@ -41,11 +41,6 @@ only works in one of them is not something to advertise.
 
 ## What is deliberately untyped
 
-- **`@model` dataclass models.** The column descriptors live on the *metaclass*, and
-  no checker models a metaclass data descriptor shadowing a class attribute. So
-  `AuthorDC.id` is `int` to a checker (the dataclass field) rather than
-  `ColumnExpr[int]`, and comparisons against it are unchecked. `ModelMeta` models are
-  fully typed; that is the trade for real `dataclasses` interop.
 - **Columns off an `Alias`, `Subquery` or `CTE`.** `mgr.id` is `ColumnExpr[Any]`: all
   three resolve names from a runtime column map through `__getattr__`, and a checker
   cannot enumerate them. Reach the column off the model when you want the precise

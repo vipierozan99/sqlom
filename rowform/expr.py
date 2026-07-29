@@ -53,7 +53,7 @@ M = TypeVar("M")
 
 
 class _TableSource(Protocol):
-    """Runtime column map shared by ModelMeta classes and @model dataclasses."""
+    """Runtime column map every `@model` class exposes."""
 
     __columns__: dict[str, Any]
     __tablename__: str

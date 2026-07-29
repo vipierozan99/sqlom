@@ -3,7 +3,7 @@
 import pytest
 
 from rowform import Query
-from tests.conftest import Author, AuthorDC, Book, Tag
+from tests.conftest import Author, Book, Tag
 
 
 class TestSingleModel:
@@ -52,11 +52,6 @@ class TestSingleModel:
         query.limit(5)
         assert query.to_sql() is not first
         assert "LIMIT" in query.to_sql()[0]
-
-    def test_dataclass_models_work_too(self):
-        sql, params = Query(AuthorDC).where(AuthorDC.id > 2).to_sql(placeholder="$")
-        assert sql == "SELECT id, name, active FROM t_authors WHERE id > $1"
-        assert params == (2,)
 
 
 class TestValidation:

@@ -16,7 +16,6 @@ from rowform import (
     DatabaseEngine,
     Delete,
     Insert,
-    ModelMeta,
     Query,
     Update,
     and_,
@@ -24,26 +23,29 @@ from rowform import (
     count,
     excluded,
     exists,
+    model,
     not_,
     or_,
     recursive_cte,
 )
 
 
-class Author(metaclass=ModelMeta):
+@model
+class Author:
     __tablename__ = "authors"
 
-    id = Column(int)
-    name = Column(str)
-    active = Column(bool)
+    id: Column[int] = Column(int)
+    name: Column[str] = Column(str)
+    active: Column[bool] = Column(bool)
 
 
-class Book(metaclass=ModelMeta):
+@model
+class Book:
     __tablename__ = "books"
 
-    id = Column(int)
-    author_id = Column(int)
-    title = Column(str)
+    id: Column[int] = Column(int)
+    author_id: Column[int] = Column(int)
+    title: Column[str] = Column(str)
 
 
 # --------------------------------------------------------------------------
@@ -68,9 +70,9 @@ Author.id.in_(["a", "b"])  # type: ignore[list-item]
 # --------------------------------------------------------------------------
 # A typo on a model class
 # --------------------------------------------------------------------------
-# This one is why ModelMeta hides its __getattr__ from type checkers: a metaclass
-# __getattr__ is a fallback for *any* name, so a checker that saw it would type
-# `Author.nope` as whatever it returns and this line would pass.
+# `Column` sits directly on the class, no metaclass or __getattr__ fallback
+# involved anywhere in the model's construction, so a typo is an ordinary
+# missing-attribute error like on any other class.
 
 Author.nope  # type: ignore[attr-defined]
 

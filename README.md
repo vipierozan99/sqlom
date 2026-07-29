@@ -59,32 +59,21 @@ tuple_(User.id, User.name) == (1, "ada")          # row-value comparison
 
 ### Defining models
 
-Two styles, both statically typed end to end and verified against mypy and pyright:
+A model is a real stdlib `@dataclass(slots=True)` (`dataclasses.asdict`, `repr()`, `==` all work) that still gives you `User.id` as `ColumnExpr[int]` and `user.id` as `int`, statically typed end to end and verified against pyright:
 
 ```python
-from rowform import Column, ModelMeta
-
-class User(metaclass=ModelMeta):
-    __tablename__ = "users"
-    id = Column(int)
-    name = Column(str)
-    email = Column(str)
-    is_active = Column(bool)
-```
-
-```python
-from rowform import model
+from rowform import Column, model
 
 @model
 class User:
     __tablename__ = "users"
-    id: int
-    name: str
-    email: str
-    is_active: bool
+    id: Column[int] = Column(int)
+    name: Column[str] = Column(str)
+    email: Column[str] = Column(str)
+    is_active: Column[bool] = Column(bool)
 ```
 
-The first puts columns on a metaclass-generated descriptor; the second is a real stdlib `@dataclass(slots=True)` (`dataclasses.asdict`, `replace()`, `==` all work), made possible because a metaclass data descriptor wins over a same-named class variable in attribute lookup. Both give you `User.id` as `ColumnExpr[int]` and `user.id` as `int`. See [Architecture](#-architecture) for how. If you use the dataclass style, pass `rowform.DATACLASS_DUMP_OPTION` to `orjson.dumps` — orjson otherwise recognizes the dataclass natively and silently ignores your serialization hook.
+The `Column` descriptor sits on the model class itself, and the actual storage lives on a synthesized dataclass base underneath it — no metaclass involved. See [Architecture](#-architecture) for how. Serializing with orjson works natively (`orjson.dumps(user)` needs no options or hooks); passing `rowform.DATACLASS_DUMP_OPTION` routes it through the compiled `compile_json_default` hook instead, which is faster but not required for correctness.
 
 ### Querying, joins, aliases
 
@@ -274,9 +263,9 @@ Two paths, depending on whether you need Python objects at all:
 [ PostgreSQL ] ──(json_agg in SQL)──> [ one JSON string ] ──────> [ Response (JSON) ]
 ```
 
-1. **Descriptor expressions.** `User.id > 100` evaluates a descriptor at class scope, returning a `ColumnExpr` node instead of doing a Python-level comparison — a queryable AST with no SQLAlchemy-style instrumentation. The same overloaded `__get__` (`ColumnExpr[T]` at class scope, `T` at instance scope) is what keeps both model styles statically typed.
+1. **Descriptor expressions.** `User.id > 100` evaluates a descriptor at class scope, returning a `ColumnExpr` node instead of doing a Python-level comparison — a queryable AST with no SQLAlchemy-style instrumentation. The same overloaded `__get__` (`ColumnExpr[T]` at class scope, `T` at instance scope) is what keeps the model statically typed.
 2. **Compiled hydration, entirely positional.** A model's column layout is fixed once, so rowform generates a specialized `rows -> [instance]` function per model: plain attribute stores (CPython's specializing interpreter quickens these to `STORE_ATTR_SLOT`), and rows are read by **tuple unpacking** with no column names in the generated code. This is safe because rowform always writes the `SELECT` list itself — there's no `SELECT *` in the builder, so every column's ordinal is known at codegen time. Positional access beats key access by ~2–5x depending on driver, and building a dict per row costs 5–7x more than either.
-3. **Slotted storage.** Instances use `__slots__` — a fixed-size array rather than a `__dict__`, about 35% smaller per object. The tradeoff: this is also what forces orjson off its native dataclass fast path, hence `DATACLASS_DUMP_OPTION`.
+3. **Slotted storage.** Instances use `__slots__` — a fixed-size array rather than a `__dict__`, smaller per object and what makes orjson's native dataclass serialization work correctly (bare `orjson.dumps(user)`, no options needed). `DATACLASS_DUMP_OPTION` routes serialization through the compiled `compile_json_default` hook instead, which is faster still.
 4. **Path (B) skips 2 and 3 entirely** by shaping rows into JSON in SQL (`Query.to_json_sql`). Implemented but parked — path (A) is the focus.
 
 None of this is "zero-copy" — data still moves from the C-level tuple into Python object storage into JSON bytes. The claim is "fewer intermediate Python-level allocations than an ORM identity-map path," not "no copying happens."

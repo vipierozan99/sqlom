@@ -81,7 +81,7 @@ async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 
     async def target() -> bytes:
         rows = await engine.fetch_all(query)
-        return orjson.dumps(rows, default=to_dict)
+        return orjson.dumps(rows, default=to_dict, option=rf.DATACLASS_DUMP_OPTION)
 
     return target, engine.close
 
@@ -104,7 +104,7 @@ async def flat_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
 
     async def target() -> bytes:
         rows = await engine.fetch_all(query)
-        return orjson.dumps(rows, default=to_dict)
+        return orjson.dumps(rows, default=to_dict, option=rf.DATACLASS_DUMP_OPTION)
 
     async def teardown() -> None:
         return None
@@ -428,7 +428,9 @@ async def join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         pairs = await engine.fetch_all(query)
         return orjson.dumps(
-            [{"author": author, "post": post} for author, post in pairs], default=_default
+            [{"author": author, "post": post} for author, post in pairs],
+            default=_default,
+            option=rf.DATACLASS_DUMP_OPTION,
         )
 
     return target, engine.close
@@ -457,7 +459,9 @@ async def join_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         pairs = await engine.fetch_all(query)
         return orjson.dumps(
-            [{"author": author, "post": post} for author, post in pairs], default=_default
+            [{"author": author, "post": post} for author, post in pairs],
+            default=_default,
+            option=rf.DATACLASS_DUMP_OPTION,
         )
 
     async def teardown() -> None:
@@ -736,7 +740,7 @@ async def flat_rowform_pg(init: ContenderInit) -> tuple[Target, Teardown]:
 
     async def target() -> bytes:
         rows = await engine.fetch_all(query)
-        return orjson.dumps(rows, default=to_dict)
+        return orjson.dumps(rows, default=to_dict, option=rf.DATACLASS_DUMP_OPTION)
 
     return target, engine.close
 
@@ -872,7 +876,9 @@ async def join_rowform_pg(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         pairs = await engine.fetch_all(query)
         return orjson.dumps(
-            [{"author": author, "post": post} for author, post in pairs], default=_default
+            [{"author": author, "post": post} for author, post in pairs],
+            default=_default,
+            option=rf.DATACLASS_DUMP_OPTION,
         )
 
     return target, engine.close

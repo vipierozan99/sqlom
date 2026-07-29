@@ -1,0 +1,80 @@
+{
+    "workbench.sideBar.location": "right",
+    "workbench.iconTheme": "vscode-icons",
+    "window.zoomPerWindow": false,
+    "styled-colors.decoration_type": "background",
+    "workbench.colorTheme": "Default Dark Modern",
+    "workbench.preferredDarkColorTheme": "Default Dark Modern",
+    "workbench.preferredLightColorTheme": "Default Light Modern",
+    "window.autoDetectColorScheme": true,
+    "workbench.activityBar.orientation": "vertical",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports.biome": "explicit",
+      "source.fixAll.biome": "explicit",
+    },
+    "diffEditor.ignoreTrimWhitespace": false,
+    "[json]": {
+      "editor.quickSuggestions": {
+        "strings": true,
+      },
+      "editor.suggest.insertMode": "replace",
+      "editor.defaultFormatter": "esbenp.prettier-vscode",
+    },
+    "[typescript]": {
+      "editor.defaultFormatter": "biomejs.biome",
+    },
+    "gitlens.views.scm.grouped.views": {
+      "commits": true,
+      "branches": true,
+      "remotes": true,
+      "stashes": true,
+      "tags": true,
+      "worktrees": true,
+      "contributors": true,
+      "fileHistory": true,
+      "repositories": true,
+      "searchAndCompare": true,
+      "launchpad": false,
+    },
+    "[typescriptreact]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode",
+    },
+    "json.schemaDownload.enable": true,
+    "workbench.panel.defaultLocation": "left",
+    "[dockercompose]": {
+      "editor.insertSpaces": true,
+      "editor.tabSize": 2,
+      "editor.autoIndent": "advanced",
+      "editor.defaultFormatter": "redhat.vscode-yaml",
+    },
+    "[github-actions-workflow]": {
+      "editor.defaultFormatter": "redhat.vscode-yaml",
+    },
+    "[python]": {
+      "diffEditor.ignoreTrimWhitespace": false,
+      "editor.defaultColorDecorators": "never",
+      "editor.formatOnType": true,
+      "editor.quickSuggestions": {
+        "strings": true,
+      },
+      "editor.wordBasedSuggestions": "off",
+      "gitlens.codeLens.symbolScopes": ["!Module"],
+      "editor.defaultFormatter": "charliermarsh.ruff",
+    },
+    "editor.inlayHints.enabled": "offUnlessPressed",
+    "window.zoomLevel": -1,
+    "notebook.formatOnSave.enabled": true,
+  
+    "[yaml]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode",
+    },
+    "git.confirmSync": false,
+    "sqltools.format": {
+      "defaultFormatter": "sqlfluff.vscode-sqlfluff",
+    },
+    "[markdown]": {
+      "editor.defaultFormatter": "charliermarsh.ruff",
+    },
+  }
+  

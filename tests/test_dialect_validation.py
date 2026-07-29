@@ -20,15 +20,16 @@ there is no directly corresponding upstream test to port.
 
 import pytest
 
-from rowform import POSTGRES, SQLITE, Column, Delete, Insert, ModelMeta, Query
+from rowform import POSTGRES, SQLITE, Column, Delete, Insert, Query, model
 from tests.conftest import Author, Book
 
 
-class Tagged(metaclass=ModelMeta):
+@model
+class Tagged:
     __tablename__ = "t_tagged_dv"
 
-    id = Column(int)
-    name = Column(str)
+    id: Column[int] = Column(int)
+    name: Column[str] = Column(str)
 
 
 class TestIlike:

@@ -19,11 +19,11 @@ from rowform import (
     CTE,
     Column,
     Delete,
-    ModelMeta,
     Query,
     Update,
     count,
     exists,
+    model,
     recursive_cte,
     sum_,
 )
@@ -291,11 +291,12 @@ class TestAgainstSqlite:
     def test_recursive_counting_sequence(self, db):
         # A generated series is the clearest proof the recursion actually recurses:
         # this one has to iterate five times to produce five rows.
-        class Seq(metaclass=ModelMeta):
+        @model
+        class Seq:
             __tablename__ = "t_books"
-            id = Column(int)
-            author_id = Column(int)
-            title = Column(str)
+            id: Column[int] = Column(int)
+            author_id: Column[int] = Column(int)
+            title: Column[str] = Column(str)
 
         series = recursive_cte(
             "series",

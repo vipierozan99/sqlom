@@ -11,16 +11,17 @@ import sqlite3
 
 import pytest
 
-from rowform import Alias, Column, Insert, ModelMeta, Query, excluded
+from rowform import Alias, Column, Insert, Query, excluded, model
 from tests.conftest import Author, Book
 
 
-class Counter(metaclass=ModelMeta):
+@model
+class Counter:
     __tablename__ = "t_counter"
 
-    key = Column(str)
-    hits = Column(int)
-    label = Column(str)
+    key: Column[str] = Column(str)
+    hits: Column[int] = Column(int)
+    label: Column[str] = Column(str)
 
 
 def sql_of(statement, placeholder="$"):

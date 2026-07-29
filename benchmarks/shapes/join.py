@@ -31,7 +31,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
 
-from rowform import Column, ModelMeta
+from rowform import Column, model
 
 AUTHORS_TABLE = "j_authors"
 POSTS_TABLE = "j_posts"
@@ -90,23 +90,25 @@ POSTS_PER_AUTHOR = 5
 # --- rowform ----------------------------------------------------------------
 
 
-class Author(metaclass=ModelMeta):
+@model
+class Author:
     __tablename__ = AUTHORS_TABLE
 
-    id = Column(int)
-    name = Column(str)
-    email = Column(str)
-    is_active = Column(bool)
+    id: Column[int] = Column(int)
+    name: Column[str] = Column(str)
+    email: Column[str] = Column(str)
+    is_active: Column[bool] = Column(bool)
 
 
-class Post(metaclass=ModelMeta):
+@model
+class Post:
     __tablename__ = POSTS_TABLE
 
-    id = Column(int)
-    author_id = Column(int)
-    title = Column(str)
-    score = Column(int)
-    published = Column(bool)
+    id: Column[int] = Column(int)
+    author_id: Column[int] = Column(int)
+    title: Column[str] = Column(str)
+    score: Column[int] = Column(int)
+    published: Column[bool] = Column(bool)
 
 
 # --- SQLAlchemy Core ---------------------------------------------------------

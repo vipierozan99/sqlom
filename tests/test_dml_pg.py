@@ -10,10 +10,10 @@ from rowform import (
     Column,
     Delete,
     Insert,
-    ModelMeta,
     Query,
     Update,
     count,
+    model,
     row_number,
     sum_,
 )
@@ -23,13 +23,14 @@ pytestmark = pytest.mark.postgres
 TABLE = "t_dml"
 
 
-class Row(metaclass=ModelMeta):
+@model
+class Row:
     __tablename__ = TABLE
 
-    id = Column(int)
-    grp = Column(int)
-    score = Column(int)
-    label = Column(str)
+    id: Column[int] = Column(int)
+    grp: Column[int] = Column(int)
+    score: Column[int] = Column(int)
+    label: Column[str] = Column(str)
 
 
 @pytest.fixture(params=["asyncpg", "psycopg"])

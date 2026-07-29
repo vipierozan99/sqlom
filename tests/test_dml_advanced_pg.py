@@ -19,11 +19,11 @@ from rowform import (
     Column,
     Delete,
     Insert,
-    ModelMeta,
     Query,
     Update,
     count,
     excluded,
+    model,
     recursive_cte,
     sum_,
 )
@@ -34,21 +34,23 @@ MAIN = "t_adv_main"
 OTHER = "t_adv_other"
 
 
-class Main(metaclass=ModelMeta):
+@model
+class Main:
     __tablename__ = MAIN
 
-    id = Column(int)
-    tag = Column(str)
-    score = Column(int)
+    id: Column[int] = Column(int)
+    tag: Column[str] = Column(str)
+    score: Column[int] = Column(int)
 
 
-class Other(metaclass=ModelMeta):
+@model
+class Other:
     __tablename__ = OTHER
 
-    id = Column(int)
-    main_id = Column(int)
-    name = Column(str)
-    keep = Column(bool)
+    id: Column[int] = Column(int)
+    main_id: Column[int] = Column(int)
+    name: Column[str] = Column(str)
+    keep: Column[bool] = Column(bool)
 
 
 @pytest.fixture(params=["asyncpg", "psycopg"])

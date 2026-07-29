@@ -28,8 +28,8 @@ Skipped entirely, and why:
   * `RowTupleTest`, most of `RowLabelingTest` — custom column keys via
     imperative mapper configuration (`properties={"uname": ...}`), legacy
     `Row`/`LegacyRow` distinctions, and mapper `column_descriptions`
-    introspection. rowform's models are plain `ModelMeta`/`@model` classes with
-    no separate "mapped attribute name" vs. "column name" concept to test.
+    introspection. rowform's models are plain `@model` classes with no
+    separate "mapped attribute name" vs. "column name" concept to test.
   * `OperatorTest`, `ExpressionTest`, `ComparatorTest` — pure SQL-generation
     tests already covered by tests/sqlalchemy_ports/test_operators_functions_ported.py
     and test_compiler_ported.py; nothing here is specifically about execution

@@ -23,7 +23,6 @@ from rowform import (
     FunctionCall,
     InClause,
     Insert,
-    ModelMeta,
     Over,
     Predicate,
     Query,
@@ -45,6 +44,7 @@ from rowform import (
     max_,
     max_rows_per_statement,
     min_,
+    model,
     not_,
     ntile,
     or_,
@@ -57,20 +57,22 @@ from rowform import (
 )
 
 
-class Author(metaclass=ModelMeta):
+@model
+class Author:
     __tablename__ = "authors"
 
-    id = Column(int)
-    name = Column(str)
-    active = Column(bool)
+    id: Column[int] = Column(int)
+    name: Column[str] = Column(str)
+    active: Column[bool] = Column(bool)
 
 
-class Book(metaclass=ModelMeta):
+@model
+class Book:
     __tablename__ = "books"
 
-    id = Column(int)
-    author_id = Column(int)
-    title = Column(str)
+    id: Column[int] = Column(int)
+    author_id: Column[int] = Column(int)
+    title: Column[str] = Column(str)
 
 
 # --------------------------------------------------------------------------

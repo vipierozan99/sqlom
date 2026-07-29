@@ -7,7 +7,7 @@ from sqlalchemy import Boolean, Integer, MetaData, String, Table
 from sqlalchemy import Column as SAColumn
 from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
 
-from rowform import Column, ModelMeta, model
+from rowform import Column, model
 
 TABLE_NAME = "users"
 
@@ -35,15 +35,16 @@ DDL_POSTGRES = [
 ]
 
 
-class User(metaclass=ModelMeta):
+@model
+class User:
     """rowform model — the thing under test."""
 
     __tablename__ = TABLE_NAME
 
-    id = Column(int)
-    name = Column(str)
-    email = Column(str)
-    is_active = Column(bool)
+    id: Column[int] = Column(int)
+    name: Column[str] = Column(str)
+    email: Column[str] = Column(str)
+    is_active: Column[bool] = Column(bool)
 
 
 metadata = MetaData()
@@ -82,19 +83,6 @@ class UserDC(BaseDC):
     name: Mapped[str]
     email: Mapped[str]
     is_active: Mapped[bool]
-
-
-@model
-class UserRF:
-    """Same schema as `User`, but a real stdlib @dataclass(slots=True) whose
-    class-level attribute access still yields query expressions."""
-
-    __tablename__ = TABLE_NAME
-
-    id: int
-    name: str
-    email: str
-    is_active: bool
 
 
 def generate_rows(rng, n, start=1):

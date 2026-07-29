@@ -17,7 +17,7 @@ import sqlite3
 
 import pytest
 
-from rowform import Alias, Column, Delete, ModelMeta, Query, Update, count
+from rowform import Alias, Column, Delete, Query, Update, count, model
 from tests.conftest import Author, Book, Tag
 
 
@@ -184,12 +184,13 @@ class TestValidation:
     def test_two_sources_with_the_same_qualifier_are_refused(self):
         # An unaliased self-reference would make every column ambiguous, and the
         # generated SQL would silently mean the wrong table.
-        class SameTable(metaclass=ModelMeta):
+        @model
+        class SameTable:
             __tablename__ = "t_books"
 
-            id = Column(int)
-            author_id = Column(int)
-            title = Column(str)
+            id: Column[int] = Column(int)
+            author_id: Column[int] = Column(int)
+            title: Column[str] = Column(str)
 
         with pytest.raises(ValueError, match="both qualify as 't_books'"):
             Update(Book).set(title="x").from_(SameTable)

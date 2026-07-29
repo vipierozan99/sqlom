@@ -1,4 +1,4 @@
-from .column import Column, ModelMeta, as_dict, hydrate
+from .column import Column, as_dict, hydrate
 from .compile import (
     ASYNCPG_CONVERTERS,
     PSYCOPG_CONVERTERS,
@@ -9,7 +9,6 @@ from .compile import (
     compile_json_default,
     json_default,
 )
-from .dataclass_model import DATACLASS_DUMP_OPTION, model
 from .dialects import POSTGRES, SQLITE, Dialect, PostgresDialect, SqliteDialect
 from .dml import (
     MAX_PARAMETERS,
@@ -84,6 +83,7 @@ from .expr import (
     true,
     tuple_,
 )
+from .model import DATACLASS_DUMP_OPTION, model
 from .psycopg_engine import PsycopgEngine
 from .query import CompoundSelect, Query, json_bytes, select
 from .sqlite_engine import SqliteEngine
@@ -122,7 +122,6 @@ __all__ = [
     "Labelled",
     "Literal",
     "LiteralColumn",
-    "ModelMeta",
     "Not",
     "Over",
     "PostgresDialect",
