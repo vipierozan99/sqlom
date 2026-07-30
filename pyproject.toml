@@ -92,7 +92,7 @@ task-tags = ["TODO", "FIXME", "XXX", "NOTE"]
 # names and exec() are the same codegen the library itself uses (see rowform/compile.py),
 # random.Random seeds synthetic benchmark data, and subprocess/except-Exception calls
 # drive or clean up after local, hardcoded commands rather than user input.
-"benchmarks/**" = ["S102", "S110", "S311", "S404", "S603", "S607", "S608", "BLE001", "PLW1510"]
+"benchmarks/**" = ["DTZ001", "S102", "S110", "S311", "S404", "S603", "S607", "S608", "BLE001", "PLW1510"]
 # Naive datetimes are the point, not an oversight: sqlite stores DATETIME as a
 # string with no zone, and the type-fidelity tests assert exactly what comes back.
 # RUF012 fires on `metadata = MetaData()`, which is how a Base is declared.

@@ -1,9 +1,8 @@
-"""Two-table shape for the join benchmark, defined for rowform, SA Core and SA
-ORM. Ported from the old `benchmarks/join_models.py`.
+"""Two-table shape for the join benchmark.
 
 Separate from `shapes/flat.py` on purpose. That module's `users` table backs
 every published single-table figure, and adding a second table plus a foreign
-key to it would change the file the sqlite suite seeds and re-time — a change
+key to it would change the file the sqlite suite seeds and re-times — a change
 made for a new benchmark must not be able to move an existing number.
 
 The shape is chosen so a join has something to be slow about:
@@ -11,187 +10,107 @@ The shape is chosen so a join has something to be slow about:
 * Two entities to hydrate per row, not one, so the join hydrator's per-row work
   is double the single-table case.
 * A `bool` on **both** sides. sqlite has no boolean type, so 0/1 comes back and
-  every contender has to coerce it. Putting one on each side means a mapper
-  that only converts the driving entity's columns is caught by the
-  equivalence gate.
+  every contender has to coerce it. Putting one on each side means a mapper that
+  only converts the driving entity's columns is caught by the equivalence gate.
 * Short strings and small ints otherwise, matching the single-table benchmark,
   so the difference between the two suites is the join and not the row width.
 """
 
-from sqlalchemy import (
-    Boolean,
-    ForeignKey,
-    Integer,
-    MetaData,
-    String,
-    Table,
-)
-from sqlalchemy import (
-    Column as SAColumn,
-)
+from __future__ import annotations
+
+import sqlalchemy as sa
 from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
 
-from rowform import Column, model
+import rowform
 
 AUTHORS_TABLE = "j_authors"
 POSTS_TABLE = "j_posts"
-
-# The join predicate's index. Without it sqlite/postgres scan j_posts per
-# author and the benchmark measures the query plan rather than the mapper —
-# for *every* contender equally, but it would swamp the difference being
-# looked for.
-_POSTS_INDEX = f"CREATE INDEX j_posts_author ON {POSTS_TABLE} (author_id)"
-
-DDL_SQLITE = [
-    f"""
-    CREATE TABLE {AUTHORS_TABLE} (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        email TEXT NOT NULL,
-        is_active INTEGER NOT NULL
-    )
-    """,
-    f"""
-    CREATE TABLE {POSTS_TABLE} (
-        id INTEGER PRIMARY KEY,
-        author_id INTEGER NOT NULL REFERENCES {AUTHORS_TABLE}(id),
-        title TEXT NOT NULL,
-        score INTEGER NOT NULL,
-        published INTEGER NOT NULL
-    )
-    """,
-    _POSTS_INDEX,
-]
-
-DDL_POSTGRES = [
-    f"""
-    CREATE TABLE {AUTHORS_TABLE} (
-        id integer PRIMARY KEY,
-        name text NOT NULL,
-        email text NOT NULL,
-        is_active boolean NOT NULL
-    )
-    """,
-    f"""
-    CREATE TABLE {POSTS_TABLE} (
-        id integer PRIMARY KEY,
-        author_id integer NOT NULL REFERENCES {AUTHORS_TABLE}(id),
-        title text NOT NULL,
-        score integer NOT NULL,
-        published boolean NOT NULL
-    )
-    """,
-    _POSTS_INDEX,
-]
-
 POSTS_PER_AUTHOR = 5
 
 
-# --- rowform ----------------------------------------------------------------
+class Base(rowform.Base):
+    metadata = sa.MetaData()
 
 
-@model
-class Author:
+class Author(Base):
     __tablename__ = AUTHORS_TABLE
 
-    id: Column[int] = Column(int)
-    name: Column[str] = Column(str)
-    email: Column[str] = Column(str)
-    is_active: Column[bool] = Column(bool)
-
-
-@model
-class Post:
-    __tablename__ = POSTS_TABLE
-
-    id: Column[int] = Column(int)
-    author_id: Column[int] = Column(int)
-    title: Column[str] = Column(str)
-    score: Column[int] = Column(int)
-    published: Column[bool] = Column(bool)
-
-
-# --- SQLAlchemy Core ---------------------------------------------------------
-
-metadata = MetaData()
-
-authors_table = Table(
-    AUTHORS_TABLE,
-    metadata,
-    SAColumn("id", Integer, primary_key=True),
-    SAColumn("name", String, nullable=False),
-    SAColumn("email", String, nullable=False),
-    SAColumn("is_active", Boolean, nullable=False),
-)
-
-posts_table = Table(
-    POSTS_TABLE,
-    metadata,
-    SAColumn("id", Integer, primary_key=True),
-    SAColumn("author_id", Integer, ForeignKey(f"{AUTHORS_TABLE}.id"), nullable=False),
-    SAColumn("title", String, nullable=False),
-    SAColumn("score", Integer, nullable=False),
-    SAColumn("published", Boolean, nullable=False),
-)
-
-
-# --- SQLAlchemy ORM -----------------------------------------------------------
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-class AuthorORM(Base):
-    __tablename__ = AUTHORS_TABLE
-
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = rowform.mapped_column(primary_key=True, autoincrement=False)
     name: Mapped[str]
     email: Mapped[str]
     is_active: Mapped[bool]
 
 
-class PostORM(Base):
+class Post(Base):
     __tablename__ = POSTS_TABLE
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    author_id: Mapped[int] = mapped_column(ForeignKey(f"{AUTHORS_TABLE}.id"))
+    id: Mapped[int] = rowform.mapped_column(primary_key=True, autoincrement=False)
+    author_id: Mapped[int] = rowform.mapped_column(sa.ForeignKey(f"{AUTHORS_TABLE}.id"))
     title: Mapped[str]
     score: Mapped[int]
     published: Mapped[bool]
 
 
-# --- SQLAlchemy ORM (Dataclass) -----------------------------------------------------------
+metadata = Base.metadata
+authors_table = Author.__table__
+posts_table = Post.__table__
 
-
-class BaseDC(MappedAsDataclass, DeclarativeBase):
-    pass
-
-
-class AuthorDC(BaseDC):
-    __tablename__ = AUTHORS_TABLE
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str]
-    email: Mapped[str]
-    is_active: Mapped[bool]
-
-
-class PostDC(BaseDC):
-    __tablename__ = POSTS_TABLE
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    author_id: Mapped[int] = mapped_column(ForeignKey(f"{AUTHORS_TABLE}.id"))
-    title: Mapped[str]
-    score: Mapped[int]
-    published: Mapped[bool]
-
+# The join predicate's index. Without it sqlite/postgres scan j_posts per author
+# and the benchmark measures the query plan rather than the row layer — for
+# *every* contender equally, but it would swamp the difference being looked for.
+sa.Index("j_posts_author", posts_table.c.author_id)
 
 # Column name order, used by every contender to build identical JSON. Read off
-# the ORM tables so a schema edit cannot leave one contender emitting a
-# different shape.
-AUTHOR_FIELDS = [str(c.name) for c in AuthorORM.__table__.columns]
-POST_FIELDS = [str(c.name) for c in PostORM.__table__.columns]
+# the tables so a schema edit cannot leave one contender emitting a different
+# shape.
+AUTHOR_FIELDS = [str(c.name) for c in authors_table.columns]
+POST_FIELDS = [str(c.name) for c in posts_table.columns]
+
+
+class ORMBase(DeclarativeBase):
+    pass
+
+
+class AuthorORM(ORMBase):
+    __tablename__ = AUTHORS_TABLE
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+    email: Mapped[str]
+    is_active: Mapped[bool]
+
+
+class PostORM(ORMBase):
+    __tablename__ = POSTS_TABLE
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(sa.ForeignKey(f"{AUTHORS_TABLE}.id"))
+    title: Mapped[str]
+    score: Mapped[int]
+    published: Mapped[bool]
+
+
+class DCBase(MappedAsDataclass, DeclarativeBase):
+    pass
+
+
+class AuthorDC(DCBase):
+    __tablename__ = AUTHORS_TABLE
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+    email: Mapped[str]
+    is_active: Mapped[bool]
+
+
+class PostDC(DCBase):
+    __tablename__ = POSTS_TABLE
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(sa.ForeignKey(f"{AUTHORS_TABLE}.id"))
+    title: Mapped[str]
+    score: Mapped[int]
+    published: Mapped[bool]
 
 
 def generate_authors(rng, n, start=1):

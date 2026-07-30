@@ -1,69 +1,64 @@
-"""Single-table shape: the `users` table every published single-table figure
-uses. Ported from the old `benchmarks/models.py`, kept separate from
-`shapes/join.py` on purpose — see that module's docstring.
+"""Single-table shape: the `users` table every published single-table figure uses.
+
+**This file is the rewrite's most visible dividend.** It used to carry four
+parallel declarations of the same four columns — a rowform `@model`, a bare
+`Table`, a `DeclarativeBase` model and a `MappedAsDataclass` one — plus two
+hand-written `CREATE TABLE` strings, one per dialect. It now carries two: the
+rowform model, which *is* the `Table`, and the ORM models it is measured
+against. The DDL is generated from the first of those (`harness/seed.py`), so a
+benchmark can no longer seed a table that differs from the one it queries.
+
+Two ORM declarations remain on purpose. `UserORM` is stock declarative and
+`UserDC` is `MappedAsDataclass`; the second exists because the first returns
+instrumented objects carrying loader state, and comparing against only that
+would overstate the win — `MappedAsDataclass` is the closest thing the ORM has
+to what rowform produces.
 """
 
-from sqlalchemy import Boolean, Integer, MetaData, String, Table
-from sqlalchemy import Column as SAColumn
+from __future__ import annotations
+
+import sqlalchemy as sa
 from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
 
-from rowform import Column, model
+import rowform
 
 TABLE_NAME = "users"
 
-DDL_SQLITE = [
-    f"""
-    CREATE TABLE {TABLE_NAME} (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        email TEXT NOT NULL,
-        is_active INTEGER NOT NULL
-    )
-    """,
-]
 
-DDL_POSTGRES = [
-    f"""
-    CREATE TABLE {TABLE_NAME} (
-        id integer PRIMARY KEY,
-        name text NOT NULL,
-        email text NOT NULL,
-        is_active boolean NOT NULL
-    )
-    """,
-    f"CREATE INDEX {TABLE_NAME}_active_id ON {TABLE_NAME} (is_active, id)",
-]
+class Base(rowform.Base):
+    metadata = sa.MetaData()
 
 
-@model
-class User:
-    """rowform model — the thing under test."""
+class User(Base):
+    """The thing under test — and the table definition, and the row container."""
 
     __tablename__ = TABLE_NAME
 
-    id: Column[int] = Column(int)
-    name: Column[str] = Column(str)
-    email: Column[str] = Column(str)
-    is_active: Column[bool] = Column(bool)
+    id: Mapped[int] = rowform.mapped_column(primary_key=True, autoincrement=False)
+    name: Mapped[str]
+    email: Mapped[str]
+    is_active: Mapped[bool]
 
 
-metadata = MetaData()
+metadata = Base.metadata
 
-users_table = Table(
-    TABLE_NAME,
-    metadata,
-    SAColumn("id", Integer, primary_key=True),
-    SAColumn("name", String, nullable=False),
-    SAColumn("email", String, nullable=False),
-    SAColumn("is_active", Boolean, nullable=False),
-)
+#: Still a name, because the whole suite talks about "the table". It is no
+#: longer a second declaration of one.
+users_table = User.__table__
 
+# The index the postgres runs need: without it the `is_active`/`id` predicate
+# scans, and the benchmark measures the query plan rather than the row layer.
+sa.Index(f"{TABLE_NAME}_active_id", users_table.c.is_active, users_table.c.id)
 
-class Base(DeclarativeBase):
-    pass
+FIELDS = [str(c.name) for c in users_table.columns]
 
 
-class UserORM(Base):
+class ORMBase(DeclarativeBase):
+    """Its own `MetaData`: the ORM models describe the same table, and two
+    declarations of `users` in one `MetaData` is an error, not a comparison."""
+
+
+class UserORM(ORMBase):
     __tablename__ = TABLE_NAME
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -72,11 +67,11 @@ class UserORM(Base):
     is_active: Mapped[bool]
 
 
-class BaseDC(MappedAsDataclass, DeclarativeBase):
+class DCBase(MappedAsDataclass, DeclarativeBase):
     pass
 
 
-class UserDC(BaseDC):
+class UserDC(DCBase):
     __tablename__ = TABLE_NAME
 
     id: Mapped[int] = mapped_column(primary_key=True)

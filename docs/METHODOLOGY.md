@@ -14,21 +14,26 @@
 > actually run; recovering the scripts themselves needs
 > `git checkout 32ad4a1 -- benchmarks/`.
 
-Eight claims published in this repo turned out to be wrong. Each was caught by
+Eleven claims published in this repo turned out to be wrong. Each was caught by
 attacking the benchmark rather than trusting it, and each came from a distinct
 methodological flaw. They are recorded here because the flaws generalize well
 beyond rowform.
 
-Two of the eight were found by an automated reviewer (CodeRabbit) on the pull
+Two of the first eight were found by an automated reviewer (CodeRabbit) on the pull
 request rather than by me, which is worth recording as its own lesson: corrections
 1 through 5 were all found by self-attack, and I had by then written a document
 about how to attack benchmarks — and still shipped a harness that timed one side's
 connection setup and not the other's. **Self-review has a blind spot exactly where
 you are most confident.**
 
-Correction 8 is the largest of the eight and was found by accident, seven
-corrections in, by adding a benchmark for a *different shape*. It had survived every
-deliberate attack in this document.
+Correction 8 is the largest and was found by accident, seven corrections in, by
+adding a benchmark for a *different shape*. It had survived every deliberate attack
+in this document.
+
+Corrections 9-11 come from the Core-as-compiler rewrite
+([PLAN_CORE_COMPILER.md](PLAN_CORE_COMPILER.md)). Correction 11 is the one worth
+reading first: it is correction 8's lesson again, in a dimension nobody had thought
+of as a dimension.
 
 Every figure quoted inside a correction is as-of that correction. Absolute
 milliseconds are not comparable between corrections; see "absolute times drift with
@@ -39,7 +44,7 @@ you built should be treated as a bug report until you have tried to break it.**
 
 ---
 
-## The eight corrections
+## The eleven corrections
 
 ### 1. Comparing different payloads (inflated 3.5x → 2.6x)
 
@@ -260,6 +265,112 @@ Full evidence: [`benchmarks/results/core_idiom.txt`](../benchmarks/results/core_
 
 ---
 
+### 9. Charging Core for iteration a tuned caller avoids (0.27-0.37 ms/1000 rows)
+
+The same class of mistake as correction 8, in the other half of Core's result API.
+Every Core contender iterated its result:
+
+```python
+payload = [... for row in result]
+```
+
+`for row in result` costs, per row: two generator frames (`cursor.py:2248`,
+`result.py:565`), a try/except-wrapped `CursorFetchStrategy.fetchone`
+(`cursor.py:1163`), a DBAPI `fetchone()`, and a `functools.partial` call. `.all()`
+replaces all of it with one C-level `fetchall()` plus a list comprehension.
+Measured at 1000 rows that is **0.27-0.37 ms**, on a query whose whole cost is
+around 1.6 ms.
+
+Every "vs Core" ratio published before this was therefore inflated, on top of
+correction 8's `.mappings()` inflation, and in the same flattering direction. Both
+came from writing the other contender the way its documentation shows rather than
+the way someone optimising it would.
+
+> **Generalizes to:** correction 8's second lesson is not a one-off. *Twice* now the
+> obvious idiom for the library being compared against has been materially slower
+> than its own tuned equivalent. Assume there is a third, and go looking before
+> publishing.
+
+---
+
+### 10. A floor that does more work than the thing it bounds
+
+`PLAN.md` §4 already carried the invariant *"include a floor and a naive baseline —
+when rowform appeared to beat the floor, that was the tripwire."* It fired twice
+more during the rewrite, both times for a reason the invariant as written did not
+cover: the floor was not doing *less* work.
+
+**First: the floor built its objects more expensively.** An intermediate run used
+`User(**kwargs)` as the floor's row constructor while rowform used its generated
+hydrator. Keyword binding through `__init__` is ~2.1x slower than
+`object.__new__` plus attribute stores, so the "floor" came out *above* the thing
+it was bounding.
+
+**Second, and subtler: the floor read its rows more expensively.** The rewritten
+suite built floor payloads with a shared helper, `{f: v for f, v in zip(fields,
+row)}`. That is a zip, a lookup and a membership test per column, against a
+generated hydrator that emits one `UNPACK_SEQUENCE` and a straight-line store per
+field. On sqlite the floor still came out below; on **postgres it came out above**,
+because an `asyncpg.Record` is more expensive to index than a tuple and the floor
+indexed four times where the hydrator unpacked once. Same code, opposite verdict,
+decided entirely by the driver's row container.
+
+Two fixes, both permanent:
+
+* **Two floors, always.** A dicts-only floor bounds the whole stack; a floor running
+  the *same* hydrator over the same driver separates engine cost from row-construction
+  cost. Neither number means much alone.
+* **Floors are written out, never generated.** `benchmarks/micro/contenders.py`
+  spells out every payload builder per shape, and says why in a comment, because
+  shared helper code is exactly how a floor quietly stops being one.
+
+> **Generalizes to:** *"the floor must do strictly less work"* is not a property you
+> can establish by reading it once. It has to hold **per backend**, because the row
+> container, the type processors and the object model all change underneath it. A
+> floor is a claim about the whole stack, and it needs re-checking wherever the stack
+> changes.
+
+---
+
+### 11. Measuring one type shape, and generalising from it (nearly shipped a silent data-corruption bug)
+
+Every figure this repo ever published came from one row layout:
+`int/str/str/bool`. That was not chosen to flatter anything; it was chosen because
+it is a realistic small row, and nobody thought of "which *types*" as a benchmark
+dimension at all.
+
+It is the one layout where bypassing SQLAlchemy's `Row` looks free. The only column
+needing conversion is a boolean, which a single `bool()` covers — and a
+hand-written `SQLITE_CONVERTERS = {bool: bool}` table covered exactly that.
+
+Measured against a widened shape (`DateTime`, `Date`, `Time`, `Numeric`, `Enum`,
+`Uuid`, `JSON`, a nullable column), **8 of 13 columns came back wrong on sqlite**:
+temporal types as strings, `Numeric` as float, `Enum` as its member name, `Uuid` as
+hex, `JSON` as text, `Boolean` as int. Not slower — *wrong*, and silently: every
+value is a plausible-looking Python object of the wrong type.
+
+The equivalence gate did not catch it, because the gate only ever ran on the flat
+shape, where there was nothing to catch. Correction 8's third lesson —
+*"add a second shape"* — had been adopted, and a join shape added. A join is a
+different *arity*, not a different *type mix*, so it exercised precisely the same
+converters.
+
+Fixes: a `wide` shape is now part of the suite and is gated like the others; and
+the hand-written converter table is gone, replaced by asking SQLAlchemy for each
+column's own `result_processor`, which is correct per dialect by construction.
+
+> **Generalizes to:** a benchmark shape has more axes than row width and arity.
+> Types are an axis. So is nullability, cardinality, and value size. Ask which axis
+> your suite holds constant *everywhere*, because that is the one where a bug can
+> live in every contender at once and be invisible in all of them.
+>
+> And note the shape of the near-miss: the flat shape made a wrong implementation
+> look correct **and** fast, which is the most dangerous combination a benchmark can
+> produce. Speed that comes from skipping work is only a win if the work was
+> unnecessary, and a suite that never exercises the work cannot tell you which.
+
+---
+
 ### Not a correction, but the same lesson: garbage collection in the join benchmark
 
 The two-model join allocates ~2000 objects per iteration, and every contender showed
@@ -291,10 +402,16 @@ A per-key cast, an encoding fix-up, a defensive copy: each is a candidate measur
 artifact, and the fact that it is *required* by the API chosen says nothing about
 whether a cheaper API exists. Time both.
 
-**Measure more than one shape.** Correction 8 was invisible across seven rounds of
-attack on a single flat-table workload and fell out immediately from adding a join,
-because the join made the expensive API unavailable and forced a fair one. A suite
-that only measures one shape cannot see a flaw that shape imposes uniformly.
+**Measure more than one shape, along more than one axis.** Correction 8 was
+invisible across seven rounds of attack on a single flat-table workload and fell out
+immediately from adding a join, because the join made the expensive API unavailable
+and forced a fair one. A suite that only measures one shape cannot see a flaw that
+shape imposes uniformly. Correction 11 is the same lesson a level deeper: a join is a
+different arity but the same *type mix*, so adding one changed nothing about which
+type processors ran. The suite now carries three shapes — `flat` (narrow), `join`
+(multi-entity) and `wide` (every type whose driver representation differs from its
+Python one) — and each of them is there because it makes a different mistake
+visible.
 
 **One contender per process for any published number.** `--only` plus `--repeat`,
 report medians. Expect c=1 cells in the load benchmark to swing 15–20% between

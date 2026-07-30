@@ -118,7 +118,7 @@ async def noop() -> Response:
 
 @app.get("/sqlite-flat-rowform")
 async def sqlite_flat_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
-    query = rf.select(User).where(User.is_active == True).where(User.id > 100).limit(limit)
+    query = select(User).where(User.is_active == True).where(User.id > 100).limit(limit)
     rows = await app.state.rowform.fetch_all(query)
     return Response(content=orjson.dumps(rows), media_type=JSON)
 
@@ -198,8 +198,7 @@ async def sqlite_flat_sqlalchemy_async_orm(limit: int = Query(default=DEFAULT_LI
 @app.get("/sqlite-join-rowform")
 async def sqlite_join_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     query = (
-        rf
-        .select(Author, Post)
+        select(Author, Post)
         .join(Post, Post.author_id == Author.id)
         .where(Author.is_active == True)
         .where(Post.score > 100)
@@ -273,7 +272,7 @@ async def sqlite_join_sqlalchemy_async_orm(limit: int = Query(default=DEFAULT_LI
 
 @app.get("/postgres-flat-rowform")
 async def postgres_flat_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
-    query = rf.select(User).where(User.is_active == True).where(User.id > 100).limit(limit)
+    query = select(User).where(User.is_active == True).where(User.id > 100).limit(limit)
     rows = await app.state.pg_rowform.fetch_all(query)
     return Response(content=orjson.dumps(rows), media_type=JSON)
 
@@ -347,8 +346,7 @@ async def postgres_flat_sqlalchemy_orm(
 @app.get("/postgres-join-rowform")
 async def postgres_join_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     query = (
-        rf
-        .select(Author, Post)
+        select(Author, Post)
         .join(Post, Post.author_id == Author.id)
         .where(Author.is_active == True)
         .where(Post.score > 100)

@@ -17,7 +17,10 @@ import time
 import uuid
 from dataclasses import dataclass
 
+import rowform
 from benchmarks.harness import seed as seed_module
+
+_DIALECT = rowform.AsyncpgEngine.dialect
 
 DEFAULT_DB = "rowform_bench"
 DEFAULT_USER = "postgres"
@@ -128,15 +131,15 @@ class EphemeralPostgres:
                 await conn.execute(statement)
             for statement in seed_module.ddl_for(shape, "postgres"):
                 await conn.execute(statement)
-            if shape == "flat":
-                data = seed_module.flat_rows(rows)
-                await conn.copy_records_to_table("users", records=data)
-                total = len(data)
-            else:
-                authors, posts = seed_module.join_rows(rows)
-                await conn.copy_records_to_table("j_authors", records=authors)
-                await conn.copy_records_to_table("j_posts", records=posts)
-                total = len(authors) + len(posts)
+            total = 0
+            for table, data in seed_module.rows_for(shape, rows):
+                # COPY rather than executemany for the row counts this suite
+                # seeds, but through the dialect's bind processors first — an
+                # enum column needs its label, not the member, and nothing else
+                # would notice until the benchmark read it back.
+                records = seed_module.bound_rows(table, data, _DIALECT)
+                await conn.copy_records_to_table(table.name, records=records)
+                total += len(records)
             for table in seed_module.table_names(shape):
                 await conn.execute(f"ANALYZE {table}")
             return total

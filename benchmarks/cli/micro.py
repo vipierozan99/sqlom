@@ -15,6 +15,7 @@ from pathlib import Path
 import typer
 
 import benchmarks.micro.contenders  # noqa: F401 -- import for @contender registration side-effects
+from benchmarks.backends import postgres as postgres_backend
 from benchmarks.backends.sqlite import EphemeralSqlite
 from benchmarks.harness import affinity, equivalence, registry, result
 from benchmarks.harness import env as env_module
@@ -66,6 +67,12 @@ def run(
     record: bool = typer.Option(
         False, "--record", help="write a run.json under results/runs/ (PLAN.md §6)"
     ),
+    pg_dsn: str | None = typer.Option(
+        None,
+        "--pg-dsn",
+        help="run the postgres contenders against this server (seeded first); "
+        "start one with `bench db up`",
+    ),
 ) -> None:
     """Run every registered contender for `--shape`, gated by output
     equivalence (per backend group), and print per-iteration medians."""
@@ -75,7 +82,9 @@ def run(
     if any(mode not in ("on", "off") for mode in gc_modes):
         raise typer.BadParameter("--gc must be 'on', 'off', or 'both'")
     pin_cpus = [int(c) for c in pin.split(",")] if pin else []
-    asyncio.run(_run(shape, rows, limit, iterations, warmup, only, gc_modes, pin_cpus, record))
+    asyncio.run(
+        _run(shape, rows, limit, iterations, warmup, only, gc_modes, pin_cpus, record, pg_dsn)
+    )
 
 
 async def _mock_handle(shape: str, limit: int) -> list[tuple]:
@@ -123,6 +132,7 @@ async def _run(
     gc_modes: list[str],
     pin_cpus: list[int],
     record: bool,
+    pg_dsn: str | None = None,
 ) -> result.Run | None:
     specs = registry.select(shape=shape, only=only)
     if not specs:
@@ -148,6 +158,21 @@ async def _run(
                 handle = db.path
             elif backend == "mock":
                 handle = await _mock_handle(shape, limit)
+            elif backend == "postgres":
+                if not pg_dsn:
+                    typer.echo(
+                        f"skipping backend={backend!r}: pass --pg-dsn to run it "
+                        f"(start a server with `bench db up`)"
+                    )
+                    continue
+                # Seeded here rather than assumed: the postgres contenders read
+                # the same deterministic rows the sqlite ones do, and a server
+                # left over from another shape would otherwise be measured
+                # against whatever it happened to contain.
+                server = postgres_backend.attach(pg_dsn)
+                seeded = await server.seed(shape, rows)
+                typer.echo(f"seeded {seeded} rows into {shape} on postgres")
+                handle = pg_dsn
             else:
                 typer.echo(f"skipping backend={backend!r}: bench micro has no runner for it yet")
                 continue

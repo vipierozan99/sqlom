@@ -14,7 +14,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import rowform
 from benchmarks.harness import seed as seed_module
+
+_DIALECT = rowform.SqliteEngine.dialect
 
 
 @dataclass(slots=True)
@@ -49,24 +52,20 @@ class EphemeralSqlite:
         return instance
 
     def _seed(self, conn: sqlite3.Connection, shape: str, rows: int) -> None:
+        """DDL and inserts both come from the shape's own models.
+
+        The insert used to be a hand-written `INSERT INTO users VALUES (?,?,?,?)`
+        per shape, with a hand-written `int(active)` to turn a bool into what
+        sqlite stores. Compiling the statement instead means the bind processors
+        do that — which matters far more for `wide`, where a `Decimal`, a `UUID`
+        and a `datetime` cannot be bound to sqlite at all without them.
+        """
         for statement in seed_module.ddl_for(shape, "sqlite"):
             conn.execute(statement)
-        if shape == "flat":
-            data = seed_module.flat_rows(rows)
+        for table, data in seed_module.rows_for(shape, rows):
             conn.executemany(
-                "INSERT INTO users VALUES (?, ?, ?, ?)",
-                [(i, name, email, int(active)) for i, name, email, active in data],
-            )
-        else:
-            authors, posts = seed_module.join_rows(rows)
-            conn.executemany(
-                "INSERT INTO j_authors VALUES (?, ?, ?, ?)",
-                [(i, name, email, int(active)) for i, name, email, active in authors],
-            )
-            conn.executemany(
-                "INSERT INTO j_posts VALUES (?, ?, ?, ?, ?)",
-                [(i, author_id, title, score, int(published))
-                 for i, author_id, title, score, published in posts],
+                seed_module.insert_sql(table, _DIALECT),
+                seed_module.bound_rows(table, data, _DIALECT),
             )
 
     def close(self) -> None:
