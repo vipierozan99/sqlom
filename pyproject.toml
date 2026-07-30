@@ -93,3 +93,11 @@ task-tags = ["TODO", "FIXME", "XXX", "NOTE"]
 # random.Random seeds synthetic benchmark data, and subprocess/except-Exception calls
 # drive or clean up after local, hardcoded commands rather than user input.
 "benchmarks/**" = ["S102", "S110", "S311", "S404", "S603", "S607", "S608", "BLE001", "PLW1510"]
+# Naive datetimes are the point, not an oversight: sqlite stores DATETIME as a
+# string with no zone, and the type-fidelity tests assert exactly what comes back.
+# RUF012 fires on `metadata = MetaData()`, which is how a Base is declared.
+# The subprocess call runs `uv run basedpyright` on a hardcoded path.
+"tests/**" = ["DTZ001", "RUF012", "S404", "S603", "S607"]
+# Deliberate mistakes, each asserted by a `# pyright: ignore` the checker
+# verifies is necessary. The assignment *is* the assertion, so it is never read.
+"tests/typing/negative.py" = ["B015", "B018", "F841", "RUF059"]

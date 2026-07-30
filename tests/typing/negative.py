@@ -1,232 +1,128 @@
-# ruff: noqa: B015, B018, RUF059
-"""Mistakes that must be type errors. Checked by mypy and pyright; never run.
+"""Mistakes that must be type errors. Checked by basedpyright; never run.
 
-Every line below carries both an `# type: ignore[...]` for mypy and a
-`# pyright: ignore[...]` for pyright. That is what makes this a *test* rather than a
-comment: mypy runs with `warn_unused_ignores` and pyright with
-`reportUnnecessaryTypeIgnoreComment`, so if any of these stops being an error the
-now-unnecessary suppression fails the run.
+Every line below carries a `# pyright: ignore[...]`. That is what makes this a
+*test* rather than a comment: the checker runs with
+`reportUnnecessaryTypeIgnoreComment = "error"`, so if any of these stops being an
+error, the now-unnecessary suppression fails the run.
 
-A checker reporting nothing on the positive file proves the good cases work. Only
+A checker reporting nothing on `positive.py` proves the good cases work. Only
 this file proves the bad cases are caught.
 """
 
-from rowform import (
-    Column,
-    DatabaseEngine,
-    Delete,
-    Insert,
-    Query,
-    Update,
-    and_,
-    case,
-    count,
-    excluded,
-    exists,
-    model,
-    not_,
-    or_,
-    recursive_cte,
-)
+from __future__ import annotations
+
+import datetime as dt
+
+import sqlalchemy as sa
+from sqlalchemy.orm import Mapped
+
+import rowform
+from rowform import mapped_column
 
 
-@model
-class Author:
+class Base(rowform.Base):
+    metadata = sa.MetaData()
+
+
+class Author(Base):
     __tablename__ = "authors"
 
-    id: Column[int] = Column(int)
-    name: Column[str] = Column(str)
-    active: Column[bool] = Column(bool)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+    active: Mapped[bool]
 
 
-@model
-class Book:
+class Book(Base):
     __tablename__ = "books"
 
-    id: Column[int] = Column(int)
-    author_id: Column[int] = Column(int)
-    title: Column[str] = Column(str)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str]
 
 
-# --------------------------------------------------------------------------
-# Comparing a column to the wrong type
-# --------------------------------------------------------------------------
-
-# Ordering comparisons are caught: there is no fallback for `<` and `>` when the
-# operand type does not match.
-Author.id > "abc"  # type: ignore[operator]
-Author.id < "abc"  # type: ignore[operator]
-Author.name > 5  # type: ignore[operator]
-
-# `Author.name == 5` is NOT an error, and cannot be made one — see the note at the
-# bottom of this file. Comparing two columns of different types *is* caught, because
-# then neither side's __eq__ accepts the other and there is nothing to fall back to.
-Author.id == Book.title  # type: ignore[operator]
-
-# IN over the wrong element type.
-Author.id.in_(["a", "b"])  # type: ignore[list-item]
+engine = rowform.SqliteEngine("app.db")
 
 
-# --------------------------------------------------------------------------
-# A typo on a model class
-# --------------------------------------------------------------------------
-# `Column` sits directly on the class, no metaclass or __getattr__ fallback
-# involved anywhere in the model's construction, so a typo is an ordinary
-# missing-attribute error like on any other class.
+# --- construction ----------------------------------------------------------
+Author(id="one", name="ada", active=True)  # pyright: ignore[reportArgumentType]
+Author(id=1, name=2, active=True)  # pyright: ignore[reportArgumentType]
+Author(id=1, name="ada")  # pyright: ignore[reportCallIssue]
+Author(id=1, name="ada", active=True, nope=1)  # pyright: ignore[reportCallIssue]
 
-Author.nope  # type: ignore[attr-defined]
+author = Author(id=1, name="ada", active=True)
 
+# --- instance attributes ---------------------------------------------------
+author.id = "one"  # pyright: ignore[reportAttributeAccessIssue]
+author.missing  # pyright: ignore[reportAttributeAccessIssue]
 
-def instance_typo(author: Author) -> None:
-    author.nope  # type: ignore[attr-defined]
+reveal: int = author.name  # pyright: ignore[reportAssignmentType]
+also: str = author.id  # pyright: ignore[reportAssignmentType]
 
-
-def instance_field_is_not_an_expression(author: Author) -> None:
-    # An instance attribute is the value, so it has no query-builder methods.
-    author.name.like("a%")  # type: ignore[attr-defined]
-
-
-def instance_assignment_is_checked(author: Author) -> None:
-    author.id = "not an int"  # type: ignore[assignment]
+# --- class-level expressions ----------------------------------------------
+_ = Author.missing  # pyright: ignore[reportAttributeAccessIssue]
 
 
-# --------------------------------------------------------------------------
-# Query construction
-# --------------------------------------------------------------------------
+# --- result types are not interchangeable ----------------------------------
+async def reads() -> None:
+    # One selected model is a list of models, not a list of tuples.
+    rows: list[tuple[Author]] = await engine.fetch_all(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author)
+    )
 
-Query("authors")  # type: ignore[call-overload]
+    # ...and two selected models are tuples, not bare models.
+    pairs: list[Author] = await engine.fetch_all(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author, Book)
+    )
 
-# A subquery is a source, not a select entity.
-Query(Query(Author.id).subquery("s"))  # type: ignore[call-overload]
+    # The row type follows the statement, so the wrong model is caught.
+    books: list[Book] = await engine.fetch_all(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author)
+    )
 
+    # A scalar select is a list of that scalar, not of the model.
+    names: list[Author] = await engine.fetch_all(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author.name)
+    )
 
-# --------------------------------------------------------------------------
-# Predicate combinators take predicates, not columns or values
-# --------------------------------------------------------------------------
+    # fetch_one can be None.
+    one: Author = await engine.fetch_one(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author)
+    )
 
-or_(Author.id, Author.name)  # type: ignore[arg-type]
-and_(True, False)  # type: ignore[arg-type]
-not_(Author.id)  # type: ignore[arg-type]
-exists(Author.id == 1)  # type: ignore[arg-type]
-
-Query(Author).where("id > 5")  # type: ignore[arg-type]
-Query(Author).having(count())  # type: ignore[arg-type]
-
-
-# --------------------------------------------------------------------------
-# limit/offset take ints
-# --------------------------------------------------------------------------
-
-Query(Author).limit("10")  # type: ignore[arg-type]
-Query(Author).offset(1.5)  # type: ignore[arg-type]
-
-
-# --------------------------------------------------------------------------
-# The row type is not Any, so misusing it is caught
-# --------------------------------------------------------------------------
+    # A hoisted query is typed by what it was prepared from.
+    hoisted = engine.prepare(sa.select(Book))
+    wrong: list[Author] = await engine.fetch_all(  # pyright: ignore[reportAssignmentType]
+        hoisted
+    )
 
 
-async def row_type_is_enforced(engine: DatabaseEngine) -> None:
-    authors = await engine.fetch_all(Query(Author))
-    # A list of Author cannot be unpacked as a pair.
-    author, book = authors[0]  # type: ignore[misc]
-
-    pairs = await engine.fetch_all(Query(Author, Book).join(Book, Book.author_id == Author.id))
-    # And a tuple row has no model attributes.
-    pairs[0].name  # type: ignore[attr-defined]
+# --- declaration ------------------------------------------------------------
+# `frozen` is declared on the Base as well: a checker treats every model under a
+# Base as sharing its dataclass configuration, and refuses a frozen class
+# inheriting from a non-frozen one. Stdlib dataclasses say the same thing.
+class FrozenBase(rowform.Base, frozen=True):
+    metadata = sa.MetaData()
 
 
-# --------------------------------------------------------------------------
-# The new expression surface
-# --------------------------------------------------------------------------
+class Frozen(FrozenBase, frozen=True):
+    __tablename__ = "frozen"
 
-# Arithmetic keeps the column's type, so the result is still checked.
-Book.id * "two"  # type: ignore[operator]
-Book.id + "one"  # type: ignore[operator]
-(Book.id * 2) > "abc"  # type: ignore[operator]
-
-# case() takes (predicate, value) pairs, not a bare predicate.
-case(Book.id > 1)  # type: ignore[arg-type]
-
-# A window is built from a function, and over() lives on those rather than on a
-# plain column.
-Book.id.over()  # type: ignore[attr-defined]
+    id: Mapped[int] = mapped_column(primary_key=True)
 
 
-# --------------------------------------------------------------------------
-# Set operations
-# --------------------------------------------------------------------------
-
-Query(Author).union("SELECT 1")  # type: ignore[arg-type]
-Query(Author).union(Query(Author)).limit("5")  # type: ignore[arg-type]
+Frozen(id=1).id = 2  # pyright: ignore[reportAttributeAccessIssue]
 
 
-# --------------------------------------------------------------------------
-# DML
-# --------------------------------------------------------------------------
-
-Insert("authors")  # type: ignore[arg-type]
-Update(Author).set(name="z").where("id = 1")  # type: ignore[arg-type]
-Delete(Author).where("id = 1")  # type: ignore[arg-type]
-Insert(Author).values(name="a").returning("id")  # type: ignore[arg-type]
+class Timestamped(Base):
+    created: Mapped[dt.datetime]
 
 
-# --------------------------------------------------------------------------
-# What cannot be caught, and why
-# --------------------------------------------------------------------------
-# `Author.name == 5` is not a type error in either checker, and no annotation makes
-# it one. Python resolves `a == b` by trying `a.__eq__(b)` and then the reflected
-# `b.__eq__(a)`; when the declared `__eq__` rejects the operand, the checker falls
-# back to `object.__eq__`, which accepts anything and returns bool. Ordering
-# operators have no such fallback, which is why `>` and `<` above *are* caught.
-#
-# SQLAlchemy has the same hole for the same reason. The consequence is small — the
-# comparison still renders correct SQL and the database rejects or coerces it — but
-# it is a hole, so it is written down rather than left to be discovered.
-#
-# Uncomment either line and both checkers stay silent:
-#     Author.name == 5
-#     Author.id == "abc"
-#
-# `-Author.name` is also not caught. `__neg__` takes no operand, so there is no
-# argument to constrain by the column's type; expressing "only numeric columns"
-# would need per-type descriptor classes rather than one generic ColumnExpr.
-#     -Author.name
+class Review(Timestamped, kw_only=True):
+    __tablename__ = "reviews"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
 
 
-# --------------------------------------------------------------------------
-# CTEs
-# --------------------------------------------------------------------------
-
-Query(Author).cte(5)  # type: ignore[arg-type]
-Query(Author).with_(Query(Author))  # type: ignore[arg-type]
-Query(Author).with_("c")  # type: ignore[arg-type]
-recursive_cte("t", "SELECT 1", lambda cte: Query(Author))  # type: ignore[arg-type]
-
-
-# --------------------------------------------------------------------------
-# ON CONFLICT
-# --------------------------------------------------------------------------
-
-# set_ is required: on_conflict_do_update() without it is do_nothing() spelled wrong.
-Insert(Author).values(name="a").on_conflict_do_update(Author.id)  # type: ignore[call-arg]
-# A predicate, not a string.
-Insert(Author).values(name="a").on_conflict_do_update(Author.id, set_={"name": "x"}, where="active")  # type: ignore[arg-type]
-# An index element is a column or a name, not a model.
-Insert(Author).values(name="a").on_conflict_do_nothing(Author)  # type: ignore[arg-type]
-# constraint= is a name, not a column.
-Insert(Author).values(name="a").on_conflict_do_nothing(constraint=Author.id)  # type: ignore[arg-type]
-# excluded() takes a column, not a name.
-excluded("name")  # type: ignore[arg-type]
-# And it keeps the column's type, so a wrong-typed comparison is still caught.
-excluded(Author.id) > "abc"  # type: ignore[operator]
-
-
-# --------------------------------------------------------------------------
-# UPDATE ... FROM and DELETE ... USING
-# --------------------------------------------------------------------------
-
-Update(Author).set(name="z").from_("books")  # type: ignore[arg-type]
-Update(Author).set(name="z").from_(Author.id)  # type: ignore[arg-type]
-Delete(Author).using("books")  # type: ignore[arg-type]
-Delete(Author).using(Author.id)  # type: ignore[arg-type]
+# kw_only means positional construction is refused, and the inherited field is
+# still required.
+Review(dt.datetime(2024, 1, 1), 1)  # pyright: ignore[reportCallIssue]
+Review(id=1)  # pyright: ignore[reportCallIssue]

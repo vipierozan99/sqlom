@@ -40,6 +40,16 @@ from .engine import Engine
 from .transaction import Transaction
 
 
+class _DriverConnection:
+    """What the dialect's codec setup expects to be handed: something with a
+    `._connection`. rowform holds the driver connection directly."""
+
+    __slots__ = ("_connection",)
+
+    def __init__(self, connection: Any):
+        self._connection = connection
+
+
 class AsyncpgEngine(Engine):
     """See module docstring."""
 
@@ -61,7 +71,28 @@ class AsyncpgEngine(Engine):
         kwargs = dict(self._pool_kwargs)
         if self.conditional_reset:
             kwargs["reset"] = self._reset_if_dirty
+        kwargs.setdefault("init", self._configure_connection)
         return await asyncpg.create_pool(self.dsn, **kwargs)
+
+    async def _configure_connection(self, conn: Any) -> None:
+        """Install the type codecs the dialect assumes are there.
+
+        asyncpg does not decode `json`/`jsonb` on its own, so SQLAlchemy's
+        dialect registers codecs in its `on_connect` and its `JSON.result_processor`
+        then returns None — "the driver already did it". Running on a raw pool,
+        nothing had done it, and JSON columns came back as text while the
+        processor declined to convert them.
+
+        These are the dialect's own coroutines rather than a reimplementation:
+        if SQLAlchemy changes what its processors expect, this changes with them.
+        They read the driver connection off `._connection`, which is the one
+        attribute of its connection wrapper they touch.
+        """
+        shim = _DriverConnection(conn)
+        await self.dialect.setup_asyncpg_json_codec(shim)
+        await self.dialect.setup_asyncpg_jsonb_codec(shim)
+        if self.dialect._native_inet_types is False:
+            await self.dialect._disable_asyncpg_inet_codecs(shim)
 
     async def _close_pool(self, pool: Any) -> None:
         await pool.close()

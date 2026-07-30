@@ -37,10 +37,17 @@ class Plan:
     def __init__(self, entities: list[Entity], columns: list[Any]):
         self.entities = entities
         self.columns = columns
-        # A lone whole-model select yields the models themselves, not 1-tuples of
-        # them. Everything else — including a single scalar column — stays a
-        # tuple, matching what SQLAlchemy returns for the same query.
-        self.wrap = not (len(entities) == 1 and entities[0][0] == "model")
+        # One selected entity yields that entity; two or more yield a tuple.
+        #
+        # This is the one place the result shape deliberately departs from
+        # SQLAlchemy, which returns `Row` objects throughout and makes you call
+        # `.scalars()` to unwrap. Departing for models but not for scalars was
+        # the obvious middle, and it is worse on both counts: it needs two rules
+        # instead of one, and it is not expressible in the type system —
+        # `select(User)` and `select(User.name)` are `Select[Tuple[User]]` and
+        # `Select[Tuple[str]]`, distinguishable only by arity, so `fetch_all`
+        # can be typed exactly if and only if arity alone decides the shape.
+        self.wrap = len(entities) != 1
 
     def __repr__(self) -> str:
         parts = [
@@ -116,6 +123,10 @@ def _nullable_froms(stmt: Any) -> set[int]:
     with every field set to None.
     """
     marked: set[int] = set()
+    # A write with RETURNING has one table and no joins, so there is nothing to
+    # walk — and no `get_final_froms` to walk it with.
+    if not hasattr(stmt, "get_final_froms"):
+        return marked
 
     def leaves(clause: Any, into: set[int]) -> None:
         if isinstance(clause, Join):

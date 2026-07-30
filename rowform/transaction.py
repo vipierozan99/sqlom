@@ -95,8 +95,8 @@ class Transaction:
 
     async def fetch_all(self, statement: Any, **params: Any) -> Any:
         """Hydrated rows, read inside this transaction."""
-        query = self._engine._require_rows(statement)
-        rows, hydrate = await self._engine._run(query, params, self._pinned)
+        query, extracted = self._engine._require_rows(statement)
+        rows, hydrate = await self._engine._run(query, params, self._pinned, extracted)
         return hydrate(rows)
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
@@ -114,18 +114,18 @@ class Transaction:
         too, for the DDL and session state a statement object cannot express."""
         if isinstance(statement, str):
             return await self._engine._execute(self.connection, statement, None)
-        query = self._engine._query_for(statement)
+        query, extracted = self._engine._query_for(statement)
         if query.returns_rows:
             raise ValueError(
                 "this statement produces rows — use fetch_all() to get them, "
                 "rather than execute(), which would discard them"
             )
-        sql, bound = query.bind(params)
+        sql, bound = query.bind(params, extracted)
         return await self._engine._execute(self.connection, sql, bound)
 
     async def execute_many(self, statement: Any, params: Sequence[dict[str, Any]]) -> Any:
-        query = self._engine._query_for(statement)
-        shaped = [query.bind(each) for each in params]
+        query, extracted = self._engine._query_for(statement)
+        shaped = [query.bind(each, extracted) for each in params]
         if not shaped:
             return None
         return await self._engine._execute_many(

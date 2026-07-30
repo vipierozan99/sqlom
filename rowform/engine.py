@@ -23,11 +23,18 @@ from contextlib import asynccontextmanager
 from typing import Any, TypeVar, overload
 
 import sqlalchemy as sa
+from sqlalchemy import Select
 
 from .query import CoreQuery
 from .transaction import _ACTIVE, Transaction
 
+# One type variable per selected entity. The overloads below are written out per
+# arity rather than with a variadic, because that is exactly the information a
+# checker has: `Select` is parameterised by a tuple of its selected types.
 R = TypeVar("R")
+R2 = TypeVar("R2")
+R3 = TypeVar("R3")
+R4 = TypeVar("R4")
 
 
 class Engine(ABC):
@@ -79,7 +86,24 @@ class Engine(ABC):
 
     # --- statements ---------------------------------------------------------
 
-    def prepare(self, statement: Any) -> CoreQuery[Any]:
+    @overload
+    def prepare(self, statement: Select[tuple[R]]) -> CoreQuery[R]: ...
+
+    @overload
+    def prepare(self, statement: Select[tuple[R, R2]]) -> CoreQuery[tuple[R, R2]]: ...
+
+    @overload
+    def prepare(self, statement: Select[tuple[R, R2, R3]]) -> CoreQuery[tuple[R, R2, R3]]: ...
+
+    @overload
+    def prepare(
+        self, statement: Select[tuple[R, R2, R3, R4]]
+    ) -> CoreQuery[tuple[R, R2, R3, R4]]: ...
+
+    @overload
+    def prepare(self, statement: Any) -> CoreQuery[Any]: ...
+
+    def prepare(self, statement: Any) -> Any:
         """Compile a statement for this engine's dialect, once.
 
         Hoist this out of the request when you can. `fetch_all` will do it for
@@ -88,19 +112,26 @@ class Engine(ABC):
         """
         return CoreQuery(statement, self.dialect)
 
-    def _query_for(self, statement: Any) -> CoreQuery[Any]:
+    def _query_for(self, statement: Any) -> tuple[CoreQuery[Any], Any]:
+        """The compiled query, plus this statement's own literal values.
+
+        SQLAlchemy's structural cache key deliberately ignores literals, so two
+        statements built the same way from different values share one entry —
+        that is what makes compiling once worthwhile. The consequence is that the
+        cached compiled object holds the *first* statement's literals, so the
+        caller's have to travel separately as `CacheKey.bindparams`. Returning
+        the two together is what stops that being forgettable.
+
+        `.key` rather than the `CacheKey` itself, whose `__hash__` deliberately
+        returns None — only the structural tuple inside it is hashable.
+        """
         if isinstance(statement, CoreQuery):
-            return statement
-        # SQLAlchemy's own structural cache key: two statements built the same
-        # way from different literal values share one entry, which is the whole
-        # point of compiling once. `.key` rather than the `CacheKey` itself,
-        # whose `__hash__` deliberately returns None — only the structural tuple
-        # inside it is hashable.
-        key = statement._generate_cache_key().key
-        query = self._queries.get(key)
+            return statement, None
+        cache_key = statement._generate_cache_key()
+        query = self._queries.get(cache_key.key)
         if query is None:
-            query = self._queries[key] = self.prepare(statement)
-        return query
+            query = self._queries[cache_key.key] = self.prepare(statement)
+        return query, cache_key.bindparams
 
     # --- reads --------------------------------------------------------------
 
@@ -108,20 +139,54 @@ class Engine(ABC):
     async def fetch_all(self, statement: CoreQuery[R], **params: Any) -> list[R]: ...
 
     @overload
+    async def fetch_all(self, statement: Select[tuple[R]], **params: Any) -> list[R]: ...
+
+    @overload
+    async def fetch_all(
+        self, statement: Select[tuple[R, R2]], **params: Any
+    ) -> list[tuple[R, R2]]: ...
+
+    @overload
+    async def fetch_all(
+        self, statement: Select[tuple[R, R2, R3]], **params: Any
+    ) -> list[tuple[R, R2, R3]]: ...
+
+    @overload
+    async def fetch_all(
+        self, statement: Select[tuple[R, R2, R3, R4]], **params: Any
+    ) -> list[tuple[R, R2, R3, R4]]: ...
+
+    @overload
     async def fetch_all(self, statement: Any, **params: Any) -> list[Any]: ...
 
     async def fetch_all(self, statement: Any, **params: Any) -> Any:
         """Hydrated rows. `**params` supplies the statement's `bindparam()` values.
 
-        What each row *is* comes from the statement, not the model:
-        `select(User)` yields `User`s, `select(User, Post)` yields
-        `(User, Post)` tuples, `select(User.name, User.id)` yields `(str, int)`
-        — the same shapes SQLAlchemy returns for the same queries (`planner.py`).
+        What each row *is* comes from the statement, not the model. One selected
+        entity yields that entity — `select(User)` gives `User`s and
+        `select(User.name)` gives `str`s; two or more yield a tuple, so
+        `select(User, Post)` gives `(User, Post)` and `select(User.name, User.id)`
+        gives `(str, int)` (`planner.py`).
+
+        The overloads above mirror that rule exactly, which is why it is stated in
+        terms of arity: a checker can tell `Select[Tuple[User]]` from
+        `Select[Tuple[User, Post]]`, but not `Select[Tuple[User]]` from
+        `Select[Tuple[str]]`. Past four selected entities the row degrades to
+        `list[Any]`.
         """
         self._reject_if_in_transaction("fetch_all")
-        query = self._require_rows(statement)
-        rows, hydrate = await self._run(query, params, self._acquire)
+        query, extracted = self._require_rows(statement)
+        rows, hydrate = await self._run(query, params, self._acquire, extracted)
         return hydrate(rows)
+
+    @overload
+    async def fetch_one(self, statement: CoreQuery[R], **params: Any) -> R | None: ...
+
+    @overload
+    async def fetch_one(self, statement: Select[tuple[R]], **params: Any) -> R | None: ...
+
+    @overload
+    async def fetch_one(self, statement: Any, **params: Any) -> Any: ...
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
         """The first row, or None."""
@@ -131,8 +196,8 @@ class Engine(ABC):
     async def fetch_value(self, statement: Any, **params: Any) -> Any:
         """The first column of the first row, or None.
 
-        For `select(func.count()).select_from(User)` and friends, where planning
-        a whole entity would be ceremony around one integer.
+        Distinct from `fetch_one` only for a multi-entity statement, since a
+        single selected entity already arrives unwrapped.
         """
         row = await self.fetch_one(statement, **params)
         if row is None:
@@ -148,20 +213,20 @@ class Engine(ABC):
         A statement *with* RETURNING raises here rather than silently discarding
         its rows; use `fetch_all()` for those.
         """
-        query = self._query_for(statement)
+        query, extracted = self._query_for(statement)
         if query.returns_rows:
             raise ValueError(
                 "this statement produces rows — use fetch_all() to get them, "
                 "rather than execute(), which would discard them"
             )
-        sql, bound = query.bind(params)
+        sql, bound = query.bind(params, extracted)
         async with self._acquire() as conn:
             return await self._execute(conn, sql, bound)
 
     async def execute_many(self, statement: Any, params: Sequence[dict[str, Any]]) -> Any:
         """One compiled statement, many parameter sets, one driver round trip."""
-        query = self._query_for(statement)
-        shaped = [query.bind(each) for each in params]
+        query, extracted = self._query_for(statement)
+        shaped = [query.bind(each, extracted) for each in params]
         if not shaped:
             return None
         # One compiled statement, so every row shares its SQL; an expanding
@@ -172,24 +237,55 @@ class Engine(ABC):
 
     # --- schema -------------------------------------------------------------
 
-    async def create_all(self, metadata: sa.MetaData, *, checkfirst: bool = True) -> None:
-        """`CREATE TABLE` for every table in `metadata`, in dependency order.
+    async def create_all(self, metadata: sa.MetaData) -> None:
+        """Create every table in `metadata`, in dependency order.
 
         The whole reason for this design: the model declaration *is* the table
-        declaration, so tests and fixtures stop hand-writing DDL strings. For
-        anything versioned, point Alembic at the same `metadata` instead.
+        declaration, so tests and fixtures stop hand-writing DDL strings.
+
+        This is bootstrap, not schema management — it assumes nothing exists yet
+        and has no `checkfirst`, because answering "does this exist?" needs a
+        catalogue query per dialect. For an existing database, point Alembic at
+        the same `metadata`; that is the whole point of building a real
+        `MetaData` in the first place.
         """
-        for table in metadata.sorted_tables:
-            await self._execute_ddl(sa.schema.CreateTable(table, if_not_exists=checkfirst))
-            for index in table.indexes:
-                await self._execute_ddl(sa.schema.CreateIndex(index, if_not_exists=checkfirst))
+        for statement in self._ddl(metadata, drop=False):
+            await self._execute_ddl(statement)
 
-    async def drop_all(self, metadata: sa.MetaData, *, checkfirst: bool = True) -> None:
-        for table in reversed(metadata.sorted_tables):
-            await self._execute_ddl(sa.schema.DropTable(table, if_exists=checkfirst))
+    async def drop_all(self, metadata: sa.MetaData, *, ignore_missing: bool = True) -> None:
+        """Drop every table in `metadata`, dependants first.
 
-    async def _execute_ddl(self, element: Any) -> None:
-        statement = str(element.compile(dialect=self.dialect))
+        `ignore_missing` skips over anything that is not there, so this is usable
+        as a test reset without knowing what state the database was left in.
+        """
+        for statement in self._ddl(metadata, drop=True):
+            try:
+                await self._execute_ddl(statement)
+            except Exception:
+                if not ignore_missing:
+                    raise
+
+    def _ddl(self, metadata: sa.MetaData, *, drop: bool) -> list[str]:
+        """The exact DDL SQLAlchemy itself would emit, without a connection.
+
+        `create_mock_engine` runs the real `SchemaGenerator`, so this gets
+        dependency ordering, indexes, and the `CREATE TYPE` that a postgres enum
+        column needs before its table — all things a hand-rolled loop over
+        `sorted_tables` silently omits.
+        """
+        statements: list[str] = []
+
+        def collect(element: Any, *_: Any, **__: Any) -> None:
+            statements.append(str(element.compile(dialect=self.dialect)).strip())
+
+        mock = sa.create_mock_engine(f"{self.dialect.name}+{self.dialect.driver}://", collect)
+        if drop:
+            metadata.drop_all(mock, checkfirst=False)
+        else:
+            metadata.create_all(mock, checkfirst=False)
+        return statements
+
+    async def _execute_ddl(self, statement: str) -> None:
         async with self._acquire() as conn:
             await self._execute(conn, statement, None)
 
@@ -228,17 +324,19 @@ class Engine(ABC):
 
     # --- shared plumbing ----------------------------------------------------
 
-    def _require_rows(self, statement: Any) -> CoreQuery[Any]:
-        query = self._query_for(statement)
+    def _require_rows(self, statement: Any) -> tuple[CoreQuery[Any], Any]:
+        query, extracted = self._query_for(statement)
         if not query.returns_rows:
             raise ValueError(
                 "this statement produces no rows; hydrating it would return [] and "
                 "look like 'nothing matched'. Use execute() for it, or add "
                 "returning(...)."
             )
-        return query
+        return query, extracted
 
-    async def _run(self, query: CoreQuery[Any], params: dict[str, Any], acquire: Any) -> Any:
+    async def _run(
+        self, query: CoreQuery[Any], params: dict[str, Any], acquire: Any, extracted: Any = None
+    ) -> Any:
         """Execute and return `(rows, hydrator)`.
 
         The driver is asked to describe its result only while the hydrator is
@@ -246,7 +344,7 @@ class Engine(ABC):
         per-column `result_processor` needs the DBAPI type codes and postgres
         `Numeric` raises without them.
         """
-        sql, bound = query.bind(params)
+        sql, bound = query.bind(params, extracted)
         hydrate = query._hydrate
         async with acquire() as conn:
             rows, description = await self._fetch(conn, sql, bound, hydrate is None)

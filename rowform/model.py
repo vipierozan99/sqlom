@@ -187,6 +187,20 @@ class ModelMeta(type):
         specs = _collect_specs(probe, bases, ns)
         fields = _build_fields(probe, specs)
 
+        abstract = ns.get("__abstract__", False) or "__tablename__" not in ns
+        if not fields:
+            if not abstract:
+                raise TypeError(
+                    f"{name} declares __tablename__ but no Mapped[] fields, so it "
+                    f"would build a table with no columns"
+                )
+            # A user's own `Base`: carries `metadata` and nothing else. Left as a
+            # plain class on purpose — making it a field-less dataclass would
+            # make every model inherit dataclass-ness from it, and stdlib then
+            # refuses `class User(Base, frozen=True)` with "cannot inherit frozen
+            # dataclass from a non-frozen one".
+            return probe
+
         namespace: dict[str, Any] = {
             key: value
             for key, value in ns.items()
@@ -217,7 +231,6 @@ class ModelMeta(type):
                 f"defaults too."
             ) from err
 
-        abstract = ns.get("__abstract__", False) or "__tablename__" not in ns
         columns = {n: f.column for n, f in fields.items()}
         if not abstract:
             table = sa.Table(
@@ -228,8 +241,6 @@ class ModelMeta(type):
             )
             table.info[MODEL_KEY] = built
             built.__table__ = table
-        elif not columns:
-            return built
 
         # Enables the metaclass interception below, so `User.id` is the Column.
         # Set last, and only on a class that is finished: while it is absent,
@@ -239,21 +250,32 @@ class ModelMeta(type):
         built.__column_order__ = tuple(columns)
         return built
 
-    def __getattribute__(cls, key: str) -> Any:
-        """`User.id` -> `sa.Column`, `user.id` -> the value.
+    # Runtime only. A `__getattribute__` returning `Any` would make *every*
+    # class-level attribute valid to a type checker, so `User.typo` would stop
+    # being an error — and the declared `Mapped[]` fields already resolve
+    # correctly without it, through `Mapped.__get__`'s overloads.
+    if not typing.TYPE_CHECKING:
 
-        Interception has to live on the metaclass because the attribute is being
-        read off the *class*. Instance reads never come through here, so a
-        hydrated `user.id` is an ordinary attribute load with nothing in the way.
-        Gated on `__columns__`, which exists only once `__new__` has finished.
-        """
-        try:
-            columns = type.__getattribute__(cls, "__columns__")
-        except AttributeError:
+        def __getattribute__(cls, key: str) -> Any:
+            """`User.id` -> `sa.Column`, `user.id` -> the value.
+
+            Interception has to live on the metaclass because the attribute is
+            being read off the *class*. Instance reads never come through here,
+            so a hydrated `user.id` is an ordinary attribute load with nothing
+            in the way.
+
+            Gated on this class's **own** `__columns__`, which exists only once
+            `__new__` has finished. Own rather than inherited is load-bearing:
+            while a subclass is still being built, an inherited `__columns__`
+            would be visible, so `dataclasses`' `getattr(cls, field_name)`
+            default probe would see the *base's* `Column` and make it every
+            inherited field's default value (docs/FINDINGS.md, "The `@model`
+            metaclass" — the same trap, one level up).
+            """
+            columns = type.__getattribute__(cls, "__dict__").get("__columns__")
+            if columns is not None and key in columns:
+                return columns[key]
             return type.__getattribute__(cls, key)
-        if key in columns:
-            return columns[key]
-        return type.__getattribute__(cls, key)
 
     def __clause_element__(cls) -> Any:
         """The hook that makes `sa.select(User)`, `.join(User)` and
@@ -435,11 +457,14 @@ class Base(metaclass=ModelMeta):
 
     if typing.TYPE_CHECKING:
         # Present on every concrete model; declared here so callers and the
-        # planner can read them without a per-class ignore.
-        __table__: sa.Table
-        __tablename__: str
-        __columns__: dict[str, sa.Column[Any]]
-        __column_order__: tuple[str, ...]
+        # planner can read them without a per-class ignore. ClassVar is
+        # load-bearing, not decoration: `dataclass_transform` turns a bare
+        # annotation into a field, so these would become required constructor
+        # parameters on every model.
+        __table__: ClassVar[sa.Table]
+        __tablename__: ClassVar[str]
+        __columns__: ClassVar[dict[str, sa.Column[Any]]]
+        __column_order__: ClassVar[tuple[str, ...]]
 
 
 def model_for(from_clause: Any) -> type[Any] | None:

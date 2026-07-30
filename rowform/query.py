@@ -29,7 +29,16 @@ class CoreQuery(Generic[R]):
     __slots__ = ("_compiled", "_expanding", "_hydrate", "_keys", "_plan", "_positional", "sql")
 
     def __init__(self, statement: Any, dialect: Any):
-        compiled = self._compiled = statement.compile(dialect=dialect)
+        # Compiling *with* the cache key is what later lets `bind()` accept
+        # another statement's literals: it records which bind parameters were
+        # abstracted away by the key, so they can be substituted per call.
+        # Without it SQLAlchemy refuses `extracted_parameters` outright.
+        cache_key = statement._generate_cache_key()
+        compiled = self._compiled = (
+            statement.compile(dialect=dialect, cache_key=cache_key)
+            if cache_key is not None
+            else statement.compile(dialect=dialect)
+        )
         # For an expanding statement this is a template with a POSTCOMPILE
         # placeholder in it, not something to execute; `bind()` returns the real
         # string. Kept because it is still the right cache identity and the right
@@ -53,10 +62,21 @@ class CoreQuery(Generic[R]):
         RETURNING."""
         return self._plan
 
-    def bind(self, params: dict[str, Any] | None = None) -> tuple[str, Any]:
+    def bind(
+        self, params: dict[str, Any] | None = None, extracted: Any = None
+    ) -> tuple[str, Any]:
         """Keyword arguments -> `(sql, parameters)` in the driver's own shape.
 
-        Three things happen here, and skipping any of them produces a statement
+        `extracted` carries the *calling* statement's literal values, and is not
+        optional when this query came out of a cache. Two statements that differ
+        only in their literals share one structural cache key — that is the point
+        of compiling once — so the compiled object holds whichever literals the
+        first one happened to have. `insert(...).values(id=51)` executed against a
+        query compiled from `values(id=50)` would silently insert 50 again.
+        SQLAlchemy's own answer is `CacheKey.bindparams`, which is what the engine
+        passes here.
+
+        Three more things happen, and skipping any of them produces a statement
         that runs and is wrong:
 
         * **Bind processors.** Values are encoded by the same
@@ -78,16 +98,18 @@ class CoreQuery(Generic[R]):
         for a bare `.limit()`, supplying an OFFSET of 0 nobody asked for.
         """
         compiled = self._compiled
+        values = compiled.construct_params(
+            params or None, extracted_parameters=extracted, escape_names=False
+        )
 
         if self._expanding:
-            state = compiled.construct_expanded_state(params or None, escape_names=False)
+            state = compiled._process_parameters_for_postcompile(values)
             return state.statement, self._shape(
                 state.parameters,
                 {**compiled._bind_processors, **state.processors},
                 tuple(state.positiontup or ()),
             )
 
-        values = compiled.construct_params(params or None, escape_names=False)
         return self.sql, self._shape(values, compiled._bind_processors, self._keys)
 
     def _shape(self, values: dict[str, Any], processors: Any, keys: tuple[str, ...]) -> Any:
