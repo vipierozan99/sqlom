@@ -1,11 +1,14 @@
-"""`Column`-typed models: a metaclass-backed, real stdlib `@dataclass(slots=True)`.
+"""`Column`-typed models: a metaclass-backed stdlib `@dataclass`, non-slotted by default.
 
     @model
     class User:
         id: Column[int] = Column(int)
 
     User.id  -> ColumnExpr[int]   (class access, via ColumnMeta)
-    user.id  -> 1                  (instance access, plain dataclass slot)
+    user.id  -> 1                  (instance access, plain dataclass attribute)
+
+Pass `@model(slots=True)` for slotted storage (smaller instances, at the cost
+of a much slower orjson serialization fallback -- see docs/FINDINGS.md#the-orjson-dataclass-trap).
 
 See docs/FINDINGS.md ("The `@model` metaclass") for the design rationale --
 why a metaclass, the dataclass default-probe sequencing trap, and the
@@ -21,13 +24,6 @@ from typing import Any, TypeVar, dataclass_transform, overload
 from .column import Column, ColumnExpr
 
 T = TypeVar("T")
-
-try:  # orjson is optional at import time; only needed to serialize.
-    import orjson
-
-    DATACLASS_DUMP_OPTION = orjson.OPT_PASSTHROUGH_DATACLASS
-except ImportError:  # pragma: no cover
-    DATACLASS_DUMP_OPTION = 2048
 
 
 class ColumnMeta(type):
@@ -52,10 +48,12 @@ class ColumnMeta(type):
 @overload
 def model(cls: type[T], /) -> type[T]: ...
 @overload
-def model(*, tablename: str | None = ...) -> Callable[[type[T]], type[T]]: ...
+def model(
+    *, tablename: str | None = ..., slots: bool = ...
+) -> Callable[[type[T]], type[T]]: ...
 @dataclass_transform(field_specifiers=(Column,))
-def model(cls=None, *, tablename=None):
-    """Class decorator: slotted dataclass storage + class-scope `Column`s via metaclass."""
+def model(cls=None, *, tablename=None, slots=False):
+    """Class decorator: dataclass storage (non-slotted by default) + class-scope `Column`s via metaclass."""
 
     def wrap(cls):
         columns: dict[str, Column[Any]] = {
@@ -68,8 +66,8 @@ def model(cls=None, *, tablename=None):
         # methods, __tablename__, ...) except the Columns themselves -- those
         # must be absent so @dataclass's default probe sees MISSING for each
         # field name instead of a Column instance (or, once enabled, a
-        # ColumnExpr) -- and except __dict__/__weakref__, which slots=True
-        # replaces.
+        # ColumnExpr) -- and except __dict__/__weakref__, which `slots=True`
+        # replaces (harmless to exclude when slots=False too).
         namespace: dict[str, Any] = {
             key: value
             for key, value in vars(cls).items()
@@ -84,16 +82,17 @@ def model(cls=None, *, tablename=None):
         # replaced.
         base: Any = ColumnMeta(cls.__name__, cls.__bases__, namespace)
 
-        # dataclass(slots=True) rebuilds via base.__class__(...) -> preserves
-        # ColumnMeta and creates the real, public-named slot descriptors. With
-        # interception off, its getattr(cls, field_name) default probe sees
-        # MISSING, so every field ends up required (matching the source,
-        # which never assigns a real default -- `Column(int)` is a marker,
-        # not a default value).
-        built = dataclasses.dataclass(slots=True)(base)
+        # dataclass(slots=...) rebuilds via base.__class__(...) -> preserves
+        # ColumnMeta and creates the real, public-named fields (slot
+        # descriptors if slots=True). With interception off, its
+        # getattr(cls, field_name) default probe sees MISSING, so every field
+        # ends up required (matching the source, which never assigns a real
+        # default -- `Column(int)` is a marker, not a default value).
+        built = dataclasses.dataclass(slots=slots)(base)
 
-        # Enable interception + attach metadata (class attrs are allowed
-        # despite __slots__; only *instance* attrs are restricted).
+        # Enable interception + attach metadata (class attrs are allowed even
+        # with slots=True; only *instance* attrs are restricted, and only
+        # then).
         built.__column_exprs__ = {
             name: ColumnExpr(built, name, col.py_type) for name, col in columns.items()
         }
@@ -101,13 +100,6 @@ def model(cls=None, *, tablename=None):
         built.__tablename__ = (
             tablename or getattr(cls, "__tablename__", None) or cls.__name__.lower()
         )
-        # json_default() (the generic hook for heterogeneous payloads) dispatches
-        # on this per model_cls; compiled once here rather than lazily on first
-        # use, since there's no metaclass __getattr__ to hook that the way
-        # ModelMeta used to.
-        from .compile import compile_json_default
-
-        built.__json_default__ = compile_json_default(built)
 
         return built
 

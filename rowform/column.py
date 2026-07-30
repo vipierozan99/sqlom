@@ -112,9 +112,15 @@ def hydrate(model_cls: type[M], row: Sequence[Any]) -> M:
 
 
 def as_dict(obj: Any) -> dict[str, Any]:
-    """orjson `default=` hook for heterogeneous payloads mixing several model
-    types. A model-specific hook (see `compile_json_default`) is faster; this
-    is the generic fallback `json_default` uses."""
+    """Generic orjson `default=` hook for rowform model instances.
+
+    Non-slotted models (the `@model` default) serialize correctly with plain
+    `orjson.dumps(obj)` -- no hook needed, orjson reads `__dict__` natively.
+    This is only useful as an explicit `default=` hook: for `@model(slots=True)`
+    instances, where orjson's native dataclass path is much slower (see
+    docs/FINDINGS.md#the-orjson-dataclass-trap), or to dump a non-dataclass
+    wrapper around model instances.
+    """
     cls = type(obj)
     if hasattr(cls, "__columns__"):
         return {name: getattr(obj, name) for name in cls.__columns__}

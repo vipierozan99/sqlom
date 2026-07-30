@@ -346,31 +346,27 @@ matter for a JSON endpoint: 25 ns/object over 1,000 rows is 0.025 ms against a
 flipping between runs. It is kept because it is free and it matters more as rows
 grow or when objects are built without being serialized.
 
-### Code-generate the orjson hook
-
-`compile_json_default` emits a straight-line dict literal with the keys baked in,
-rather than a comprehension over the column map. Compiled once in `model()` and
-attached to the class as `__json_default__`.
-
 ### The `@model` metaclass
 
-Stdlib `@dataclass(slots=True)` *can* carry a class-level query descriptor. The
-`__slots__`-vs-class-variable collision people expect only bites because both
-names would live on *the class*; attribute lookup on a class consults
-`type(cls).__mro__` first, and **a data descriptor on the metaclass wins over
-the class's own entry**. `@dataclass(slots=True)` rebuilds the class via
-`cls.__class__(...)`, preserving a custom metaclass, so the two compose:
+Stdlib `@dataclass(slots=True)` *can* carry a class-level query descriptor -- the
+mechanism below is what let `@model` support `slots=True` as an opt-in even
+though the default is `slots=False`. The `__slots__`-vs-class-variable collision
+people expect only bites because both names would live on *the class*;
+attribute lookup on a class consults `type(cls).__mro__` first, and **a data
+descriptor on the metaclass wins over the class's own entry**. `@dataclass(...)`
+rebuilds the class via `cls.__class__(...)`, preserving a custom metaclass, so
+the two compose regardless of `slots`:
 
 ```python
 User.id  # -> ColumnExpr  (metaclass data descriptor wins)
-user.id  # -> 1           (plain slot read)
+user.id  # -> 1           (plain attribute read)
 ```
 
 `model()` goes one step further than installing a descriptor: the `Column(int)`
 class-body value is read once for its `py_type` and then discarded rather than
 kept as a real class attribute. So there's no shadow-named storage field (no
 `_rf_id`) and nothing to collide with `__slots__` in the first place — `id` is a
-real, public-named slot, and `Column.__get__`/`__set__` never run. That imposes
+real, public-named field, and `Column.__get__`/`__set__` never run. That imposes
 one build-order constraint: `@dataclass` discovers field defaults via
 `getattr(cls, field_name, MISSING)`, so the metaclass's `ColumnExpr`-returning
 interception can only switch on *after* `dataclass()` runs — turn it on before,
@@ -407,15 +403,44 @@ and clearing an `AttributeError` on every instance.
 | `@dataclass(slots=True)` + `OPT_PASSTHROUGH_DATACLASS` + compiled hook | 182 ns | 377 ns | 2.67x |
 | `@dataclass(slots=True)` (native fallback) | 421 ns | 672 ns | **6.16x** |
 
-**If your models are slotted dataclasses, pass
-`rowform.DATACLASS_DUMP_OPTION`** (= `orjson.OPT_PASSTHROUGH_DATACLASS`) to route them
-back to the compiled hook. That one flag is worth ~2.3x on the serialization step
-and ~30% end-to-end.
+**`@model` defaults to `slots=False`** specifically to land on the fast
+native-dict row above with zero orjson options or hooks required — see
+["Non-slotted by default"](#non-slotted-by-default) below. `@model(slots=True)`
+remains available for smaller instances, but rowform ships no hook to route
+serialization back to the fast path for it, so a slotted model pays the 6.16x
+row above; only worth it if the memory savings matter more than serialization
+cost for your workload.
 
 Sources: [orjson README](https://github.com/ijl/orjson#dataclass) ·
 [`dataclass.rs`](https://github.com/ijl/orjson/blob/master/src/serialize/per_type/dataclass.rs) ·
 [CHANGELOG](https://github.com/ijl/orjson/blob/master/CHANGELOG.md) ·
 [issue #83](https://github.com/ijl/orjson/issues/83)
+
+### Non-slotted by default
+
+`@model` builds a plain, non-slotted `@dataclass` unless you pass
+`slots=True`. This used to be the rejected option (see history below); the
+calculus changed once the compiled `compile_json_default` hook was dropped for
+being unneeded complexity — without it, a slotted default's only path to fast
+serialization requires a per-model compiled hook the library no longer ships,
+so it would pay the 6.16x row above by default. Landing on orjson's native
+fast path with zero hooks was worth more than the memory savings.
+
+**Caveat:** orjson's fast path dumps whatever is in the instance's `__dict__`
+minus underscore-prefixed keys. A stray attribute set post-construction
+(`user.session_token = "..."`) silently
+[leaks into the JSON](https://github.com/ijl/orjson/issues/83) — the slotted
+path can't do this, since it filters through `__dataclass_fields__`. If your
+code sets extra attributes on model instances after construction, either keep
+those private with a leading underscore, or opt into `@model(slots=True)`.
+
+**Previously rejected, for the record:** the earlier measurement gave
+non-slotted only a 5% end-to-end win (0.873 vs 0.913 ms) for 55% more memory
+(113 vs 72 B/object) — not worth the correctness caveat above, or so it
+seemed. That comparison assumed the slotted path would use the compiled hook
+(2.67x row) rather than the native fallback (6.16x row); once the hook was
+removed, non-slotted stopped being a marginal call and became the clear
+default.
 
 ---
 
@@ -435,20 +460,6 @@ default, making instances 8 bytes larger (set `weakref_slot=False` for parity).
 
 **No remaining advantage for this use case, and orjson support is a strict argument
 for stdlib dataclasses.**
-
-### Non-slotted dataclasses as the default
-
-Tempting, because orjson's native fast path reads `__dict__` directly and makes them
-the fastest object form to serialize (91 vs 182 ns/object). But end-to-end that is
-only a **5% win** (0.873 vs 0.913 ms) for **55% more memory** (113 vs 72 B/object).
-
-Worse, orjson's fast path dumps whatever is in `__dict__` minus underscore-prefixed
-keys, so a stray runtime attribute
-[leaks into the JSON](https://github.com/ijl/orjson/issues/83); the slots path
-correctly filters on `__dataclass_fields__`. Faster, looser, hungrier — and not
-something `model()` exposes a toggle for: the dataclass it builds is
-unconditionally `slots=True`, so this remains a measured tradeoff rather than an
-available knob.
 
 ### Streaming the cursor instead of `fetchall()`
 

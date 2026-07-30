@@ -96,11 +96,9 @@ class TestFetchJson:
     async def test_content_matches_fetch_all(self, engine):
         import orjson
 
-        from rowform import compile_json_default
-
         query = Query(Author).order_by("id")
         objects = await engine.fetch_all(query)
-        expected = orjson.loads(orjson.dumps(objects, default=compile_json_default(Author)))
+        expected = orjson.loads(orjson.dumps(objects))
         assert orjson.loads(await engine.fetch_json(query)) == expected
 
     async def test_empty_result_is_an_empty_array(self, engine):

@@ -1,6 +1,6 @@
-"""The `@model` decorator: a real slotted dataclass whose class-scope `Column`
-attributes still return query expressions (`User.id > 100`), with no metaclass
-anywhere in the class's own MRO."""
+"""The `@model` decorator: a real dataclass (non-slotted by default, opt into
+`slots=True`) whose class-scope `Column` attributes still return query
+expressions (`User.id > 100`), via a metaclass on the built class."""
 
 import dataclasses
 
@@ -42,19 +42,18 @@ class TestConstruction:
         author = Author(1, "ada", True)
         assert (author.id, author.name, author.active) == (1, "ada", True)
 
-    def test_instances_are_fully_slotted(self):
-        # A stray __dict__ isn't just a memory regression here -- it's what used
-        # to make orjson's native serializer silently emit {} (see
-        # TestOrjsonSerialization below). This guards against that regressing.
+    def test_instances_have_a_dict_by_default(self):
+        # @model defaults to slots=False: instances get a normal __dict__ and
+        # arbitrary attributes can be set, same as a plain @dataclass.
         author = Author(id=1, name="ada", active=True)
-        with pytest.raises(AttributeError):
-            author.__dict__  # noqa: B018
+        assert author.__dict__ == {"id": 1, "name": "ada", "active": True}
+        author.surprise = 1
+        assert author.surprise == 1
 
 
 class TestPublicNamesShowThroughDataclassMachinery:
-    """The storage dataclass declares shadow-named fields (`_rf_id`); the model
-    re-keys __repr__/__dataclass_fields__ to the public names so introspection
-    doesn't leak the storage detail."""
+    """Fields are real, public-named dataclass fields (no shadow naming), so
+    `__repr__`/`__dataclass_fields__`/`asdict` all work unmodified."""
 
     def test_repr_uses_public_names(self):
         author = Author(id=1, name="ada", active=True)
@@ -69,28 +68,50 @@ class TestPublicNamesShowThroughDataclassMachinery:
 
 
 class TestOrjsonSerialization:
-    """Regression test for a real bug: the rebuilt model class must declare its
-    own `__slots__ = ()`, or it silently gets an empty per-instance `__dict__`
-    alongside the inherited slots. That's what made orjson's native serializer
-    take its (wrong, for us) `__dict__`-reading fast path instead of its
-    `__dataclass_fields__` fallback (which does `getattr()` per field and
-    reaches `Column` correctly), producing `b'{}'` instead of raising or
-    serializing correctly."""
+    """@model defaults to slots=False, which is orjson's native *fast* path
+    (it reads `__dict__` directly) -- no `default=` hook or option needed.
+    See docs/FINDINGS.md#the-orjson-dataclass-trap for why `slots=True` is
+    much slower to serialize instead."""
 
     def test_bare_orjson_dumps_serializes_correctly(self):
         orjson = pytest.importorskip("orjson")
         author = Author(id=1, name="ada", active=True)
         assert orjson.dumps(author) == b'{"id":1,"name":"ada","active":true}'
 
-    def test_instance_has_no_own_dict(self):
-        author = Author(id=1, name="ada", active=True)
-        assert not hasattr(author, "__dict__")
+
+class TestSlotsOptIn:
+    """`@model(slots=True)` is still available for callers who want smaller
+    instances and are willing to pay for it -- both in memory (no `__dict__`,
+    real slot descriptors) and in orjson serialization (native path has no
+    fast route for slotted dataclasses; see docs/FINDINGS.md#the-orjson-dataclass-trap)."""
+
+    def test_slotted_instances_have_no_dict(self):
+        @model(slots=True)
+        class SlottedUser:
+            __tablename__ = "slotted_user"
+            id: Column[int] = Column(int)
+
+        user = SlottedUser(id=1)
+        assert not hasattr(user, "__dict__")
+        with pytest.raises(AttributeError):
+            user.surprise = 1
+
+    def test_slotted_instances_still_serialize_correctly(self):
+        orjson = pytest.importorskip("orjson")
+
+        @model(slots=True)
+        class SlottedUser:
+            __tablename__ = "slotted_user"
+            id: Column[int] = Column(int)
+
+        user = SlottedUser(id=1)
+        assert orjson.dumps(user) == b'{"id":1}'
 
 
 class TestCompiledHydratorCompatibility:
-    """model.py's storage is an ordinary slotted class, so compile.py's
-    object.__new__ + direct slot assignment codegen needs no changes to target
-    it -- this is what proves that."""
+    """model.py's storage is an ordinary dataclass (slotted or not), so
+    compile.py's object.__new__ + direct attribute assignment codegen needs no
+    changes to target it -- this is what proves that."""
 
     def test_compile_hydrator(self):
         obj = compile_hydrator(Author)((1, "ada", True))

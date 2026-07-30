@@ -231,12 +231,14 @@ The last row is the trap — see [FINDINGS.md](FINDINGS.md#the-orjson-dataclass-
 
 | model | bytes/object |
 |---|---|
-| `@model` (slots) | 72 |
-| dataclass without slots | 113 |
+| `@model(slots=True)` | 72 |
+| `@model` (default, `slots=False`) | 113 |
 
-`@model` builds one real `@dataclass(slots=True)` class with public-named
-slots (no synthesized storage subclass — see
-[FINDINGS](FINDINGS.md#the-model-metaclass)). Re-measure before trusting the
+`@model` builds one real `@dataclass` class with public-named fields, slotted
+only if you pass `slots=True` (no synthesized storage subclass either way —
+see [FINDINGS](FINDINGS.md#the-model-metaclass)); the default trades this 55%
+memory difference for landing on orjson's native fast path with no hooks (see
+[FINDINGS](FINDINGS.md#non-slotted-by-default)). Re-measure before trusting the
 exact figure for a size-sensitive decision: this row hasn't been re-profiled
 against the original script (not retained) that produced it.
 
@@ -594,8 +596,11 @@ Exact call counts (cProfile, 800 requests × 100 rows) show where the shape come
 `_default` runs once per *row* because orjson calls back into Python for every
 object. That is the cost of forcing orjson off its native (but slower, for a
 slotted dataclass) dataclass fast path via `OPT_PASSTHROUGH_DATACLASS` — worth
-paying anyway, since the native fallback is slower still
-([FINDINGS](FINDINGS.md#the-orjson-dataclass-trap)).
+paying anyway *if* your models are slotted, since the native fallback is slower
+still ([FINDINGS](FINDINGS.md#the-orjson-dataclass-trap)). This run predates
+`@model` defaulting to `slots=False`; a non-slotted model needs neither the
+option nor a `default=` hook at all, and pays none of this per-row callback
+cost.
 
 ### What SQLAlchemy spends it on here
 
@@ -675,7 +680,10 @@ mapper for this shape.**
 2. **Skip objects for JSON-only endpoints** — 1.20x, but then it is not a mapper.
 3. **Give up `__slots__`** for orjson's native path — 1.08x, at +55% memory per
    instance (113 vs 72 bytes) and the
-   [attribute-leak caveat](FINDINGS.md#rejected-with-reasons).
+   [attribute-leak caveat](FINDINGS.md#non-slotted-by-default). Since this run,
+   `@model` adopted exactly this as its default (see
+   [FINDINGS](FINDINGS.md#non-slotted-by-default)) once the compiled orjson
+   hook that made the slotted path competitive was dropped.
 4. **Push shaping into SQL** — the parked `json_agg`/`json_group_array` path, ~2.2x
    over the best object path ([§1](#1-sqlite-micro-benchmark-single-request-latency)),
    because it skips objects *and* Python-side JSON at once. Comfortably the largest

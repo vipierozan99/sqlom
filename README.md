@@ -1,6 +1,6 @@
 # ⚡ rowform: Zero-Overhead Async Data Layer for Python
 
-`rowform` is a data access library for Python built for high-throughput HTTP services (FastAPI, Sanic, Granian). It pairs a **SQLAlchemy-Core-like, statically-typed query builder** with an async execution engine (`asyncpg` or `psycopg3`) that hydrates rows straight into `@dataclass(slots=True)`-style objects — no session, no identity map, no relationship/lazy-loading machinery. You write every join explicitly; in exchange, reads cost close to nothing beyond the driver itself.
+`rowform` is a data access library for Python built for high-throughput HTTP services (FastAPI, Sanic, Granian). It pairs a **SQLAlchemy-Core-like, statically-typed query builder** with an async execution engine (`asyncpg` or `psycopg3`) that hydrates rows straight into plain `@dataclass` objects (`slots=True` available as an opt-in) — no session, no identity map, no relationship/lazy-loading machinery. You write every join explicitly; in exchange, reads cost close to nothing beyond the driver itself.
 
 > **Status:** early. The core is implemented and benchmarked against both sqlite and a live PostgreSQL 16 under concurrent load — see [Performance](#-performance). It has a 968-test pytest suite (SQL generation, joins, writes, transactions, static types) but is not packaged, not on PyPI, and has never run in production.
 
@@ -10,7 +10,7 @@
 
 * **Compiled hydration:** a per-model `row -> object` function is code-generated once and reused for every row — plain attribute stores, no reflective `setattr()` loop, no dict per row.
 * **Statically typed query builder:** `User.id` is `ColumnExpr[int]`, `user.id` is `int`, `await db.execute(select(User, Post))` is `list[tuple[User, Post]]`. Verified against **both mypy and pyright**.
-* **`@model`:** a metaclass-backed, real stdlib `@dataclass(slots=True)` model that still supports `User.id > 100`.
+* **`@model`:** a metaclass-backed, real stdlib `@dataclass` model (non-slotted by default, `slots=True` opt-in) that still supports `User.id > 100`.
 * **A real query builder:** multi-model selects, all four join kinds, aliases and self-joins, `or_`/`and_`/`not_`, `in_`/`exists`/scalar subqueries, `GROUP BY`/`HAVING`, derived tables, set operations, window functions, `CASE`, arithmetic and SQL functions, CTEs (including recursive), `text()`/`literal_column()`/`bindparam()`.
 * **Multi-dialect:** a small `Dialect` core with Postgres/sqlite overrides — `IS DISTINCT FROM`, `FOR UPDATE`, `DELETE ... USING` and `ON CONFLICT ... ON CONSTRAINT` are validated per dialect rather than just documented.
 * **Writes:** `Insert`/`Update`/`Delete` with `RETURNING`, bulk insert in one statement, expression assignments, `ON CONFLICT` upserts with `excluded()`, and `UPDATE ... FROM` / `DELETE ... USING` across tables.
@@ -59,7 +59,7 @@ tuple_(User.id, User.name) == (1, "ada")          # row-value comparison
 
 ### Defining models
 
-A model is a real stdlib `@dataclass(slots=True)` (`dataclasses.asdict`, `repr()`, `==` all work) that still gives you `User.id` as `ColumnExpr[int]` and `user.id` as `int`, statically typed end to end and verified against pyright:
+A model is a real stdlib `@dataclass` (`dataclasses.asdict`, `repr()`, `==` all work) that still gives you `User.id` as `ColumnExpr[int]` and `user.id` as `int`, statically typed end to end and verified against pyright:
 
 ```python
 from rowform import Column, model
@@ -73,7 +73,7 @@ class User:
     is_active: Column[bool] = Column(bool)
 ```
 
-The `Column(int)` value is only read for its type and discarded; a small metaclass makes `User.id` still resolve to a query expression, while `id` on the instance is a real, public-named dataclass slot. See [Architecture](#-architecture) for how, and [docs/FINDINGS.md](docs/FINDINGS.md#the-model-metaclass) for the design rationale. Serializing with orjson works natively (`orjson.dumps(user)` needs no options or hooks); passing `rowform.DATACLASS_DUMP_OPTION` routes it through the compiled `compile_json_default` hook instead, which is faster but not required for correctness.
+The `Column(int)` value is only read for its type and discarded; a small metaclass makes `User.id` still resolve to a query expression, while `id` on the instance is a real, public-named dataclass field. See [Architecture](#-architecture) for how, and [docs/FINDINGS.md](docs/FINDINGS.md#the-model-metaclass) for the design rationale. `@model` defaults to `slots=False`, which is also orjson's native *fast* path — `orjson.dumps(user)` needs no options or hooks. Pass `@model(slots=True)` for smaller instances; it still serializes correctly, just through orjson's slower generic-dataclass fallback (see [docs/FINDINGS.md](docs/FINDINGS.md#the-orjson-dataclass-trap)).
 
 ### Querying, joins, aliases
 
@@ -254,9 +254,9 @@ Two paths, depending on whether you need Python objects at all:
 
 ```
                                  ┌──(A) object path ────────────────────────────┐
-[ PostgreSQL ] ──(driver)──> [ C-tuples ] ──(compiled hydrator)──> [ Slotted object ]
+[ PostgreSQL ] ──(driver)──> [ C-tuples ] ──(compiled hydrator)──> [ Model instance ]
                                                                             │
-                                                                    (compiled hook)
+                                                                    (native orjson)
                                                                             ▼
                                                                   [ Response (JSON) ]
                                  ┌──(B) json_agg path ──────────────────────────┐
@@ -264,8 +264,8 @@ Two paths, depending on whether you need Python objects at all:
 ```
 
 1. **Descriptor expressions.** `User.id > 100` evaluates a descriptor at class scope, returning a `ColumnExpr` node instead of doing a Python-level comparison — a queryable AST with no SQLAlchemy-style instrumentation. The same overloaded `__get__` (`ColumnExpr[T]` at class scope, `T` at instance scope) is what keeps the model statically typed.
-2. **Compiled hydration, entirely positional.** A model's column layout is fixed once, so rowform generates a specialized `rows -> [instance]` function per model: plain attribute stores (CPython's specializing interpreter quickens these to `STORE_ATTR_SLOT`), and rows are read by **tuple unpacking** with no column names in the generated code. This is safe because rowform always writes the `SELECT` list itself — there's no `SELECT *` in the builder, so every column's ordinal is known at codegen time. Positional access beats key access by ~2–5x depending on driver, and building a dict per row costs 5–7x more than either.
-3. **Slotted storage.** Instances use `__slots__` — a fixed-size array rather than a `__dict__`, smaller per object and what makes orjson's native dataclass serialization work correctly (bare `orjson.dumps(user)`, no options needed). `DATACLASS_DUMP_OPTION` routes serialization through the compiled `compile_json_default` hook instead, which is faster still.
+2. **Compiled hydration, entirely positional.** A model's column layout is fixed once, so rowform generates a specialized `rows -> [instance]` function per model: plain attribute stores (CPython's specializing interpreter quickens these) and rows are read by **tuple unpacking** with no column names in the generated code. This is safe because rowform always writes the `SELECT` list itself — there's no `SELECT *` in the builder, so every column's ordinal is known at codegen time. Positional access beats key access by ~2–5x depending on driver, and building a dict per row costs 5–7x more than either.
+3. **Non-slotted storage by default.** Instances get a normal `__dict__`, which is also orjson's native *fast* path for dataclasses (bare `orjson.dumps(user)`, no options needed). `@model(slots=True)` is available for smaller instances, at the cost of orjson's much slower generic-dataclass fallback for that model — see [docs/FINDINGS.md](docs/FINDINGS.md#the-orjson-dataclass-trap).
 4. **Path (B) skips 2 and 3 entirely** by shaping rows into JSON in SQL (`Query.to_json_sql`). Implemented but parked — path (A) is the focus.
 
 None of this is "zero-copy" — data still moves from the C-level tuple into Python object storage into JSON bytes. The claim is "fewer intermediate Python-level allocations than an ORM identity-map path," not "no copying happens."

@@ -11,9 +11,7 @@ from rowform import (
     compile_batch_hydrator,
     compile_hydrator,
     compile_join_hydrator,
-    compile_json_default,
     hydrate,
-    json_default,
 )
 from tests.conftest import Author, Book
 
@@ -40,8 +38,21 @@ class TestSingleModelHydrators:
         assert source.startswith("def _hydrate_all(rows):")
         assert "_new(_cls)" in source
 
-    def test_instances_are_slotted(self):
+    def test_instances_have_a_dict_by_default(self):
         obj = compile_hydrator(Author)((1, "ada", True))
+        assert obj.__dict__ == {"id": 1, "name": "ada", "active": True}
+        obj.surprise = 1
+        assert obj.surprise == 1
+
+    def test_slotted_model_instances_have_no_dict(self):
+        from rowform import Column, model
+
+        @model(slots=True)
+        class SlottedAuthor:
+            __tablename__ = "slotted_author"
+            id: Column[int] = Column(int)
+
+        obj = compile_hydrator(SlottedAuthor)((1,))
         assert not hasattr(obj, "__dict__")
         with pytest.raises(AttributeError):
             obj.surprise = 1
@@ -101,20 +112,16 @@ class TestReflectiveHydrate:
             as_dict(object())
 
 
-class TestJsonDefault:
-    def test_compiled_hook_matches_as_dict(self):
-        obj = hydrate(Author, (1, "ada", True))
-        assert compile_json_default(Author)(obj) == as_dict(obj)
+class TestAsDictAsOrjsonHook:
+    """`as_dict` is the one generic `default=` hook, useful for heterogeneous
+    payloads mixing several model types or for `@model(slots=True)` instances
+    (the slots=False default needs no hook at all -- see test_model.py)."""
 
-    def test_generic_hook_dispatches_on_type(self):
+    def test_dispatches_across_model_types(self):
         author = hydrate(Author, (1, "ada", True))
         book = hydrate(Book, (10, 1, "structures"))
-        assert json_default(author)["name"] == "ada"
-        assert json_default(book)["title"] == "structures"
-
-    def test_generic_hook_refuses_an_unknown_type(self):
-        with pytest.raises(TypeError, match="Cannot serialize"):
-            json_default(object())
+        assert as_dict(author)["name"] == "ada"
+        assert as_dict(book)["title"] == "structures"
 
 
 class TestJoinHydrator:

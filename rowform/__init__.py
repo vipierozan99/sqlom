@@ -6,8 +6,6 @@ from .compile import (
     compile_batch_hydrator,
     compile_hydrator,
     compile_join_hydrator,
-    compile_json_default,
-    json_default,
 )
 from .dialects import POSTGRES, SQLITE, Dialect, PostgresDialect, SqliteDialect
 from .dml import (
@@ -83,7 +81,7 @@ from .expr import (
     true,
     tuple_,
 )
-from .model import DATACLASS_DUMP_OPTION, model
+from .model import model
 from .psycopg_engine import PsycopgEngine
 from .query import CompoundSelect, Query, json_bytes, select
 from .sqlite_engine import SqliteEngine
@@ -92,7 +90,6 @@ from .transaction import Transaction, active_transaction
 __all__ = [
     "ASYNCPG_CONVERTERS",
     "CTE",
-    "DATACLASS_DUMP_OPTION",
     "MAX_PARAMETERS",
     "POSTGRES",
     "PSYCOPG_CONVERTERS",
@@ -148,7 +145,6 @@ __all__ = [
     "compile_batch_hydrator",
     "compile_hydrator",
     "compile_join_hydrator",
-    "compile_json_default",
     "count",
     "delete",
     "dense_rank",
@@ -161,7 +157,6 @@ __all__ = [
     "hydrate",
     "insert",
     "json_bytes",
-    "json_default",
     "lag",
     "last_value",
     "lead",

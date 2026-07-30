@@ -23,7 +23,7 @@ import this module either.
 
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict
 
 import orjson
 from sqlalchemy import select
@@ -71,7 +71,7 @@ def _flat_query(limit: int):
     "rowform",
     backend="sqlite",
     shape="flat",
-    description="rowform's shipped sqlite path: compiled hydrator + compiled orjson hook.",
+    description="rowform's shipped sqlite path: compiled hydrator + native orjson serialization.",
 )
 async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     engine = rf.SqliteEngine(init.handle, min_size=1, max_size=4)
@@ -80,7 +80,7 @@ async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 
     async def target() -> bytes:
         rows = await engine.fetch_all(query)
-        return orjson.dumps(rows, default=rf.json_default, option=rf.DATACLASS_DUMP_OPTION)
+        return orjson.dumps(rows)
 
     return target, engine.close
 
@@ -102,7 +102,7 @@ async def flat_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
 
     async def target() -> bytes:
         rows = await engine.fetch_all(query)
-        return orjson.dumps(rows, default=rf.json_default, option=rf.DATACLASS_DUMP_OPTION)
+        return orjson.dumps(rows)
 
     async def teardown() -> None:
         return None
@@ -411,23 +411,16 @@ def _join_query(limit: int):
     "rowform",
     backend="sqlite",
     shape="join",
-    description="rowform's shipped sqlite join path: compiled join hydrator + dispatching orjson hook.",
+    description="rowform's shipped sqlite join path: compiled join hydrator + native orjson serialization.",
 )
 async def join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     engine = rf.SqliteEngine(init.handle, min_size=1, max_size=4)
     await engine.connect()
     query = _join_query(init.limit)
 
-    def _default(obj):
-        return rf.json_default(obj) if is_dataclass(obj) else obj
-
     async def target() -> bytes:
         pairs = await engine.fetch_all(query)
-        return orjson.dumps(
-            [{"author": author, "post": post} for author, post in pairs],
-            default=_default,
-            option=rf.DATACLASS_DUMP_OPTION,
-        )
+        return orjson.dumps([{"author": author, "post": post} for author, post in pairs])
 
     return target, engine.close
 
@@ -446,19 +439,10 @@ async def join_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
 
     engine = MockEngine(init.handle)
     query = _join_query(init.limit)
-    author_default = rf.compile_json_default(Author)
-    post_default = rf.compile_json_default(Post)
-
-    def _default(obj):
-        return author_default(obj) if type(obj) is Author else post_default(obj)
 
     async def target() -> bytes:
         pairs = await engine.fetch_all(query)
-        return orjson.dumps(
-            [{"author": author, "post": post} for author, post in pairs],
-            default=_default,
-            option=rf.DATACLASS_DUMP_OPTION,
-        )
+        return orjson.dumps([{"author": author, "post": post} for author, post in pairs])
 
     async def teardown() -> None:
         return None
@@ -726,17 +710,16 @@ async def join_sa_orm_dc_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     "rowform",
     backend="postgres",
     shape="flat",
-    description="rowform's shipped postgres path: compiled hydrator + compiled orjson hook.",
+    description="rowform's shipped postgres path: compiled hydrator + native orjson serialization.",
 )
 async def flat_rowform_pg(init: ContenderInit) -> tuple[Target, Teardown]:
     engine = rf.PsycopgEngine(init.handle, min_size=1, max_size=4)
     await engine.connect()
     query = _flat_query(init.limit)
-    to_dict = rf.compile_json_default(User)
 
     async def target() -> bytes:
         rows = await engine.fetch_all(query)
-        return orjson.dumps(rows, default=to_dict, option=rf.DATACLASS_DUMP_OPTION)
+        return orjson.dumps(rows)
 
     return target, engine.close
 
@@ -857,25 +840,16 @@ async def flat_sa_orm_pg(init: ContenderInit) -> tuple[Target, Teardown]:
     "rowform",
     backend="postgres",
     shape="join",
-    description="rowform's shipped postgres join path: compiled join hydrator + dispatching orjson hook.",
+    description="rowform's shipped postgres join path: compiled join hydrator + native orjson serialization.",
 )
 async def join_rowform_pg(init: ContenderInit) -> tuple[Target, Teardown]:
     engine = rf.PsycopgEngine(init.handle, min_size=1, max_size=4)
     await engine.connect()
     query = _join_query(init.limit)
-    author_default = rf.compile_json_default(Author)
-    post_default = rf.compile_json_default(Post)
-
-    def _default(obj):
-        return author_default(obj) if type(obj) is Author else post_default(obj)
 
     async def target() -> bytes:
         pairs = await engine.fetch_all(query)
-        return orjson.dumps(
-            [{"author": author, "post": post} for author, post in pairs],
-            default=_default,
-            option=rf.DATACLASS_DUMP_OPTION,
-        )
+        return orjson.dumps([{"author": author, "post": post} for author, post in pairs])
 
     return target, engine.close
 
