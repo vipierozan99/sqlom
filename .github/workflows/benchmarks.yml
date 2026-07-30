@@ -1,0 +1,113 @@
+name: Benchmarks (periodic)
+
+# Explores the three-step idea in the task: (1) has main moved since we last
+# benchmarked, (2) if so run the benchmarks, (3) post the result somewhere.
+#
+# Caveat baked into the output below: GitHub-hosted runners are shared and
+# unpinned, so these numbers are a *trend / regression* signal, not a quotable
+# baseline (docs/METHODOLOGY.md: absolutes drift with the machine). The
+# in-process micro suite is used precisely because it has the best
+# signal-to-noise here — no docker, no event-loop/pool/TLS.
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily, 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run even if main's tip was already benchmarked"
+        type: boolean
+        default: false
+
+# Needed to push the dated results branch (step 3).
+permissions:
+  contents: write
+
+concurrency:
+  group: benchmarks
+  cancel-in-progress: false
+
+env:
+  UV_PYTHON: "3.11"
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # (1) Change detection. The source of truth for "already benchmarked this
+      # commit" is the existence of a results branch whose name ends in the
+      # commit's short sha — no separate state store to drift out of sync.
+      - name: Detect whether main changed since the last benchmark
+        id: detect
+        run: |
+          SHORT=$(git rev-parse --short HEAD)
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event.inputs.force }}" != "true" ] \
+             && git ls-remote --heads origin | grep -q "refs/heads/bench/auto-.*-$SHORT$"; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "main @ \`$SHORT\` already benchmarked — skipping." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install uv
+        if: steps.detect.outputs.run == 'true'
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # (2) Run the benchmarks. Called directly rather than via `just bench` so
+      # the empty `--pin ""` survives — `just`'s {{args}} re-tokenisation would
+      # drop the empty token and bind `--pin` to the next flag. `--pin ""`
+      # disables CPU pinning (the local default targets cores that don't exist
+      # on a 2-core runner). `--record` writes run.json under results/runs/.
+      - name: Run micro benchmarks
+        if: steps.detect.outputs.run == 'true'
+        run: |
+          set -o pipefail
+          for shape in flat join; do
+            uv run --all-groups python -m benchmarks micro run \
+              --shape "$shape" --record --pin "" 2>&1 | tee "bench-$shape.log"
+          done
+
+      # (3a) Post to the job summary — always visible on the run page.
+      - name: Write job summary
+        if: steps.detect.outputs.run == 'true'
+        run: |
+          {
+            echo "# Benchmark run — main @ \`${{ steps.detect.outputs.short }}\`"
+            echo
+            echo "> Runner: GitHub-hosted \`ubuntu-latest\` — shared and unpinned."
+            echo "> **Not a quotable baseline**; read as a trend / regression signal only."
+            echo
+            for shape in flat join; do
+              echo "## micro / $shape"
+              echo '```'
+              cat "bench-$shape.log"
+              echo '```'
+              echo
+            done
+          } | tee SUMMARY.md >> "$GITHUB_STEP_SUMMARY"
+
+      # (3b) Post to a dated results branch so any run is reproducible from a
+      # commit (CLAUDE.md: "make a branch and commit the results there, such
+      # that I can always go back to a commit and reproduce a benchmark").
+      - name: Commit results to a dated branch
+        if: steps.detect.outputs.run == 'true'
+        run: |
+          BRANCH="bench/auto-$(date -u +%Y%m%d)-${{ steps.detect.outputs.short }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          # results/runs/ is gitignored on main (PLAN.md D15); force-add just this
+          # run's artifacts so the branch is self-contained.
+          git add -f benchmarks/results/runs/
+          git add SUMMARY.md bench-flat.log bench-join.log
+          git commit -m "bench: automated micro run on main @ ${{ steps.detect.outputs.short }}"
+          git push -u origin "$BRANCH"
+          echo "Pushed results to \`$BRANCH\`." >> "$GITHUB_STEP_SUMMARY"
