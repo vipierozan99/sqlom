@@ -204,6 +204,18 @@ class TestStatementMatrix:
         assert isinstance(first, Author) and isinstance(second, Author)
         assert first.id < second.id
 
+    async def test_self_join_through_rowform_alias(self, engine):
+        other = rowform.alias(Author, "a2")
+        rows = await engine.fetch_all(
+            sa.select(Author, other)
+            .join(other, Author.id < other.id)
+            .where(other.active)
+            .order_by(Author.id, other.id)
+        )
+        first, second = rows[0]
+        assert isinstance(first, Author) and isinstance(second, Author)
+        assert first.id < second.id and second.active is True
+
     async def test_group_by_and_having(self, engine):
         rows = await engine.fetch_all(
             sa.select(Author.name, sa.func.count(Book.id))

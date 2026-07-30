@@ -61,6 +61,12 @@ also: str = author.id  # pyright: ignore[reportAssignmentType]
 _ = Author.missing  # pyright: ignore[reportAttributeAccessIssue]
 
 
+# --- an alias exposes the model's fields, and only those -------------------
+other = rowform.alias(Author, "a2")
+
+_ = other.missing  # pyright: ignore[reportAttributeAccessIssue]
+
+
 # --- result types are not interchangeable ----------------------------------
 async def reads() -> None:
     # One selected model is a list of models, not a list of tuples.
@@ -86,6 +92,11 @@ async def reads() -> None:
     # fetch_one can be None.
     one: Author = await engine.fetch_one(  # pyright: ignore[reportAssignmentType]
         sa.select(Author)
+    )
+
+    # An alias carries the model it aliases, so a self-join is pairs of Author.
+    selves: list[tuple[Author, Book]] = await engine.fetch_all(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author, other)
     )
 
     # A hoisted query is typed by what it was prepared from.

@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from conftest import Author, Book, Tag
 
+import rowform
 from rowform import plan
 
 
@@ -121,6 +122,16 @@ class TestAliases:
         p = plan(sa.select(other))
         _, _, pairs, _ = p.entities[0]
         assert [c.table for _, c in pairs] == [other] * 3
+
+    def test_rowform_alias_plans_the_same_way(self):
+        other = rowform.alias(Author, "a2")
+        p = plan(sa.select(Author, other).join(other, Author.id == other.id))
+        assert models(p) == [Author, Author]
+
+    def test_rowform_alias_is_nullable_under_an_outer_join(self):
+        other = rowform.alias(Author, "a2")
+        p = plan(sa.select(Author, other).outerjoin(other, Author.id < other.id))
+        assert [e[3] for e in p.entities] == [False, True]
 
 
 class TestReturning:

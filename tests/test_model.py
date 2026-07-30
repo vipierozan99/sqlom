@@ -436,6 +436,59 @@ class TestModelLookup:
         assert rowform.model_for(sa.table("elsewhere", sa.column("id"))) is None
 
 
+class TestAlias:
+    """`sa.orm.aliased()` needs a `Mapper` and there is none, so `alias()` is
+    rowform's own — a `FromClause` that answers to field names."""
+
+    def test_sqlalchemy_orm_aliased_is_not_available(self):
+        with pytest.raises(sa.exc.NoInspectionAvailable):
+            sa.orm.aliased(Author)
+
+    def test_it_coerces_to_an_alias_of_the_table(self):
+        other = rowform.alias(Author, "a2")
+        element = other.__clause_element__()
+        assert isinstance(element, sa.Alias)
+        assert element.name == "a2"
+        assert element.element is Author.__table__
+
+    def test_attributes_are_the_alias_columns(self):
+        other = rowform.alias(Author, "a2")
+        assert other.name is not Author.name
+        assert other.name.key == "name"
+        assert str(other.name) == "a2.name"
+
+    def test_it_selects_and_joins_like_the_model(self):
+        other = rowform.alias(Author, "a2")
+        rendered = str(sa.select(other).where(other.id > 1))
+        assert "FROM t_authors AS a2" in rendered
+        assert "a2.id >" in rendered
+
+    def test_a_renamed_column_is_reached_by_its_field_name(self):
+        class Renamed(make_base()):
+            __tablename__ = "renamed"
+
+            id: Mapped[int] = mapped_column(primary_key=True)
+            slug: Mapped[str] = mapped_column("url_slug")
+
+        other = rowform.alias(Renamed, "r2")
+        assert str(other.slug) == "r2.url_slug"
+
+    def test_an_unknown_field_raises(self):
+        other = rowform.alias(Author, "a2")
+        with pytest.raises(AttributeError, match="no column 'missing'"):
+            _ = other.missing
+
+    def test_an_abstract_model_cannot_be_aliased(self):
+        class Abstract(make_base()):
+            id: Mapped[int] = mapped_column(primary_key=True)
+
+        with pytest.raises(TypeError, match="abstract"):
+            rowform.alias(Abstract)
+
+    def test_repr_names_the_model_and_the_alias(self):
+        assert repr(rowform.alias(Author, "a2")) == "<alias Author AS a2>"
+
+
 class TestDdl:
     def test_create_table_renders_from_the_declaration(self):
         ddl = str(sa.schema.CreateTable(Wide.__table__))

@@ -72,6 +72,18 @@ assert_type(sa.select(Author, Book), sa.Select[tuple[Author, Book]])
 assert_type(sa.select(Author, Book.title), sa.Select[tuple[Author, str]])
 assert_type(sa.select(Author).where(Author.id > 1), sa.Select[tuple[Author]])
 
+# --- an alias types exactly as the model it aliases ------------------------
+# The whole reason `alias()` is declared `type[_M]`: an alias class of its own
+# could only expose `__getattr__`, and every field below would be `Any`.
+manager = rowform.alias(Author, "mgr")
+
+assert_type(manager.id, InstrumentedAttribute[int])
+assert_type(manager.born, InstrumentedAttribute["dt.date | None"])
+assert_type(manager.id > 100, sa.ColumnElement[bool])
+assert_type(sa.select(manager), sa.Select[tuple[Author]])
+assert_type(sa.select(Author, manager), sa.Select[tuple[Author, Author]])
+
+
 # --- prepare() and fetch_all() preserve them -------------------------------
 engine = rowform.SqliteEngine("app.db")
 
@@ -103,6 +115,12 @@ async def reads() -> None:
 
     assert_type(await engine.fetch_one(sa.select(Author)), "Author | None")
     assert_type(await engine.fetch_one(sa.select(Author.name)), "str | None")
+
+    # A self-join is a list of pairs of the model, with no cast.
+    assert_type(
+        await engine.fetch_all(sa.select(Author, manager).join(manager, Author.id < manager.id)),
+        list[tuple[Author, Author]],
+    )
 
 
 async def transactions() -> None:

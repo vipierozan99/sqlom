@@ -167,6 +167,24 @@ gives `None` for that slot rather than an object full of `None`s.
 The same rule is what makes the types exact: `fetch_all` is overloaded on the
 statement's arity, so all of the above infer without a cast.
 
+### Aliases and self-joins
+
+`sa.orm.aliased()` raises `NoInspectionAvailable` here and always will — it looks
+for a `Mapper`, and there is none. `rowform.alias()` is the equivalent:
+
+```python
+mgr = rowform.alias(User, "mgr")
+
+await engine.fetch_all(
+    sa.select(User, mgr).join(mgr, User.manager_id == mgr.id)
+)   # list[tuple[User, User]]
+```
+
+It reads as the model does — `mgr.name` is that alias's column, and the alias
+hydrates as a `User`, so a self-join needs no cast. `sa.alias(User)` also works
+and hydrates the same way; what it does not do is keep the types, since its
+columns are only reachable as `.c.name`.
+
 ### Hoisting the compile
 
 `fetch_all` accepts a bare statement and caches the compiled form under

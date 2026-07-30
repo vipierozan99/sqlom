@@ -40,7 +40,15 @@ import enum
 import types
 import typing
 import uuid
-from typing import Any, ClassVar, dataclass_transform, get_args, get_origin, get_type_hints
+from typing import (
+    Any,
+    ClassVar,
+    TypeVar,
+    dataclass_transform,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped
@@ -50,6 +58,8 @@ from sqlalchemy.orm import Mapped
 # handed a registry. `Table.info` is a public, per-table dict SQLAlchemy never
 # writes to itself.
 MODEL_KEY = "rowform_model"
+
+_M = TypeVar("_M")
 
 # Set on a class the moment it is fully built, and copied forward by
 # `dataclasses`' slots rebuild (which re-creates the class through this same
@@ -492,3 +502,63 @@ def model_for(from_clause: Any) -> type[Any] | None:
     if element is not None and element is not from_clause:
         return model_for(element)
     return None
+
+
+class _Alias:
+    """Runtime half of `alias()`: coerces to the `Alias`, resolves field names.
+
+    Field names rather than `.c` names, because the two differ whenever a column
+    was renamed — `slug: Mapped[str] = mapped_column("url_slug")` is `a.slug`
+    here and `a.c.url_slug` on the `Alias`.
+    """
+
+    __slots__ = ("_alias", "_columns", "_model")
+
+    def __init__(self, model: type[Any], alias: sa.Alias):
+        self._model = model
+        self._alias = alias
+        declared = type.__getattribute__(model, "__columns__")
+        self._columns = {name: alias.columns[col.key] for name, col in declared.items()}
+
+    def __clause_element__(self) -> sa.Alias:
+        return self._alias
+
+    def __getattr__(self, key: str) -> Any:
+        try:
+            return self._columns[key]
+        except KeyError:
+            raise AttributeError(
+                f"{self._model.__name__} has no column {key!r}; an alias exposes "
+                f"that model's fields and nothing else"
+            ) from None
+
+    def __repr__(self) -> str:
+        return f"<alias {self._model.__name__} AS {self._alias.name}>"
+
+
+def alias(model: type[_M], name: str | None = None) -> type[_M]:
+    """A second reference to a model's table, for self-joins.
+
+        mgr = rowform.alias(User, "mgr")
+        sa.select(User, mgr).join(mgr, User.manager_id == mgr.id)
+
+    `sa.orm.aliased()` cannot serve here: it inspects its argument for a `Mapper`,
+    and a rowform model has none (`NoInspectionAvailable`). `sa.alias(User)` does
+    work and already hydrates — `planner.py` resolves each declared column through
+    the `FromClause` actually selected — but its columns are reached as
+    `a.c.name`, typed `Column[Any]`, so the entity degrades to `Any` in
+    `fetch_all`'s row type.
+
+    Declared as returning `type[_M]` so that `mgr.name` and `select(User, mgr)`
+    infer exactly as the model does. That is the same type-level fiction as
+    `User.id`, an `sa.Column` declared as `InstrumentedAttribute`, and it is the
+    only shape that keeps per-field types: an alias class of its own could only
+    offer `__getattr__`, which erases them.
+    """
+    try:
+        table = type.__getattribute__(model, "__table__")
+    except AttributeError:
+        raise TypeError(
+            f"{model.__name__} is abstract (no __tablename__), so it has no table to alias"
+        ) from None
+    return typing.cast("type[_M]", _Alias(model, table.alias(name)))
