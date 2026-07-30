@@ -1,183 +1,70 @@
-from .column import Column, as_dict, hydrate
-from .compile import (
-    ASYNCPG_CONVERTERS,
-    PSYCOPG_CONVERTERS,
-    SQLITE_CONVERTERS,
-    compile_batch_hydrator,
-    compile_hydrator,
-    compile_join_hydrator,
-)
-from .dialects import POSTGRES, SQLITE, Dialect, PostgresDialect, SqliteDialect
-from .dml import (
-    MAX_PARAMETERS,
-    Delete,
-    Insert,
-    Update,
-    delete,
-    insert,
-    max_rows_per_statement,
-    update,
-)
-from .engine import DatabaseEngine
-from .expr import (
-    CTE,
-    Aggregate,
-    Alias,
-    BinaryOp,
-    BindParameter,
-    BooleanClause,
-    Case,
-    Cast,
-    ColumnExpr,
-    Condition,
-    Excluded,
-    ExistsClause,
-    Expression,
-    FunctionCall,
-    InClause,
-    IsDistinctFrom,
-    Labelled,
-    Literal,
-    LiteralColumn,
-    Not,
-    Over,
-    Predicate,
-    ScalarSubquery,
-    Subquery,
-    TextClause,
-    Tuple,
-    UnaryOp,
-    and_,
-    avg,
-    bind_params,
-    bindparam,
-    case,
-    cast,
-    count,
-    dense_rank,
-    excluded,
-    exists,
-    false,
-    first_value,
-    func,
-    has_deferred_params,
-    lag,
-    last_value,
-    lead,
-    literal,
-    literal_column,
-    max_,
-    min_,
-    not_,
-    ntile,
-    null,
-    or_,
-    rank,
-    recursive_cte,
-    row_number,
-    sql_function,
-    sum_,
-    text,
-    true,
-    tuple_,
-)
-from .model import model
+"""rowform — SQLAlchemy's schema and SQL, compiled hydration, no instance state.
+
+SQLAlchemy Core compiles the statement and owns the schema. rowform owns the row
+path: a generated hydrator fills plain dataclasses with `object.__new__` plus
+straight attribute stores, so a read never builds a `Row`, a `CursorResult`, or an
+ORM identity.
+
+    import sqlalchemy as sa
+    from sqlalchemy.orm import Mapped
+    import rowform
+
+    class Base(rowform.Base):
+        pass
+
+    class User(Base):
+        __tablename__ = "users"
+        id: Mapped[int] = rowform.mapped_column(primary_key=True)
+        name: Mapped[str]
+        email: Mapped[str | None]
+
+    engine = rowform.SqliteEngine("app.db")
+    await engine.connect()
+    await engine.create_all(Base.metadata)
+
+    users = await engine.fetch_all(sa.select(User).where(User.name == "ada"))
+
+`User` is one declaration serving three jobs: `User.__table__` feeds
+`create_all()`, `Inspector` and Alembic's `target_metadata`; `sa.select(User)`
+builds real SQL; and instances are ordinary dataclasses.
+
+See docs/PLAN_CORE_COMPILER.md for why, what it costs, and what it retires.
+"""
+
+from .compile import compile_hydrator, result_processor
+from .engine import Engine
+from .model import DEFAULT_TYPE_MAP, Base, ModelMeta, mapped_column, model_for
+from .planner import Plan, plan
 from .psycopg_engine import PsycopgEngine
-from .query import CompoundSelect, Query, json_bytes, select
+from .query import CoreQuery
 from .sqlite_engine import SqliteEngine
 from .transaction import Transaction, active_transaction
 
 __all__ = [
-    "ASYNCPG_CONVERTERS",
-    "CTE",
-    "MAX_PARAMETERS",
-    "POSTGRES",
-    "PSYCOPG_CONVERTERS",
-    "SQLITE",
-    "SQLITE_CONVERTERS",
-    "Aggregate",
-    "Alias",
-    "BinaryOp",
-    "BindParameter",
-    "BooleanClause",
-    "Case",
-    "Cast",
-    "Column",
-    "ColumnExpr",
-    "CompoundSelect",
-    "Condition",
-    "DatabaseEngine",
-    "Delete",
-    "Dialect",
-    "Excluded",
-    "ExistsClause",
-    "Expression",
-    "FunctionCall",
-    "InClause",
-    "Insert",
-    "IsDistinctFrom",
-    "Labelled",
-    "Literal",
-    "LiteralColumn",
-    "Not",
-    "Over",
-    "PostgresDialect",
-    "Predicate",
+    "DEFAULT_TYPE_MAP",
+    "Base",
+    "CoreQuery",
+    "Engine",
+    "ModelMeta",
+    "Plan",
     "PsycopgEngine",
-    "Query",
-    "ScalarSubquery",
-    "SqliteDialect",
     "SqliteEngine",
-    "Subquery",
-    "TextClause",
     "Transaction",
-    "Tuple",
-    "UnaryOp",
-    "Update",
     "active_transaction",
-    "and_",
-    "as_dict",
-    "avg",
-    "bind_params",
-    "bindparam",
-    "case",
-    "cast",
-    "compile_batch_hydrator",
     "compile_hydrator",
-    "compile_join_hydrator",
-    "count",
-    "delete",
-    "dense_rank",
-    "excluded",
-    "exists",
-    "false",
-    "first_value",
-    "func",
-    "has_deferred_params",
-    "hydrate",
-    "insert",
-    "json_bytes",
-    "lag",
-    "last_value",
-    "lead",
-    "literal",
-    "literal_column",
-    "max_",
-    "max_rows_per_statement",
-    "min_",
-    "model",
-    "not_",
-    "ntile",
-    "null",
-    "or_",
-    "rank",
-    "recursive_cte",
-    "row_number",
-    "select",
-    "sql_function",
-    "sum_",
-    "text",
-    "true",
-    "tuple_",
-    "update",
+    "mapped_column",
+    "model_for",
+    "plan",
+    "result_processor",
 ]
+
+
+def __getattr__(name: str):
+    """`AsyncpgEngine` is imported lazily: `sqlalchemy.dialects.postgresql.asyncpg`
+    imports the driver, so eagerly exporting it would make asyncpg a hard
+    dependency of `import rowform`."""
+    if name == "AsyncpgEngine":
+        from .asyncpg_engine import AsyncpgEngine
+
+        return AsyncpgEngine
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
