@@ -1,0 +1,27 @@
+version: 2
+
+updates:
+  # uv.lock and pyproject.toml. Grouped and weekly rather than one PR per bump:
+  # every PR here runs a four-interpreter matrix plus postgres, and the library's
+  # only runtime dependency is SQLAlchemy.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      dev-dependencies:
+        patterns: ["*"]
+        exclude-patterns: ["sqlalchemy"]
+    # SQLAlchemy compiles every statement and owns the schema, and the row path
+    # calls into `_cached_result_processor` and `construct_params` — private
+    # surface that a minor release can move. It gets its own PR so the diff is
+    # read rather than merged with a batch of dev-tool bumps.
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      actions:
+        patterns: ["*"]

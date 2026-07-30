@@ -1,0 +1,30 @@
+# Optional: `uv run pre-commit install` to enable. CI is the authority — this only
+# moves the fast half of it earlier.
+#
+# Deliberately no formatter. The project lints with `ruff check` and has never run
+# `ruff format`, so adding it here would reformat every file on the first commit
+# and bury real changes.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0 # keep in step with the `ruff` pin in pyproject's dev group
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # benchmarks/results/ is captured tool output, committed as evidence
+      # (docs/RUNS.md). Reformatting a recorded profile would edit the record, so
+      # the whitespace hooks leave that tree alone.
+      - id: trailing-whitespace
+        exclude: ^benchmarks/results/
+      - id: end-of-file-fixer
+        exclude: ^benchmarks/results/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      # Benchmark result logs are committed on purpose (docs/RUNS.md), but they
+      # are the only large files that should be.
+      - id: check-added-large-files
+        args: [--maxkb=512]

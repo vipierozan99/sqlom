@@ -3,6 +3,7 @@ __pycache__/
 dist/
 .venv/
 .pytest_cache/
+.coverage
 .mypy_cache/
 .serena
 

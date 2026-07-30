@@ -97,5 +97,3 @@ Throughput (req/s) by concurrency:
 | join  | rowform                          | 932  | 1317 | 1220  | 1164  |
 | join  | sqlalchemy-async-core-positional | 739  | 1064 | 942   | 888   |
 | join  | sqlalchemy-async-orm             | 495  | 556  | 464   | 400   |
-
-

@@ -100,4 +100,3 @@ async def closed_loop(
         "p95_ms": pct[95] * 1000,
         "p99_ms": pct[99] * 1000,
     }
-

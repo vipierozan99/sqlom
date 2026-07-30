@@ -82,6 +82,7 @@ dev = [
     "basedpyright>=1.39.9",
     "coverage>=7.15.2",
     "orjson>=3.9",
+    "pre-commit>=4.0",
     "psycopg-pool>=3.2",
     "psycopg[binary]>=3.1",
     "pytest>=9.1.1",
