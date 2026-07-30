@@ -40,8 +40,12 @@ jobs:
   bench:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
+          # `gh` authenticates through GH_TOKEN below, and the only git command
+          # here is a local `rev-parse`, so the checkout token does not need to
+          # stay in .git/config.
+          persist-credentials: false
           ref: main
 
       # (1) Change detection. The tracking issue is the source of truth: if it
@@ -65,7 +69,10 @@ jobs:
 
       - name: Install uv
         if: steps.detect.outputs.run == 'true'
-        uses: astral-sh/setup-uv@v5
+        # Pinned exactly, unlike the other actions here: astral-sh/setup-uv
+        # publishes floating major tags only up to v7, so `@v9` does not
+        # resolve at all. Bump this by hand.
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
 

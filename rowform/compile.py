@@ -31,9 +31,13 @@ conversion (docs/PLAN_CORE_COMPILER.md §7 R1).
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+from .errors import PlanError
 from .planner import Plan
+
+_LOG = logging.getLogger("rowform")
 
 
 def result_processor(column: Any, dialect: Any, coltype: Any) -> Any:
@@ -62,7 +66,7 @@ def compile_hydrator(plan: Plan, dialect: Any, coltypes: list[Any]) -> Any:
     `None` for every column, which is exactly what SQLAlchemy passes there too.
     """
     if len(coltypes) != len(plan.columns):
-        raise ValueError(
+        raise PlanError(
             f"the statement plans {len(plan.columns)} columns but the driver "
             f"described {len(coltypes)}; refusing to hydrate rather than "
             f"mis-assign fields"
@@ -137,4 +141,8 @@ def compile_hydrator(plan: Plan, dialect: Any, coltypes: list[Any]) -> Any:
     exec(source, namespace)  # noqa: S102 -- our own generated source, not external input
     hydrate = namespace["_hydrate"]
     hydrate.__source__ = source
+    # The generated function is also on `hydrate.__source__`; logging it means a
+    # question about what a statement hydrated into is answerable from a log at
+    # DEBUG, without reaching into the query object.
+    _LOG.debug("hydrator built:\n%s", source)
     return hydrate

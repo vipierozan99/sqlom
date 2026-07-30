@@ -65,7 +65,7 @@
     "editor.inlayHints.enabled": "offUnlessPressed",
     "window.zoomLevel": -1,
     "notebook.formatOnSave.enabled": true,
-  
+
     "[yaml]": {
       "editor.defaultFormatter": "esbenp.prettier-vscode",
     },
@@ -77,4 +77,3 @@
       "editor.defaultFormatter": "charliermarsh.ruff",
     },
   }
-  

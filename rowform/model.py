@@ -53,6 +53,8 @@ from typing import (
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped
 
+from .errors import DeclarationError
+
 # Where a built model class is recorded on its `Table`, so the statement planner
 # (`planner.py`) can recover "these selected columns are a User" without being
 # handed a registry. `Table.info` is a public, per-table dict SQLAlchemy never
@@ -148,7 +150,7 @@ def _unwrap_optional(annotation: Any) -> tuple[Any, bool]:
     if origin is typing.Union or origin is types.UnionType:
         present = [a for a in get_args(annotation) if a is not type(None)]
         if len(present) != 1:
-            raise TypeError(
+            raise DeclarationError(
                 f"Mapped[{annotation}] is a union of more than one non-None type; "
                 f"rowform maps one Python type to one column"
             )
@@ -168,7 +170,7 @@ def _sa_type(py_type: Any, type_map: dict[Any, Any]) -> sa.types.TypeEngine[Any]
             continue
         if found is not None:
             return found
-    raise TypeError(
+    raise DeclarationError(
         f"no SQLAlchemy type registered for {py_type!r}. Add it to your Base's "
         f"`type_annotation_map`, or name the type explicitly with "
         f"`mapped_column(sa.SomeType())`."
@@ -204,7 +206,7 @@ class ModelMeta(type):
         abstract = ns.get("__abstract__", False) or "__tablename__" not in ns
         if not fields:
             if not abstract:
-                raise TypeError(
+                raise DeclarationError(
                     f"{name} declares __tablename__ but no Mapped[] fields, so it "
                     f"would build a table with no columns"
                 )
@@ -247,7 +249,7 @@ class ModelMeta(type):
             # The class body reads fine; what reordered it is that inherited
             # fields sort ahead of own fields (§5b-i). Say so, since the stdlib
             # message names two fields the author never wrote in that order.
-            raise TypeError(
+            raise DeclarationError(
                 f"{name}: {err}. Fields inherited from a base or mixin come before "
                 f"this class's own fields ({', '.join(fields)}), so a base field "
                 f"with a default blocks every field declared after it. Declare "
@@ -309,7 +311,7 @@ class ModelMeta(type):
         try:
             return type.__getattribute__(cls, "__table__")
         except AttributeError:
-            raise TypeError(
+            raise DeclarationError(
                 f"{cls.__name__} is abstract (no __tablename__), so it has no table "
                 f"to select from"
             ) from None
@@ -387,7 +389,7 @@ def _collect_specs(cls: type, bases: tuple[type, ...], ns: dict[str, Any]) -> di
         if get_origin(hint) is not Mapped:
             continue
         if field_name in _RESERVED:
-            raise TypeError(
+            raise DeclarationError(
                 f"{cls.__name__}.{field_name} collides with a reserved name "
                 f"({', '.join(sorted(_RESERVED))})"
             )
@@ -400,7 +402,7 @@ def _collect_specs(cls: type, bases: tuple[type, ...], ns: dict[str, Any]) -> di
     pinned = ns.get("__column_order__")
     if pinned is not None:
         if set(pinned) != set(specs):
-            raise TypeError(
+            raise DeclarationError(
                 f"{cls.__name__}.__column_order__ must list every Mapped[] field "
                 f"exactly once; missing {sorted(set(specs) - set(pinned))}, "
                 f"unknown {sorted(set(pinned) - set(specs))}"
@@ -583,13 +585,15 @@ def alias(model: type[_M], name: str | None = None, *, of: Any = None) -> type[_
         try:
             table = type.__getattribute__(model, "__table__")
         except AttributeError:
-            raise TypeError(
+            raise DeclarationError(
                 f"{model.__name__} is abstract (no __tablename__), so it has no table to alias"
             ) from None
         source = table.alias(name)
     else:
         if name is not None:
-            raise TypeError("pass a name to .subquery()/.cte() itself, not to alias(of=...)")
+            raise DeclarationError(
+            "pass a name to .subquery()/.cte() itself, not to alias(of=...)"
+        )
         source = of
         _require_exact_columns(model, source)
         setattr(source, MODEL_ATTR, model)
@@ -606,7 +610,7 @@ def _require_exact_columns(model: type[Any], from_clause: Any) -> None:
     scalars. Both are silent, so both are refused here instead.
     """
     if not isinstance(from_clause, sa.FromClause):
-        raise TypeError(
+        raise DeclarationError(
             f"alias(of=...) needs a FromClause — a subquery, CTE, alias or table — "
             f"not {type(from_clause).__name__}. A Select becomes one with "
             f".subquery() or .cte()."
@@ -616,7 +620,7 @@ def _require_exact_columns(model: type[Any], from_clause: Any) -> None:
     want = [col.key for col in declared.values()]
     got = list(from_clause.columns.keys())
     if got != want:
-        raise TypeError(
+        raise DeclarationError(
             f"alias({model.__name__}, of=...) needs exactly that model's columns, "
             f"in order: expected {want}, got {got}. `select()` on a from clause "
             f"expands to all of its columns, so an extra or reordered one would "

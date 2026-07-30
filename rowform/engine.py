@@ -17,16 +17,27 @@ compiles; this runs it.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
+from time import perf_counter
 from typing import Any, TypeVar, overload
 
 import sqlalchemy as sa
 from sqlalchemy import Select
 
+from .errors import ConfigurationError, EngineStateError, StatementError
 from .query import CoreQuery
 from .transaction import _ACTIVE, Transaction
+
+_LOG = logging.getLogger("rowform")
+
+#: What an `observer` is handed after every statement: the SQL as executed, how
+#: long the round trip took in seconds, and how many rows came back — `None` for a
+#: statement that returns none, where the driver's own report is the useful number
+#: and `execute()` already returns it.
+Observer = Callable[[str, float, "int | None"], None]
 
 # One type variable per selected entity. The overloads below are written out per
 # arity rather than with a variadic, because that is exactly the information a
@@ -45,9 +56,16 @@ class Engine(ABC):
     #: type handling both come from it.
     dialect: Any
 
-    def __init__(self, dsn: str, **pool_kwargs: Any):
+    def __init__(self, dsn: str, *, observer: Observer | None = None, **pool_kwargs: Any):
         self.dsn = dsn
         self.pool: Any = None
+        #: Called after every statement with `(sql, seconds, rows)` — the hook for
+        #: slow-query logs, per-request counters or a tracing span. Reassignable at
+        #: any time; `None` disables it, which is one attribute load and a branch
+        #: per statement and nothing at all per row. Exceptions raised inside it
+        #: are not caught: it runs on the caller's path, so it must be cheap and
+        #: must not throw.
+        self.observer = observer
         self._pool_kwargs = pool_kwargs
         self._queries: dict[Any, CoreQuery[Any]] = {}
 
@@ -59,6 +77,7 @@ class Engine(ABC):
         connections open against the server with nothing holding them."""
         if self.pool is None:
             self.pool = await self._open_pool()
+            _LOG.debug("pool opened: %s", type(self).__name__)
         return self.pool
 
     async def close(self) -> None:
@@ -68,10 +87,11 @@ class Engine(ABC):
         pool, self.pool = self.pool, None
         if pool is not None:
             await self._close_pool(pool)
+            _LOG.debug("pool closed: %s", type(self).__name__)
 
     def _require_pool(self) -> Any:
         if self.pool is None:
-            raise RuntimeError(
+            raise EngineStateError(
                 "engine is not connected — await engine.connect() first "
                 "(or it has been closed)"
             )
@@ -180,6 +200,87 @@ class Engine(ABC):
         return hydrate(rows)
 
     @overload
+    def fetch_iter(
+        self, statement: CoreQuery[R], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[R]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Select[tuple[R]], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[R]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Select[tuple[R, R2]], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[tuple[R, R2]]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Select[tuple[R, R2, R3]], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[tuple[R, R2, R3]]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Select[tuple[R, R2, R3, R4]], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[tuple[R, R2, R3, R4]]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Any, *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[Any]: ...
+
+    def fetch_iter(self, statement: Any, *, chunk: int = 1000, **params: Any) -> Any:
+        """The same rows as `fetch_all`, `chunk` at a time, without ever holding
+        them all.
+
+            async for user in engine.fetch_iter(sa.select(User), chunk=500):
+                await sink.write(user)
+
+        `fetch_all` builds one list, so peak memory is the whole result; an export
+        or a backfill over a large table is the case that does not fit. Here each
+        chunk is hydrated by the same generated function and handed over row by
+        row, so what is live is one chunk, not one result set.
+
+        The connection is held for the whole iteration — that is what makes it a
+        cursor rather than repeated `LIMIT`/`OFFSET` queries, and it means a slow
+        consumer holds a pooled connection for as long as it takes. Abandoning the
+        loop early is safe: leaving the `async for` closes the cursor.
+
+        Not every statement can stream on every driver, and the difference is the
+        server's, not this library's: `PsycopgEngine` uses a server-side cursor,
+        which postgres cannot `DECLARE` for `INSERT ... RETURNING` — it raises
+        `UnsupportedError` saying so. asyncpg streams the same statement through a
+        portal, and sqlite streams anything.
+        """
+        self._reject_if_in_transaction("fetch_iter")
+        return self._iterate(statement, chunk, params, self._acquire)
+
+    async def _iterate(
+        self, statement: Any, chunk: int, params: dict[str, Any], acquire: Any
+    ) -> AsyncIterator[Any]:
+        """Shared by `Engine.fetch_iter` and `Transaction.fetch_iter`; the only
+        difference is whether the connection comes from the pool or is the
+        transaction's own."""
+        if chunk < 1:
+            raise ConfigurationError(f"chunk must be at least 1, got {chunk}")
+        query, extracted = self._require_rows(statement)
+        sql, bound = query.bind(params, extracted)
+        start = perf_counter() if self.observer is not None else 0.0
+        total = 0
+        async with acquire() as conn:
+            async for rows, description in self._stream(conn, sql, bound, chunk, query):
+                hydrate = query._hydrate
+                if hydrate is None:
+                    hydrate = query.hydrator(self.dialect, description)
+                total += len(rows)
+                for row in hydrate(rows):
+                    yield row
+        # One call for the whole stream, with the total row count. Unlike the
+        # other paths, this duration includes the consumer's own time between
+        # chunks — there is no round trip to time in isolation.
+        self._observe(sql, start, total)
+
+    @overload
     async def fetch_one(self, statement: CoreQuery[R], **params: Any) -> R | None: ...
 
     @overload
@@ -215,13 +316,16 @@ class Engine(ABC):
         """
         query, extracted = self._query_for(statement)
         if query.returns_rows:
-            raise ValueError(
+            raise StatementError(
                 "this statement produces rows — use fetch_all() to get them, "
                 "rather than execute(), which would discard them"
             )
         sql, bound = query.bind(params, extracted)
+        start = perf_counter() if self.observer is not None else 0.0
         async with self._acquire() as conn:
-            return await self._execute(conn, sql, bound)
+            result = await self._execute(conn, sql, bound)
+        self._observe(sql, start, None)
+        return result
 
     async def execute_many(self, statement: Any, params: Sequence[dict[str, Any]]) -> Any:
         """One compiled statement, many parameter sets, one driver round trip."""
@@ -232,8 +336,11 @@ class Engine(ABC):
         # One compiled statement, so every row shares its SQL; an expanding
         # statement would not, and executemany cannot express that anyway.
         sql = shaped[0][0]
+        start = perf_counter() if self.observer is not None else 0.0
         async with self._acquire() as conn:
-            return await self._execute_many(conn, sql, [bound for _, bound in shaped])
+            result = await self._execute_many(conn, sql, [bound for _, bound in shaped])
+        self._observe(sql, start, None)
+        return result
 
     # --- schema -------------------------------------------------------------
 
@@ -316,7 +423,7 @@ class Engine(ABC):
         plausible wrong results."""
         active = _ACTIVE.get()
         if active is not None and active._engine is self:
-            raise RuntimeError(
+            raise EngineStateError(
                 f"engine.{method}() was called inside engine.transaction(); it would "
                 f"run on a different pooled connection and miss the transaction's "
                 f"uncommitted state. Use tx.{method}() instead."
@@ -327,7 +434,7 @@ class Engine(ABC):
     def _require_rows(self, statement: Any) -> tuple[CoreQuery[Any], Any]:
         query, extracted = self._query_for(statement)
         if not query.returns_rows:
-            raise ValueError(
+            raise StatementError(
                 "this statement produces no rows; hydrating it would return [] and "
                 "look like 'nothing matched'. Use execute() for it, or add "
                 "returning(...)."
@@ -346,11 +453,24 @@ class Engine(ABC):
         """
         sql, bound = query.bind(params, extracted)
         hydrate = query._hydrate
+        start = perf_counter() if self.observer is not None else 0.0
         async with acquire() as conn:
             rows, description = await self._fetch(conn, sql, bound, hydrate is None)
         if hydrate is None:
             hydrate = query.hydrator(self.dialect, description)
+        self._observe(sql, start, len(rows))
         return rows, hydrate
+
+    def _observe(self, sql: str, start: float, rows: int | None) -> None:
+        """Hand one completed statement to the `observer`, if there is one.
+
+        Timing covers the driver round trip, not hydration: hydration is the part
+        this library controls and benchmarks, while the round trip is what a
+        slow-query log is actually about.
+        """
+        observer = self.observer
+        if observer is not None:
+            observer(sql, perf_counter() - start, rows)
 
     # --- driver hooks -------------------------------------------------------
 
@@ -375,6 +495,19 @@ class Engine(ABC):
         `describe` is true, so a driver that has to do extra work for it (asyncpg
         must prepare the statement to read attribute OIDs) can skip that work on
         every subsequent call.
+        """
+
+    @abstractmethod
+    def _stream(
+        self, conn: Any, sql: str, params: Any, chunk: int, query: CoreQuery[Any]
+    ) -> AsyncIterator[tuple[Any, Any]]:
+        """Yield `(rows, description)` per chunk, incrementally from the server.
+
+        Same `description` contract as `_fetch`, but supplied on every chunk
+        because the first one is where the hydrator gets built. Each driver's own
+        incremental primitive differs — `fetchmany` on a sqlite cursor, a portal
+        on asyncpg, a `DECLARE`d cursor on psycopg — and so does what it can
+        stream, which is why the statement is passed in.
         """
 
     @abstractmethod

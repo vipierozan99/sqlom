@@ -1,0 +1,50 @@
+name: Feature request
+description: Something the library should do and does not
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Worth reading first: [What this
+        costs](https://github.com/vipierozan99/sqlom#-what-this-costs). Some
+        absences are decisions rather than gaps — relationships, lazy loading, an
+        identity map and a unit of work are all deliberately not here. Arguing
+        that one of them should be is a fine thing to open an issue about; it is
+        just a bigger conversation than most.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and where the library gets in the way.
+    validations:
+      required: true
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: What it might look like
+      description: Sketch the API you'd want to write, even roughly.
+      render: python
+    validations:
+      required: false
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you do today
+      description: >
+        The workaround, if there is one — it usually shows how much the feature is
+        worth, and sometimes it turns out to be the right answer.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: cost
+    attributes:
+      label: Cost
+      options:
+        - label: This can be done without putting anything new on the per-row path
+          required: false
+        - label: I don't know — that's part of the question
+          required: false

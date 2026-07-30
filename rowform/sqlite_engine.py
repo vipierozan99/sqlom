@@ -28,14 +28,15 @@ from typing import Any
 
 from sqlalchemy.dialects.sqlite import aiosqlite as _aiosqlite
 
-from .engine import Engine
+from .engine import Engine, Observer
+from .errors import ConfigurationError, UnsupportedError
 from .transaction import Transaction
 
 
 def _reject_unsupported(kwargs: dict[str, Any]) -> None:
     unsupported = {k: v for k, v in kwargs.items() if v}
     if unsupported:
-        raise NotImplementedError(
+        raise UnsupportedError(
             f"sqlite has no session-level isolation levels and no read-only/"
             f"deferrable transactions — its model is WAL plus BEGIN DEFERRED/"
             f"IMMEDIATE/EXCLUSIVE. Accepting {sorted(unsupported)} as no-ops would "
@@ -45,36 +46,75 @@ def _reject_unsupported(kwargs: dict[str, Any]) -> None:
 
 
 class _SqlitePool:
-    """Fixed-size pool of aiosqlite connections. `min_size`/`max_size` are
-    accepted by `SqliteEngine` only for call-site parity with the other engines —
-    there is no elastic growth to configure."""
+    """`min_size` connections opened up front, growing to `max_size` on demand.
 
-    def __init__(self, path: str, size: int):
+    The same two knobs asyncpg's pool and `psycopg_pool` take, so the three
+    engines size alike. They used to be accepted and then collapsed to
+    `max(min_size, max_size)`, which opened `min_size` connections eagerly when
+    it was the larger of the two and made `max_size` not a maximum.
+    """
+
+    def __init__(self, path: str, min_size: int, max_size: int):
         self._path = path
-        self._size = size
+        self._min = min_size
+        self._max = max_size
+        self._count = 0
         self._all: list[Any] = []
         self._idle: asyncio.Queue[Any] = asyncio.Queue()
 
     async def open(self) -> None:
+        # A failure part-way through leaves this pool object unreferenced —
+        # `_open_pool` never returns, so `engine.pool` is never assigned and
+        # nothing can close what was already opened. Close it here instead, or a
+        # retried `connect()` accumulates file handles.
+        try:
+            for _ in range(self._min):
+                self._count += 1
+                self._idle.put_nowait(await self._connect())
+        except BaseException:
+            await self.close()
+            raise
+
+    async def _connect(self) -> Any:
         import aiosqlite
 
-        for _ in range(self._size):
-            conn = await aiosqlite.connect(self._path, isolation_level=None)
+        conn = await aiosqlite.connect(self._path, isolation_level=None)
+        # Registered in `_all` only once it is fully set up, so a PRAGMA that
+        # raises has to close the connection itself — nothing else knows about it
+        # yet.
+        try:
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA synchronous=NORMAL")
-            self._all.append(conn)
-            self._idle.put_nowait(conn)
+        except BaseException:
+            await conn.close()
+            raise
+        self._all.append(conn)
+        return conn
 
     async def close(self) -> None:
         while not self._idle.empty():
             self._idle.get_nowait()
         conns, self._all = self._all, []
+        self._count = 0
         for conn in conns:
             await conn.close()
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[Any]:
-        conn = await self._idle.get()
+        # Below the ceiling, open rather than queue: a waiter blocking on an idle
+        # queue while the pool is still allowed to grow is waiting for a
+        # connection that need not exist yet. The counter is bumped *before* the
+        # await, so two tasks arriving together cannot both decide there is room
+        # and overshoot `max_size`.
+        if self._idle.empty() and self._count < self._max:
+            self._count += 1
+            try:
+                conn = await self._connect()
+            except BaseException:
+                self._count -= 1
+                raise
+        else:
+            conn = await self._idle.get()
         try:
             yield conn
         finally:
@@ -86,15 +126,29 @@ class SqliteEngine(Engine):
 
     dialect = _aiosqlite.dialect()
 
-    def __init__(self, path: str, *, min_size: int = 1, max_size: int = 5, **kwargs: Any):
+    def __init__(
+        self,
+        path: str,
+        *,
+        min_size: int = 1,
+        max_size: int = 5,
+        observer: Observer | None = None,
+        **kwargs: Any,
+    ):
         if kwargs:
-            raise TypeError(f"unexpected keyword arguments: {sorted(kwargs)}")
-        super().__init__(path)
+            raise ConfigurationError(f"unexpected keyword arguments: {sorted(kwargs)}")
+        if min_size < 0 or max_size < 1 or max_size < min_size:
+            raise ConfigurationError(
+                f"pool sizes must satisfy 0 <= min_size <= max_size and max_size >= 1; "
+                f"got min_size={min_size}, max_size={max_size}"
+            )
+        super().__init__(path, observer=observer)
         self.path = path
-        self._pool_size = max(min_size, max_size)
+        self._min_size = min_size
+        self._max_size = max_size
 
     async def _open_pool(self) -> Any:
-        pool = _SqlitePool(self.path, self._pool_size)
+        pool = _SqlitePool(self.path, self._min_size, self._max_size)
         await pool.open()
         return pool
 
@@ -110,6 +164,21 @@ class SqliteEngine(Engine):
         # sqlite3 reports no type codes at all — `description[i][1]` is always
         # None — which is exactly what SQLAlchemy passes its own processors here.
         return rows, cursor.description if describe else None
+
+    async def _stream(self, conn, sql, params, chunk, query):
+        """sqlite3's own cursor is already incremental, so `fetchmany` is the whole
+        implementation — and unlike postgres it will stream anything that returns
+        rows, `INSERT ... RETURNING` included."""
+        cursor = await conn.execute(sql, params)
+        try:
+            description = cursor.description
+            while True:
+                rows = await cursor.fetchmany(chunk)
+                if not rows:
+                    return
+                yield rows, description
+        finally:
+            await cursor.close()
 
     async def _execute(self, conn, sql, params):
         cursor = await conn.execute(sql, params or ())

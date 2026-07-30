@@ -18,6 +18,7 @@ get a tuple. That branch is decided by the dialect, not by this module.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -25,7 +26,14 @@ from typing import Any
 from sqlalchemy.dialects.postgresql import psycopg as _psycopg
 
 from .engine import Engine
+from .errors import ConfigurationError, UnsupportedError
 from .transaction import Transaction
+
+# Cursor names are per *session*, so two streams sharing one connection — which is
+# exactly what `tx.fetch_iter()` inside another `tx.fetch_iter()` does — must not
+# ask for the same name. A fixed one raises `DuplicateCursor: cursor
+# "rowform_stream" already exists` on the second.
+_STREAM_NAMES = itertools.count()
 
 
 class PsycopgEngine(Engine):
@@ -52,6 +60,33 @@ class PsycopgEngine(Engine):
         cursor = await conn.execute(sql, params)
         rows = await cursor.fetchall()
         return rows, cursor.description if describe else None
+
+    async def _stream(self, conn, sql, params, chunk, query):
+        """A named cursor, which is psycopg's server-side one: `DECLARE` on the
+        server, `FETCH` per chunk. The unnamed cursor would also chunk, but only
+        after the driver had already read every row into the client, which is the
+        memory this method exists to avoid.
+
+        The cost is that postgres will not `DECLARE` a cursor for
+        `INSERT ... RETURNING` — it is a syntax error there — so that case is
+        refused up front instead of surfacing as one. `AsyncpgEngine` streams it
+        through a portal, and `fetch_all` works on either.
+        """
+        if not query.is_select:
+            raise UnsupportedError(
+                "PsycopgEngine.fetch_iter streams through a server-side cursor, and "
+                "postgres will only DECLARE one for a SELECT — not for a write with "
+                "RETURNING. Use fetch_all() for this statement, or AsyncpgEngine, "
+                "which streams it through a portal."
+            )
+        async with conn.cursor(name=f"rowform_stream_{next(_STREAM_NAMES)}") as cursor:
+            await cursor.execute(sql, params)
+            description = cursor.description
+            while True:
+                rows = await cursor.fetchmany(chunk)
+                if not rows:
+                    return
+                yield rows, description
 
     async def _execute(self, conn, sql, params):
         # psycopg binds a sequence or mapping, never varargs; None means "no
@@ -90,7 +125,7 @@ class PsycopgEngine(Engine):
         readonly = kwargs.pop("readonly", None)
         deferrable = kwargs.pop("deferrable", None)
         if kwargs:
-            raise TypeError(f"unexpected keyword arguments: {sorted(kwargs)}")
+            raise ConfigurationError(f"unexpected keyword arguments: {sorted(kwargs)}")
 
         async with self._acquire() as conn:
             level = None
@@ -100,7 +135,7 @@ class PsycopgEngine(Engine):
                 try:
                     level = IsolationLevel[isolation.upper()]
                 except KeyError:
-                    raise ValueError(
+                    raise ConfigurationError(
                         f"unknown isolation level {isolation!r}; expected one of "
                         f"{', '.join(lvl.name.lower() for lvl in IsolationLevel)}"
                     ) from None

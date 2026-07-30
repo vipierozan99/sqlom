@@ -1,5 +1,9 @@
 # ⚡ rowform
 
+[![CI](https://github.com/vipierozan99/sqlom/actions/workflows/ci.yml/badge.svg)](https://github.com/vipierozan99/sqlom/actions/workflows/ci.yml)
+[![Python 3.11–3.14](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://github.com/vipierozan99/sqlom/blob/main/pyproject.toml)
+[![Typed](https://img.shields.io/badge/typing-py.typed-blue)](https://peps.python.org/pep-0561/)
+
 **SQLAlchemy's schema and SQL. Compiled hydration. No instance state.**
 
 `rowform` is a read path for high-throughput Python services. SQLAlchemy Core
@@ -87,6 +91,17 @@ Full numbers and — more usefully — a log of **eleven published claims that t
 out to be wrong**, with how each was caught:
 [BENCHMARKS.md](docs/BENCHMARKS.md), [METHODOLOGY.md](docs/METHODOLOGY.md),
 [FINDINGS.md](docs/FINDINGS.md).
+
+---
+
+## 📚 Documentation
+
+| | |
+|---|---|
+| [GUIDE.md](docs/GUIDE.md) | recipes — FastAPI, pagination, streaming, testing, pool sizing, migrating off the ORM |
+| [API.md](docs/API.md) | every public name, and what it returns |
+| [BENCHMARKS.md](docs/BENCHMARKS.md) · [METHODOLOGY.md](docs/METHODOLOGY.md) · [FINDINGS.md](docs/FINDINGS.md) | the numbers, how they were taken, and eleven published claims that turned out to be wrong |
+| [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) | how to work on it; what the codegen can and cannot reach |
 
 ---
 
@@ -214,6 +229,27 @@ first = rf.alias(User, of=(
 The mark lands on the from clause you passed, not on a wrapper of it, so
 `active.id` and the CTE's own `.c.id` stay the same column — wrapping would make
 `select(active, cte.c.id)` two from clauses and a cartesian product.
+### Streaming
+
+`fetch_all` builds one list, so peak memory is the whole result. For an export or
+a backfill, `fetch_iter` reads through a cursor and hydrates a chunk at a time:
+
+```python
+async for user in engine.fetch_iter(sa.select(User), chunk=500):
+    await sink.write(user)          # one chunk live, not one result set
+```
+
+Same rows, same generated hydrator, same exact types — the loop variable is a
+`User`, not an `Any`. The connection is held for the whole iteration, which is
+what makes it a cursor rather than repeated `LIMIT`/`OFFSET` queries, so a slow
+consumer holds a pooled connection while it works. Leaving the loop early closes
+the cursor. Inside a transaction, use `tx.fetch_iter` — on the engine it raises,
+for the same reason `fetch_all` does.
+
+Each driver streams through its own primitive, and one difference is visible:
+`PsycopgEngine` uses a server-side cursor, and postgres will not `DECLARE` one for
+`INSERT ... RETURNING`, so that combination raises `UnsupportedError` naming the
+alternatives. asyncpg streams it through a portal; sqlite streams anything.
 
 ### Hoisting the compile
 
@@ -288,10 +324,49 @@ because `Base.metadata` is an ordinary `MetaData` full of ordinary `Table`s.
 API. Each owns a pool and a dialect; the dialect decides paramstyle and type
 handling, so the same statement runs on all three.
 
+**Pools.** All three size the same way — `min_size` connections opened when
+`connect()` runs, growing to `max_size` on demand and never past it:
+
+```python
+db = rowform.SqliteEngine("app.db", min_size=1, max_size=5)
+db = rowform.AsyncpgEngine(dsn, min_size=4, max_size=16, command_timeout=5)
+```
+
+Beyond those two, keyword arguments go straight to the driver's own pool —
+`asyncpg.create_pool` and `psycopg_pool.AsyncConnectionPool`, where timeouts,
+connection lifetimes and health checks live, and whose defaults differ from each
+other. `SqliteEngine` has no third-party pool behind it and so accepts nothing
+else; an unrecognised keyword is a `ConfigurationError` rather than a silent
+no-op. `connect()` is idempotent, `close()` is repeatable, and `async with
+engine` does both.
+
 `AsyncpgEngine` keeps rowform's **conditional session reset**: asyncpg's pool runs
 a `RESET ALL` round trip on every release, worth 20–30% of throughput, and this
 engine skips it for connections that only ran compiled statements. Anything
 through `acquire()` or `transaction()` is marked dirty and pays it.
+
+### Seeing what runs
+
+An `observer` is called after every statement — engine or transaction, read or
+write — with the SQL, how long the round trip took, and the row count (`None` for
+a statement that returns none):
+
+```python
+def slow_queries(sql: str, seconds: float, rows: int | None) -> None:
+    if seconds > 0.05:
+        log.warning("slow query %.1fms rows=%s: %s", seconds * 1000, rows, sql)
+
+engine = rowform.AsyncpgEngine(dsn, observer=slow_queries)   # or engine.observer = ...
+```
+
+Leaving it `None` costs one attribute load and a branch per statement and nothing
+per row, which is below the benchmark's noise floor. Exceptions raised inside it
+are not caught — it runs on the caller's path.
+
+`logging.getLogger("rowform")` emits at DEBUG and nowhere else: one line per
+statement *compiled* (not per execute, so it also shows whether the compile cache
+is working), one per hydrator built — carrying the generated source — and one per
+pool open and close.
 
 ---
 
@@ -374,9 +449,9 @@ Stated plainly, because most of it is not recoverable:
 ## 🤝 Contributing
 
 ```bash
-git clone https://github.com/vipierozan99/rowform && cd rowform
+git clone https://github.com/vipierozan99/sqlom && cd sqlom
 uv sync --all-extras
-just test          # 259 tests, sqlite + postgres, plus the type checker
+just test          # sqlite + postgres, plus the type checker
 just lint
 just typecheck
 just bench micro run --shape flat
@@ -393,7 +468,13 @@ Types are tested, not just declared: `tests/typing/positive.py` asserts exact
 inference with `typing.assert_type`, `tests/typing/negative.py` carries a
 `# pyright: ignore` on every line that must fail, and the checker runs with
 `reportUnnecessaryTypeIgnoreComment` so a suppression that stops being needed
-fails the build.
+fails the build. And the row path is tested against SQLAlchemy Core as an oracle
+over *generated* statements (`tests/test_property_hydration.py`), because a fixed
+schema only catches what someone thought to put in it — which is how the
+converter table in correction 11 passed its tests while being wrong.
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the rest: what CI checks, how to run the
+benchmarks honestly, and what is deliberately out of scope.
 
 ---
 

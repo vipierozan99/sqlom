@@ -21,6 +21,7 @@ from typing import Any
 
 from sqlalchemy.sql.expression import Join
 
+from .errors import PlanError
 from .model import model_for
 
 # One slot of the output tuple, in select order:
@@ -77,7 +78,7 @@ def plan(stmt: Any) -> Plan:
             index += width
 
     if not entities:
-        raise ValueError("a statement must select at least one column")
+        raise PlanError("a statement must select at least one column")
     return Plan(entities, columns)
 
 

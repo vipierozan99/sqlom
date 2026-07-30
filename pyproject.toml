@@ -1,12 +1,41 @@
 [project]
 name = "rowform"
-version = "0.1.0"
-description = "Zero-overhead async data layer for Python: a statically-typed query builder over asyncpg/psycopg, with compiled hydration and orjson serialization."
+# Single-sourced from `rowform.__version__` by [tool.hatch.version] below, so a
+# release cannot ship a package whose metadata and `__version__` disagree.
+dynamic = ["version"]
+description = "SQLAlchemy's schema and SQL, compiled hydration, no instance state: a read path for high-throughput async Python services."
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [
+    { name = "Victor Pierozan", email = "42821343+vipierozan99@users.noreply.github.com" },
+]
+keywords = ["sqlalchemy", "asyncpg", "psycopg", "sqlite", "async", "dataclasses", "codegen"]
+# No `license` field and no `License ::` classifier: the repository carries no
+# LICENSE file yet, and declaring one here would be metadata the repository does
+# not back up. Add both together.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Database :: Front-Ends",
+    "Typing :: Typed",
+]
 # SQLAlchemy is a hard, unconditional dependency: it compiles every statement and
 # owns the schema (docs/PLAN_CORE_COMPILER.md §1a). There is no standalone mode.
 dependencies = ["sqlalchemy>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/vipierozan99/sqlom"
+Repository = "https://github.com/vipierozan99/sqlom"
+Issues = "https://github.com/vipierozan99/sqlom/issues"
+Documentation = "https://github.com/vipierozan99/sqlom/blob/main/docs/GUIDE.md"
+Benchmarks = "https://github.com/vipierozan99/sqlom/blob/main/docs/BENCHMARKS.md"
 
 [project.optional-dependencies]
 asyncpg = ["asyncpg>=0.29"]
@@ -18,6 +47,31 @@ orjson = ["orjson>=3.9"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "rowform/__init__.py"
+
+# The wheel is the library and nothing else. `py.typed` ships with it because it
+# lives inside the package directory — without that marker a type checker ignores
+# every annotation in here (PEP 561), which for this library would silently
+# discard the whole point of the `fetch_all` overloads.
+[tool.hatch.build.targets.wheel]
+packages = ["rowform"]
+
+# The sdist adds what someone rebuilding or auditing the library needs — the test
+# suite and the design/benchmark docs — and leaves out the benchmark harness,
+# recorded result logs and editor config, which are large and only meaningful
+# inside a git checkout.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/rowform",
+    "/tests",
+    "/docs",
+    "/README.md",
+    "/pyproject.toml",
+    "/pytest.ini",
+    "/justfile",
+]
+
 
 [dependency-groups]
 dev = [
@@ -27,6 +81,7 @@ dev = [
     "asyncpg>=0.29",
     "basedpyright>=1.39.9",
     "coverage>=7.15.2",
+    "hypothesis>=6.100",
     "orjson>=3.9",
     "psycopg-pool>=3.2",
     "psycopg[binary]>=3.1",
@@ -72,6 +127,20 @@ reportUnnecessaryTypeIgnoreComment = "error"
 include = ["rowform", "benchmarks", "tests/typing"]
 extraPaths = ["."]
 
+
+[tool.coverage.run]
+source = ["rowform"]
+branch = true
+
+[tool.coverage.report]
+# `...` bodies (abstract driver hooks, overload stubs) and TYPE_CHECKING blocks
+# are declarations, not code paths — counting them would measure how many
+# overloads `fetch_all` has rather than how much of the library runs.
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "@overload",
+    '^\s*\.\.\.$',
+]
 
 [tool.ruff]
 line-length = 100

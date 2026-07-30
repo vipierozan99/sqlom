@@ -1,7 +1,10 @@
 __pycache__/
 *.pyc
+dist/
 .venv/
 .pytest_cache/
+.hypothesis/
+.coverage
 .mypy_cache/
 .serena
 

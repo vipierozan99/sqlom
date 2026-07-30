@@ -1,0 +1,140 @@
+"""The two ways to see what the library is doing: an `observer` per statement,
+and `logging.getLogger("rowform")` at DEBUG.
+
+Both exist because a service needs to answer "which query was slow" without
+reaching into a `CoreQuery`, and because there was previously no way to answer it
+at all — the library imported `logging` nowhere.
+
+The hook is on the caller's path, so the cost of *not* using it is part of the
+contract: `observer=None` is one attribute load and a branch per statement, and
+nothing per row.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import sqlalchemy as sa
+from conftest import Author, seed
+
+import rowform
+
+
+class TestObserver:
+    async def test_a_read_reports_sql_duration_and_row_count(self, engine):
+        seen: list[tuple[str, float, int | None]] = []
+        engine.observer = lambda *call: seen.append(call)
+
+        rows = await engine.fetch_all(sa.select(Author).order_by(Author.id))
+
+        assert len(seen) == 1
+        sql, seconds, count = seen[0]
+        assert "t_authors" in sql
+        assert 0 <= seconds < 10
+        assert count == len(rows)
+
+    async def test_a_write_reports_none_for_the_row_count(self, engine):
+        """`execute()` already returns the driver's own report, which is a rowcount
+        on some drivers and a status tag on others; the observer does not
+        normalise it."""
+        seen: list[tuple[str, float, int | None]] = []
+        engine.observer = lambda *call: seen.append(call)
+
+        await engine.execute(
+            sa.insert(Author.__table__).values(id=7001, name="edsger", active=True)
+        )
+
+        assert len(seen) == 1
+        assert seen[0][2] is None
+
+    async def test_execute_many_is_reported_once(self, engine):
+        seen: list[tuple[str, float, int | None]] = []
+        engine.observer = lambda *call: seen.append(call)
+
+        await engine.execute_many(
+            sa.insert(Author.__table__),
+            [
+                {"id": 7101, "name": "alan", "active": True},
+                {"id": 7102, "name": "grace", "active": True},
+            ],
+        )
+
+        assert len(seen) == 1
+
+    async def test_statements_inside_a_transaction_are_reported(self, engine):
+        """Transaction writes go straight to the driver hooks rather than through
+        `Engine.execute`, so they need their own call — the case a hook wired only
+        into the engine would silently miss."""
+        seen: list[tuple[str, float, int | None]] = []
+        engine.observer = lambda *call: seen.append(call)
+
+        async with engine.transaction() as tx:
+            await tx.execute(
+                sa.insert(Author.__table__).values(id=7201, name="ken", active=True)
+            )
+            await tx.fetch_all(sa.select(Author))
+
+        assert len(seen) == 2
+
+    async def test_it_can_be_passed_to_the_constructor(self, sqlite_path):
+        seen: list[tuple[str, float, int | None]] = []
+        async with rowform.SqliteEngine(sqlite_path, observer=lambda *c: seen.append(c)) as db:
+            await seed(db)
+            await db.fetch_all(sa.select(Author))
+        assert seen
+
+    async def test_none_is_the_default_and_nothing_breaks(self, engine):
+        assert engine.observer is None
+        assert await engine.fetch_all(sa.select(Author))
+
+    async def test_a_slow_query_log_is_the_shape_this_is_for(self, engine, caplog):
+        """The motivating use case, wired end to end."""
+        log = logging.getLogger("myapp.sql")
+        threshold = 0.0  # every statement, so the assertion is not timing-dependent
+
+        def warn_if_slow(sql: str, seconds: float, rows: int | None) -> None:
+            if seconds >= threshold:
+                log.warning("slow query %.6fs rows=%s: %s", seconds, rows, sql)
+
+        engine.observer = warn_if_slow
+        with caplog.at_level(logging.WARNING, logger="myapp.sql"):
+            await engine.fetch_all(sa.select(Author))
+
+        assert any("slow query" in record.message for record in caplog.records)
+
+
+class TestLogging:
+    async def test_compiling_and_hydrating_are_logged_at_debug(self, sqlite_path, caplog):
+        async with rowform.SqliteEngine(sqlite_path) as db:
+            await seed(db)
+            with caplog.at_level(logging.DEBUG, logger="rowform"):
+                await db.fetch_all(sa.select(Author).limit(1))
+
+        messages = [r.message for r in caplog.records if r.name == "rowform"]
+        assert any("compiled:" in m for m in messages)
+        assert any("hydrator built:" in m for m in messages)
+
+    async def test_the_logged_hydrator_is_the_generated_source(self, sqlite_path, caplog):
+        """The codegen is inspectable from a log, not only from `__source__`."""
+        async with rowform.SqliteEngine(sqlite_path) as db:
+            await seed(db)
+            with caplog.at_level(logging.DEBUG, logger="rowform"):
+                await db.fetch_all(sa.select(Author).limit(1))
+
+        built = [r.message for r in caplog.records if "hydrator built:" in r.message]
+        assert built
+        assert "def _hydrate(rows):" in built[0]
+
+    async def test_pool_lifecycle_is_logged(self, sqlite_path, caplog):
+        with caplog.at_level(logging.DEBUG, logger="rowform"):
+            async with rowform.SqliteEngine(sqlite_path):
+                pass
+        messages = [r.message for r in caplog.records]
+        assert any("pool opened" in m for m in messages)
+        assert any("pool closed" in m for m in messages)
+
+    async def test_nothing_is_logged_above_debug(self, engine, caplog):
+        """A library that chatters at INFO is a library people disable."""
+        with caplog.at_level(logging.INFO, logger="rowform"):
+            await engine.fetch_all(sa.select(Author))
+        assert [r for r in caplog.records if r.name == "rowform"] == []

@@ -1,0 +1,118 @@
+name: Performance gate
+
+# The README leads with a ratio, and nothing stopped a PR from quietly spending
+# it. The daily job in benchmarks.yml records a trend on main; this one blocks a
+# regression before it lands.
+#
+# Both sides run on the *same* runner in the *same* job, alternating, because a
+# GitHub-hosted runner is shared and unpinned — comparing against a number
+# recorded on some other machine would measure the machine. Even so this is a
+# gross-regression gate (an accidental per-row `setattr`, a lost hydrator cache),
+# not a few-percent instrument; that needs the pinned local harness
+# (docs/METHODOLOGY.md).
+
+on:
+  pull_request:
+    branches: [main]
+
+# Neither job writes anything back to the repository, so the token they get should
+# not be able to. (benchmarks.yml declares its own, wider, set — it comments on an
+# issue.)
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_PYTHON: "3.11"
+  # Cheap enough for a per-PR gate, still 150 timed iterations per run. `--pin` is
+  # *not* in here: word-splitting an env var turns `--pin ""` into a literal
+  # two-quote token rather than an empty one, so it is passed in the command below
+  # (the same trap benchmarks.yml hit with just's re-tokenisation).
+  BENCH_ARGS: --shape flat --rows 50000 --iterations 150 --warmup 40 --record
+  TOLERANCE: "1.25"
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # need the merge base, so the whole history
+
+      - name: Install uv
+        # Pinned exactly, unlike the other actions here: astral-sh/setup-uv
+        # publishes floating major tags only up to v7, so `@v9` does not
+        # resolve at all. Bump this by hand.
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Check out the merge base beside it
+        id: base
+        run: |
+          BASE=$(git merge-base origin/${{ github.base_ref }} HEAD)
+          echo "sha=$BASE" >> "$GITHUB_OUTPUT"
+          git worktree add /tmp/base "$BASE"
+
+      - name: Sync both checkouts
+        run: |
+          uv sync --all-groups
+          (cd /tmp/base && uv sync --all-groups)
+
+      # Two contenders, and both are needed. `rowform (mock)` has no driver in the
+      # timed region, so a row-layer regression shows there at full size; the
+      # sqlite one is driver-dominated but is the only one that would catch a
+      # regression in the engine or the pool.
+      - name: Run both sides, alternating
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/perf/head /tmp/perf/base
+
+          collect() {   # $1 = checkout dir, $2 = output dir, $3 = --only value, $4 = tag
+            cd "$1"
+            rm -rf benchmarks/results/runs
+            # shellcheck disable=SC2086 -- BENCH_ARGS is a deliberate word list.
+            # `--pin ''` disables CPU pinning: the local default targets cores a
+            # 2-core runner does not have.
+            uv run --all-groups python -m benchmarks micro run $BENCH_ARGS \
+              --pin '' --only "$3"
+            cp "$(find benchmarks/results/runs -name run.json | head -1)" "$2/$4.json"
+            cd - >/dev/null
+          }
+
+          for rep in 1 2; do
+            for only in "rowform" "rowform (mock)"; do
+              slug=$(echo "$only" | tr -cd '[:alnum:]')
+              collect "$GITHUB_WORKSPACE" /tmp/perf/head "$only" "${slug}-${rep}"
+              collect /tmp/base           /tmp/perf/base "$only" "${slug}-${rep}"
+            done
+          done
+
+      - name: Compare
+        run: |
+          uv run python scripts/compare_bench.py \
+            --base /tmp/perf/base/*.json \
+            --head /tmp/perf/head/*.json \
+            --tolerance "$TOLERANCE" | tee /tmp/perf/report.txt
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Performance gate"
+            echo
+            # `github.sha` on a pull_request event is the synthetic merge commit,
+            # which is not a SHA anyone can look up in the branch.
+            echo "head \`${{ github.event.pull_request.head.sha }}\` vs merge base \`${{ steps.base.outputs.sha }}\`,"
+            echo "best of 2 runs per side, alternating on one shared runner."
+            echo
+            echo '```'
+            cat /tmp/perf/report.txt 2>/dev/null || echo "(the benchmark step did not finish)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

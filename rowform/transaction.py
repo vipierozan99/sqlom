@@ -40,7 +40,10 @@ from __future__ import annotations
 import contextvars
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
+from time import perf_counter
 from typing import Any, TypeVar
+
+from .errors import StatementError
 
 R = TypeVar("R")
 
@@ -99,6 +102,15 @@ class Transaction:
         rows, hydrate = await self._engine._run(query, params, self._pinned, extracted)
         return hydrate(rows)
 
+    def fetch_iter(self, statement: Any, *, chunk: int = 1000, **params: Any) -> Any:
+        """`Engine.fetch_iter`, on this block's connection.
+
+        Worth preferring over `engine.fetch_iter` when the stream is long: the
+        cursor and everything read through it then sit inside one transaction the
+        caller controls, rather than one opened per stream.
+        """
+        return self._engine._iterate(statement, chunk, params, self._pinned)
+
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
         rows = await self.fetch_all(statement, **params)
         return rows[0] if rows else None
@@ -112,25 +124,37 @@ class Transaction:
     async def execute(self, statement: Any, **params: Any) -> Any:
         """Run a statement that produces no rows. A raw SQL string is accepted
         too, for the DDL and session state a statement object cannot express."""
+        engine = self._engine
         if isinstance(statement, str):
-            return await self._engine._execute(self.connection, statement, None)
-        query, extracted = self._engine._query_for(statement)
+            start = perf_counter() if engine.observer is not None else 0.0
+            result = await engine._execute(self.connection, statement, None)
+            engine._observe(statement, start, None)
+            return result
+        query, extracted = engine._query_for(statement)
         if query.returns_rows:
-            raise ValueError(
+            raise StatementError(
                 "this statement produces rows — use fetch_all() to get them, "
                 "rather than execute(), which would discard them"
             )
         sql, bound = query.bind(params, extracted)
-        return await self._engine._execute(self.connection, sql, bound)
+        start = perf_counter() if engine.observer is not None else 0.0
+        result = await engine._execute(self.connection, sql, bound)
+        engine._observe(sql, start, None)
+        return result
 
     async def execute_many(self, statement: Any, params: Sequence[dict[str, Any]]) -> Any:
-        query, extracted = self._engine._query_for(statement)
+        engine = self._engine
+        query, extracted = engine._query_for(statement)
         shaped = [query.bind(each, extracted) for each in params]
         if not shaped:
             return None
-        return await self._engine._execute_many(
-            self.connection, shaped[0][0], [bound for _, bound in shaped]
+        sql = shaped[0][0]
+        start = perf_counter() if engine.observer is not None else 0.0
+        result = await engine._execute_many(
+            self.connection, sql, [bound for _, bound in shaped]
         )
+        engine._observe(sql, start, None)
+        return result
 
     def _pinned(self) -> AbstractAsyncContextManager[Any]:
         """Stands in for the engine's pool checkout, handing back this block's
