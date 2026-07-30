@@ -112,7 +112,11 @@ class Transaction:
         return self._engine._iterate(statement, chunk, params, self._pinned)
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
-        rows = await self.fetch_all(statement, **params)
+        """The first row, or None — narrowed to `LIMIT 1` where that is safe, as
+        on the engine (`engine._one_row`)."""
+        from .engine import _one_row
+
+        rows = await self.fetch_all(_one_row(statement), **params)
         return rows[0] if rows else None
 
     async def fetch_value(self, statement: Any, **params: Any) -> Any:

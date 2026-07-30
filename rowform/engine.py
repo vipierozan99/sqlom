@@ -33,6 +33,31 @@ from .transaction import _ACTIVE, Transaction
 
 _LOG = logging.getLogger("rowform")
 
+
+def _one_row(statement: Any) -> Any:
+    """`statement`, narrowed to a single row where that is safe to do.
+
+    `fetch_one` and `fetch_value` read the whole result and threw away everything
+    after the first row, so "get me this user" transferred and hydrated the entire
+    table. Adding the LIMIT is the fix, but only for a `Select` that sets none of
+    its own:
+
+    * a caller's `.limit()` may be a bind parameter, and replacing it would leave
+      their value with nothing to bind to;
+    * a `CoreQuery` is already compiled, so there is no statement left to narrow —
+      hoist it with `.limit(1)` already applied if you want that.
+
+    An OFFSET without a LIMIT is narrowed too: the first row of *that* statement
+    is still what the caller asked for.
+
+    `_limit_clause` is SQLAlchemy-private, like the rest of the compiler surface
+    this library reads (`docs/PLAN_CORE_COMPILER.md`); there is no public way to
+    ask a Select whether it is limited.
+    """
+    if isinstance(statement, Select) and statement._limit_clause is None:
+        return statement.limit(1)
+    return statement
+
 #: What an `observer` is handed after every statement: the SQL as executed, how
 #: long the round trip took in seconds, and how many rows came back — `None` for a
 #: statement that returns none, where the driver's own report is the useful number
@@ -290,8 +315,13 @@ class Engine(ABC):
     async def fetch_one(self, statement: Any, **params: Any) -> Any: ...
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
-        """The first row, or None."""
-        rows = await self.fetch_all(statement, **params)
+        """The first row, or None.
+
+        The statement is narrowed to one row where that is safe (`_one_row`), so
+        this is a `LIMIT 1` rather than a whole result set with everything after
+        the first discarded.
+        """
+        rows = await self.fetch_all(_one_row(statement), **params)
         return rows[0] if rows else None
 
     async def fetch_value(self, statement: Any, **params: Any) -> Any:
