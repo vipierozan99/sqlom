@@ -1283,6 +1283,50 @@ Verified live (docker available locally):
 - `just lint`/`just typecheck`/`just test`: all green (995 passed, 235
   skipped).
 
+### Phase 7 — reworked for the Core-as-compiler rewrite (post-plan)
+
+Not a phase of this plan. rowform was rewritten around SQLAlchemy Core
+([docs/PLAN_CORE_COMPILER.md](docs/PLAN_CORE_COMPILER.md)), which invalidated the
+suite's central framing: "rowform vs SQLAlchemy Core" has no subject once Core
+compiles the SQL on both sides. What changed here, and what held:
+
+**Held.** Every methodology invariant in §4, the harness package, the result
+schema, the equivalence gate, the registry, the three transport tiers, the
+profiling integration. None of it needed to change — which is the strongest
+evidence available that the consolidation in §1 was worth doing, since the thing
+being measured was replaced wholesale and the instrument was not.
+
+**Changed.**
+- `shapes/*.py` collapsed from four parallel declarations per shape to two: the
+  rowform model (which *is* the `Table`) and the ORM models it is compared
+  against. DDL and bulk-insert values are now generated from that declaration
+  rather than hand-written per dialect, so §4's "seed what you query" is
+  structural instead of conventional.
+- A third shape, `wide`, was added — see METHODOLOGY correction 11. §4's
+  *"measure more than one shape"* had been satisfied by `flat` + `join`, but both
+  have the same *type mix*, so neither could see the flaw. The invariant is now
+  stated as "more than one shape, along more than one axis".
+- `bench micro` gained a postgres runner (`--pg-dsn`), closing the gap this log's
+  phase-6 entry recorded as outstanding. It seeds the shape first rather than
+  assuming, since a server left from another run would otherwise be measured
+  against whatever it contained.
+- The contender set is reframed: stock Core's *result layer* is now the headline
+  comparison, the ORM is registered twice (declarative and `MappedAsDataclass`),
+  and **two** floors are permanent.
+- `engines/mock.py` follows the driver seam to its new location — one `_fetch`
+  hook on the engine base — and now subclasses the *sqlite* engine, so its rows
+  arrive as 0/1 and strings and the row layer does the work it would in
+  production. A postgres-flavoured mock would have skipped every conversion and
+  measured a row layer that never runs.
+
+**Two methodology failures hit while doing it**, both now corrections 10 and 11
+in `docs/METHODOLOGY.md`, and both caught by the floors this plan insisted on.
+
+- `just lint` / `just typecheck` / `just test`: all green (252 passed).
+- `bench micro run` recorded for all three shapes across sqlite, mock and
+  postgres; every equivalence gate passed, `wide` with a byte-identical sha256
+  across two drivers.
+
 ## 14. Accepted risks
 
 - **D3 removes the strongest available check on the port.** The refactor changes what sits
