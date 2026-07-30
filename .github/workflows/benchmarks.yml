@@ -1,0 +1,116 @@
+name: Benchmarks (periodic)
+
+# Explores the three-step idea in the task: (1) has main moved since we last
+# benchmarked, (2) if so run the benchmarks, (3) post the result somewhere.
+#
+# Posts to a single tracking issue (one comment per run). That same issue is
+# also the change-detection state: step (1) skips when a comment already exists
+# for main's current commit, so there is no separate marker to drift.
+#
+# Caveat baked into the output: GitHub-hosted runners are shared and unpinned,
+# so these numbers are a *trend / regression* signal, not a quotable baseline
+# (docs/METHODOLOGY.md: absolutes drift with the machine). The in-process micro
+# suite is used precisely because it has the best signal-to-noise here — no
+# docker, no event-loop/pool/TLS.
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily, 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run even if main's tip was already benchmarked"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: benchmarks
+  cancel-in-progress: false
+
+env:
+  UV_PYTHON: "3.11"
+  GH_TOKEN: ${{ github.token }}
+  TRACKING_TITLE: "Benchmark trend (automated)"
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      # (1) Change detection. The tracking issue is the source of truth: if it
+      # already carries a comment for this commit's short sha, we've run it.
+      - name: Find tracking issue and detect change
+        id: detect
+        run: |
+          SHORT=$(git rev-parse --short HEAD)
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+          NUM=$(gh issue list --state open --limit 100 --json number,title \
+                --jq "map(select(.title==\"$TRACKING_TITLE\"))|.[0].number // empty")
+          echo "issue=$NUM" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event.inputs.force }}" != "true" ] && [ -n "$NUM" ] \
+             && gh issue view "$NUM" --json comments \
+                  --jq '.comments[].body' | grep -qF "main @ \`$SHORT\`"; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "main @ \`$SHORT\` already benchmarked — skipping." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install uv
+        if: steps.detect.outputs.run == 'true'
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # (2) Run the benchmarks. Called directly rather than via `just bench` so
+      # the empty `--pin ""` survives — `just`'s {{args}} re-tokenisation would
+      # drop the empty token and bind `--pin` to the next flag. `--pin ""`
+      # disables CPU pinning (the local default targets cores that don't exist
+      # on a 2-core runner).
+      - name: Run micro benchmarks
+        if: steps.detect.outputs.run == 'true'
+        run: |
+          set -o pipefail
+          for shape in flat join; do
+            uv run --all-groups python -m benchmarks micro run \
+              --shape "$shape" --pin "" 2>&1 | tee "bench-$shape.log"
+          done
+
+      - name: Build report
+        if: steps.detect.outputs.run == 'true'
+        run: |
+          {
+            echo "# Benchmark run — main @ \`${{ steps.detect.outputs.short }}\`"
+            echo
+            echo "> Runner: GitHub-hosted \`ubuntu-latest\` — shared and unpinned."
+            echo "> **Not a quotable baseline**; read as a trend / regression signal only."
+            echo
+            for shape in flat join; do
+              echo "## micro / $shape"
+              echo '```'
+              cat "bench-$shape.log"
+              echo '```'
+              echo
+            done
+          } | tee SUMMARY.md >> "$GITHUB_STEP_SUMMARY"
+
+      # (3) Post to the tracking issue — creating it on the first-ever run. The
+      # header line above carries the short sha that step (1) greps for.
+      - name: Post results to the tracking issue
+        if: steps.detect.outputs.run == 'true'
+        run: |
+          NUM="${{ steps.detect.outputs.issue }}"
+          if [ -z "$NUM" ]; then
+            URL=$(gh issue create --title "$TRACKING_TITLE" --body \
+              "Automated benchmark trend — one comment per run of the in-process micro suite on a GitHub-hosted runner (shared, unpinned: a trend signal, **not** a quotable baseline).")
+            NUM=$(basename "$URL")
+          fi
+          gh issue comment "$NUM" --body-file SUMMARY.md
+          echo "Posted to issue #$NUM." >> "$GITHUB_STEP_SUMMARY"

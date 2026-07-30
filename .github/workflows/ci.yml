@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin the interpreter so a new default in uv can't silently change what CI runs
+  # against; matches the project's `requires-python = ">=3.11"`.
+  UV_PYTHON: "3.11"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    # The postgres half of the suite (see tests/conftest.py) connects to
+    # 127.0.0.1:5432 with the default ROWFORM_TEST_DSN. `--pg-required` below
+    # turns "unreachable" from a skip into a failure, so this service must match
+    # that DSN: db rowform_bench, user/password postgres/postgres.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rowform_bench
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      # --all-groups so basedpyright can resolve benchmarks/ imports (fastapi,
+      # locust, typer, the profilers): pyproject `include` type-checks that tree,
+      # and a missing import is a hard error in standard mode.
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      - name: Lint
+        run: just lint
+
+      - name: Typecheck
+        run: just typecheck
+
+      - name: Test (incl. postgres)
+        run: just test . --pg-required
