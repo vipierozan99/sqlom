@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Zero-overhead async data layer for Python: a statically-typed query builder over asyncpg/psycopg, with compiled hydration and orjson serialization."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+# SQLAlchemy is a hard, unconditional dependency: it compiles every statement and
+# owns the schema (docs/PLAN_CORE_COMPILER.md §1a). There is no standalone mode.
+dependencies = ["sqlalchemy>=2.0"]
 
 [project.optional-dependencies]
 asyncpg = ["asyncpg>=0.29"]
@@ -20,6 +22,7 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "aiosqlite>=0.19",
+    "alembic>=1.18.5",
     "async-typer>=0.2.1",
     "asyncpg>=0.29",
     "basedpyright>=1.39.9",
