@@ -65,7 +65,10 @@ jobs:
 
       - name: Install uv
         if: steps.detect.outputs.run == 'true'
-        uses: astral-sh/setup-uv@v9
+        # Pinned exactly, unlike the other actions here: astral-sh/setup-uv
+        # publishes floating major tags only up to v7, so `@v9` does not
+        # resolve at all. Bump this by hand.
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
 
