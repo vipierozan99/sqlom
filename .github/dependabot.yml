@@ -1,27 +1,30 @@
 version: 2
 
+# Alerts, not pull requests.
+#
+# `open-pull-requests-limit: 0` disables version updates for an ecosystem while
+# keeping it declared, so Dependabot still knows what this repository depends on
+# and re-enabling is a one-line change per entry. Nothing here opens a PR or an
+# issue.
+#
+# Two switches this file does *not* control, both under
+# Settings -> Code security:
+#
+#   * **Dependabot alerts** — the notifications this repo wants. Turn ON.
+#   * **Dependabot security updates** — opens a PR per vulnerable dependency.
+#     Turn OFF: it is a repository setting, and `open-pull-requests-limit` does
+#     not apply to it, so leaving it on would still produce the PRs this file is
+#     here to prevent.
 updates:
-  # uv.lock and pyproject.toml. Grouped and weekly rather than one PR per bump:
-  # every PR here runs a four-interpreter matrix plus postgres, and the library's
-  # only runtime dependency is SQLAlchemy.
+  # uv.lock and pyproject.toml.
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
-    groups:
-      dev-dependencies:
-        patterns: ["*"]
-        exclude-patterns: ["sqlalchemy"]
-    # SQLAlchemy compiles every statement and owns the schema, and the row path
-    # calls into `_cached_result_processor` and `construct_params` — private
-    # surface that a minor release can move. It gets its own PR so the diff is
-    # read rather than merged with a batch of dev-tool bumps.
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "monthly"
-    groups:
-      actions:
-        patterns: ["*"]
+    open-pull-requests-limit: 0
