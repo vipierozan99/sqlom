@@ -216,6 +216,21 @@ class TestStatementMatrix:
         assert isinstance(first, Author) and isinstance(second, Author)
         assert first.id < second.id and second.active is True
 
+    async def test_a_cte_hydrates_as_a_model(self, engine):
+        active = rowform.alias(Author, of=sa.select(Author).where(Author.active).cte("active"))
+        rows = await engine.fetch_all(sa.select(active).order_by(active.id))
+        assert [a.name for a in rows] == ["ada", "brian", "dan"]
+        assert all(isinstance(a, Author) for a in rows)
+
+    async def test_a_subquery_joins_back_against_its_table(self, engine):
+        newest = rowform.alias(
+            Author, of=sa.select(Author).order_by(Author.id.desc()).limit(2).subquery()
+        )
+        rows = await engine.fetch_all(
+            sa.select(Book, newest).join(newest, Book.author_id == newest.id).order_by(Book.id)
+        )
+        assert [(b.title, a.name) for b, a in rows] == [("typography", "carol")]
+
     async def test_group_by_and_having(self, engine):
         rows = await engine.fetch_all(
             sa.select(Author.name, sa.func.count(Book.id))

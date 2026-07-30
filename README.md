@@ -185,6 +185,36 @@ hydrates as a `User`, so a self-join needs no cast. `sa.alias(User)` also works
 and hydrates the same way; what it does not do is keep the types, since its
 columns are only reachable as `.c.name`.
 
+A **subquery or CTE** does not hydrate on its own: its columns belong to it, not
+to any table, so there is nothing to recognise. `of=` says the rows are that
+model's:
+
+```python
+active = rowform.alias(User, of=sa.select(User).where(User.active).cte("active"))
+
+await engine.fetch_all(sa.select(active).order_by(active.id))   # list[User]
+```
+
+`of=` demands that model's columns, in order, and **nothing else** — an extra
+column is a `TypeError` rather than a row that hydrates as `(User, int)` while
+still typed `Select[tuple[User]]`. `select()` on a from clause expands to all of
+its columns, and without a `Mapper` there is no notion of "the entity's columns"
+to narrow that to. So filter on the extras inside the subquery and select out the
+model's columns:
+
+```python
+inner = sa.select(User, sa.func.row_number().over(...).label("rk")).subquery()
+first = rowform.alias(User, of=(
+    sa.select(*[inner.c[c.key] for c in User.__table__.c])
+      .where(inner.c.rk == 1)
+      .subquery()
+))
+```
+
+The mark lands on the from clause you passed, not on a wrapper of it, so
+`active.id` and the CTE's own `.c.id` stay the same column — wrapping would make
+`select(active, cte.c.id)` two from clauses and a cartesian product.
+
 ### Hoisting the compile
 
 `fetch_all` accepts a bare statement and caches the compiled form under
@@ -202,14 +232,17 @@ await engine.fetch_all(recent, floor=1000)     # list[User]
 ### Writing
 
 ```python
-await engine.execute(sa.insert(User.__table__).values(name="ada"))
-await engine.execute_many(sa.insert(User.__table__), [{...}, {...}])
-await engine.execute(sa.update(User.__table__).where(User.id == 1).values(hits=User.hits + 1))
+await engine.execute(sa.insert(User).values(name="ada"))
+await engine.execute_many(sa.insert(User), [{...}, {...}])
+await engine.execute(sa.update(User).where(User.id == 1).values(hits=User.hits + 1))
 
 rows = await engine.fetch_all(
-    sa.insert(User.__table__).values(name="ada").returning(User.__table__)
+    sa.insert(User).values(name="ada").returning(User)
 )   # RETURNING hydrates like any other read
 ```
+
+The class stands in for its table in writes exactly as it does in reads, so
+`sa.insert(User)` and `sa.insert(User.__table__)` are the same statement.
 
 `execute()` refuses a statement that returns rows, and `fetch_all()` refuses one
 that does not — a write whose `returning()` you forgot fails loudly instead of
@@ -219,8 +252,8 @@ returning `[]`.
 
 ```python
 async with engine.transaction() as tx:
-    await tx.execute(sa.update(Account.__table__)...)
-    await tx.execute(sa.update(Account.__table__)...)
+    await tx.execute(sa.update(Account)...)
+    await tx.execute(sa.update(Account)...)
     rows = await tx.fetch_all(sa.select(Account).where(...))
 
     async with tx.transaction() as sp:      # a savepoint

@@ -489,6 +489,75 @@ class TestAlias:
         assert repr(rowform.alias(Author, "a2")) == "<alias Author AS a2>"
 
 
+class TestAliasOf:
+    """`of=` says "these rows are Authors" about a subquery or CTE, which is the
+    only way one can hydrate: a CTE has no `.info` and its `.element` is a
+    `Select`, so `model_for` has nothing to walk to."""
+
+    def test_a_subquery_is_scalars_until_it_is_declared(self):
+        sub = sa.select(Author).subquery()
+        assert rowform.model_for(sub) is None
+
+        rowform.alias(Author, of=sub)
+        assert rowform.model_for(sub) is Author
+
+    def test_the_mark_lands_on_the_given_from_clause(self):
+        """Not on a wrapper of it: `select(top, newest.c.id)` has to stay one
+        from clause, or it is a cartesian product."""
+        newest = sa.select(Author).limit(5).subquery()
+        top = rowform.alias(Author, of=newest)
+        assert top.id is newest.c.id
+
+    def test_a_cte_hydrates_as_the_model(self):
+        cte = sa.select(Author).cte("recent")
+        recent = rowform.alias(Author, of=cte)
+        rendered = str(sa.select(recent).where(recent.active))
+        assert "WITH recent AS" in rendered
+        assert "FROM recent" in rendered
+
+    def test_a_union_hydrates_as_the_model(self):
+        both = sa.union_all(sa.select(Author), sa.select(Author)).subquery()
+        assert rowform.model_for(both) is None
+        rowform.alias(Author, of=both)
+        assert rowform.model_for(both) is Author
+
+    def test_an_extra_column_is_refused(self):
+        """`select()` expands every column of a from clause, so an extra one
+        would hydrate as `(Author, int)` while still typed `Select[tuple[Author]]`."""
+        ranked = sa.select(
+            Author, sa.func.row_number().over(order_by=Author.id).label("rk")
+        ).subquery()
+        with pytest.raises(TypeError, match="exactly that model's columns"):
+            rowform.alias(Author, of=ranked)
+
+    def test_reordered_columns_are_refused(self):
+        reordered = sa.select(Author.name, Author.id, Author.active).subquery()
+        with pytest.raises(TypeError, match="exactly that model's columns"):
+            rowform.alias(Author, of=reordered)
+
+    def test_narrowing_past_the_extra_column_is_what_the_error_asks_for(self):
+        inner = sa.select(
+            Author, sa.func.row_number().over(order_by=Author.id).label("rk")
+        ).subquery()
+        narrowed = (
+            sa.select(*[inner.c[c.key] for c in Author.__table__.c])
+            .where(inner.c.rk == 1)
+            .subquery()
+        )
+
+        first = rowform.alias(Author, of=narrowed)
+        assert rowform.model_for(narrowed) is Author
+        assert "rk" in str(sa.select(first))
+
+    def test_a_select_is_refused(self):
+        with pytest.raises(TypeError, match="A Select becomes one with"):
+            rowform.alias(Author, of=sa.select(Author))
+
+    def test_a_name_belongs_to_the_subquery_not_the_alias(self):
+        with pytest.raises(TypeError, match="not to alias"):
+            rowform.alias(Author, "a2", of=sa.select(Author).subquery())
+
+
 class TestDdl:
     def test_create_table_renders_from_the_declaration(self):
         ddl = str(sa.schema.CreateTable(Wide.__table__))

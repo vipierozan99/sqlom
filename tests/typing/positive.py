@@ -83,6 +83,13 @@ assert_type(manager.id > 100, sa.ColumnElement[bool])
 assert_type(sa.select(manager), sa.Select[tuple[Author]])
 assert_type(sa.select(Author, manager), sa.Select[tuple[Author, Author]])
 
+# A declared subquery or CTE is the model too — which is the whole point of
+# `of=` refusing anything but that model's exact columns.
+recent = rowform.alias(Author, of=sa.select(Author).limit(10).subquery())
+
+assert_type(recent.name, InstrumentedAttribute[str])
+assert_type(sa.select(recent), sa.Select[tuple[Author]])
+
 
 # --- prepare() and fetch_all() preserve them -------------------------------
 engine = rowform.SqliteEngine("app.db")
@@ -121,6 +128,7 @@ async def reads() -> None:
         await engine.fetch_all(sa.select(Author, manager).join(manager, Author.id < manager.id)),
         list[tuple[Author, Author]],
     )
+    assert_type(await engine.fetch_all(sa.select(recent)), list[Author])
 
 
 async def transactions() -> None:

@@ -59,6 +59,10 @@ from sqlalchemy.orm import Mapped
 # writes to itself.
 MODEL_KEY = "rowform_model"
 
+# The same record for a from clause that has no `.info` — a subquery or CTE
+# handed to `alias(of=...)`. Only schema items carry `.info`.
+MODEL_ATTR = "_rowform_model"
+
 _M = TypeVar("_M")
 
 # Set on a class the moment it is fully built, and copied forward by
@@ -494,10 +498,18 @@ class Base(metaclass=ModelMeta):
 
 
 def model_for(from_clause: Any) -> type[Any] | None:
-    """The model class a `Table` (or an `alias()` of one) was built from, if any."""
+    """The model class a `FromClause` yields rows of, if any.
+
+    A `Table` carries it in `.info`; a subquery or CTE passed to `alias(of=...)`
+    carries it in `MODEL_ATTR`, since only schema items have an `.info`. An alias
+    of either resolves through `.element`.
+    """
     info = getattr(from_clause, "info", None)
     if isinstance(info, dict) and MODEL_KEY in info:
         return info[MODEL_KEY]
+    marked = getattr(from_clause, MODEL_ATTR, None)
+    if marked is not None:
+        return marked
     element = getattr(from_clause, "element", None)
     if element is not None and element is not from_clause:
         return model_for(element)
@@ -505,23 +517,23 @@ def model_for(from_clause: Any) -> type[Any] | None:
 
 
 class _Alias:
-    """Runtime half of `alias()`: coerces to the `Alias`, resolves field names.
+    """Runtime half of `alias()`: coerces to the from clause, resolves field names.
 
     Field names rather than `.c` names, because the two differ whenever a column
     was renamed — `slug: Mapped[str] = mapped_column("url_slug")` is `a.slug`
-    here and `a.c.url_slug` on the `Alias`.
+    here and `a.c.url_slug` on the from clause.
     """
 
-    __slots__ = ("_alias", "_columns", "_model")
+    __slots__ = ("_columns", "_from", "_model")
 
-    def __init__(self, model: type[Any], alias: sa.Alias):
+    def __init__(self, model: type[Any], from_clause: Any):
         self._model = model
-        self._alias = alias
+        self._from = from_clause
         declared = type.__getattribute__(model, "__columns__")
-        self._columns = {name: alias.columns[col.key] for name, col in declared.items()}
+        self._columns = {name: from_clause.columns[col.key] for name, col in declared.items()}
 
-    def __clause_element__(self) -> sa.Alias:
-        return self._alias
+    def __clause_element__(self) -> Any:
+        return self._from
 
     def __getattr__(self, key: str) -> Any:
         try:
@@ -533,14 +545,20 @@ class _Alias:
             ) from None
 
     def __repr__(self) -> str:
-        return f"<alias {self._model.__name__} AS {self._alias.name}>"
+        name = getattr(self._from, "name", None) or "<unnamed>"
+        return f"<alias {self._model.__name__} AS {name}>"
 
 
-def alias(model: type[_M], name: str | None = None) -> type[_M]:
-    """A second reference to a model's table, for self-joins.
+def alias(model: type[_M], name: str | None = None, *, of: Any = None) -> type[_M]:
+    """A second reference to a model's rows: another alias of its table, or a
+    subquery/CTE that yields them.
 
         mgr = rowform.alias(User, "mgr")
         sa.select(User, mgr).join(mgr, User.manager_id == mgr.id)
+
+        newest = sa.select(User).order_by(User.id.desc()).limit(10).subquery()
+        top = rowform.alias(User, of=newest)
+        sa.select(top).where(top.active)
 
     `sa.orm.aliased()` cannot serve here: it inspects its argument for a `Mapper`,
     and a rowform model has none (`NoInspectionAvailable`). `sa.alias(User)` does
@@ -554,11 +572,54 @@ def alias(model: type[_M], name: str | None = None) -> type[_M]:
     `User.id`, an `sa.Column` declared as `InstrumentedAttribute`, and it is the
     only shape that keeps per-field types: an alias class of its own could only
     offer `__getattr__`, which erases them.
+
+    `of=` records the model **on the from clause given**, not on a wrapper of it,
+    so `of.c.id` and the returned alias's `.id` stay the same column — wrapping
+    would make `select(top, newest.c.id)` two from clauses and a cartesian
+    product. The mark is a statement of fact about those rows, and it is why
+    `_require_exact_columns` refuses anything but an exact match.
     """
-    try:
-        table = type.__getattribute__(model, "__table__")
-    except AttributeError:
+    if of is None:
+        try:
+            table = type.__getattribute__(model, "__table__")
+        except AttributeError:
+            raise TypeError(
+                f"{model.__name__} is abstract (no __tablename__), so it has no table to alias"
+            ) from None
+        source = table.alias(name)
+    else:
+        if name is not None:
+            raise TypeError("pass a name to .subquery()/.cte() itself, not to alias(of=...)")
+        source = of
+        _require_exact_columns(model, source)
+        setattr(source, MODEL_ATTR, model)
+    return typing.cast("type[_M]", _Alias(model, source))
+
+
+def _require_exact_columns(model: type[Any], from_clause: Any) -> None:
+    """`of=` demands the model's columns, in order, and nothing else.
+
+    `select(alias)` expands to every column of its from clause — SQLAlchemy's
+    coercion has no notion of "the entity's columns" without a `Mapper`. So a
+    subquery carrying one extra column would hydrate as `(User, extra)` while
+    still typed `Select[tuple[User]]`, and a reordered one would degrade to
+    scalars. Both are silent, so both are refused here instead.
+    """
+    if not isinstance(from_clause, sa.FromClause):
         raise TypeError(
-            f"{model.__name__} is abstract (no __tablename__), so it has no table to alias"
-        ) from None
-    return typing.cast("type[_M]", _Alias(model, table.alias(name)))
+            f"alias(of=...) needs a FromClause — a subquery, CTE, alias or table — "
+            f"not {type(from_clause).__name__}. A Select becomes one with "
+            f".subquery() or .cte()."
+        )
+
+    declared = type.__getattribute__(model, "__columns__")
+    want = [col.key for col in declared.values()]
+    got = list(from_clause.columns.keys())
+    if got != want:
+        raise TypeError(
+            f"alias({model.__name__}, of=...) needs exactly that model's columns, "
+            f"in order: expected {want}, got {got}. `select()` on a from clause "
+            f"expands to all of its columns, so an extra or reordered one would "
+            f"change the rows without changing the type. Narrow the subquery to "
+            f"these columns — filter on the extras inside it."
+        )

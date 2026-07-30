@@ -134,6 +134,35 @@ class TestAliases:
         assert [e[3] for e in p.entities] == [False, True]
 
 
+class TestSubqueriesAndCtes:
+    """Undeclared, a subquery is scalars — a CTE's `.element` is a `Select`, so
+    there is nothing for `model_for` to walk to. `alias(of=...)` supplies it."""
+
+    def test_an_undeclared_subquery_is_scalars(self):
+        assert kinds(plan(sa.select(sa.select(Author).subquery()))) == ["column"] * 3
+
+    def test_a_declared_subquery_is_the_model(self):
+        sub = sa.select(Author).subquery()
+        declared = rowform.alias(Author, of=sub)
+        p = plan(sa.select(declared))
+        assert models(p) == [Author]
+        assert p.wrap is False
+
+    def test_a_declared_cte_is_the_model(self):
+        declared = rowform.alias(Author, of=sa.select(Author).cte("recent"))
+        assert models(plan(sa.select(declared))) == [Author]
+
+    def test_a_declared_cte_joins_against_the_table(self):
+        declared = rowform.alias(Author, of=sa.select(Author).cte("recent"))
+        p = plan(sa.select(Author, declared).join(declared, Author.id == declared.id))
+        assert models(p) == [Author, Author]
+
+    def test_a_column_of_a_declared_subquery_is_still_a_scalar(self):
+        sub = sa.select(Author).subquery()
+        rowform.alias(Author, of=sub)
+        assert kinds(plan(sa.select(sub.c.name))) == ["column"]
+
+
 class TestReturning:
     def test_insert_returning_a_whole_model(self):
         p = plan(sa.insert(Author.__table__).returning(Author.__table__))
