@@ -28,7 +28,7 @@ from typing import Any
 
 from sqlalchemy.dialects.sqlite import aiosqlite as _aiosqlite
 
-from .engine import DEFAULT_CACHE_SIZE, Engine, Observer
+from .engine import DEFAULT_CACHE_SIZE, Engine, Observer, PoolStats
 from .errors import ConfigurationError, UnsupportedError
 from .transaction import Transaction
 
@@ -166,6 +166,17 @@ class SqliteEngine(Engine):
         pool = _SqlitePool(self.path, self._min_size, self._max_size)
         await pool.open()
         return pool
+
+    def _pool_stats(self, pool: Any) -> PoolStats:
+        # `_count` includes connections currently being opened, which is what
+        # "exists" has to mean for a pool that grows on demand — otherwise the
+        # ceiling could be exceeded between the decision and the connect.
+        return PoolStats(
+            size=pool._count,
+            idle=pool._idle.qsize(),
+            max_size=pool._max,
+            waiting=None,  # asyncio.Queue does not report its waiters
+        )
 
     async def _close_pool(self, pool: Any) -> None:
         await pool.close()

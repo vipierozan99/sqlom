@@ -22,6 +22,7 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, TypeVar, overload
 
@@ -64,6 +65,35 @@ def _one_row(statement: Any) -> Any:
 #: statement that returns none, where the driver's own report is the useful number
 #: and `execute()` already returns it.
 Observer = Callable[[str, float, "int | None"], None]
+
+@dataclass(frozen=True, slots=True)
+class PoolStats:
+    """A snapshot of one engine's pool.
+
+    The `observer` answers "which statement was slow"; this answers the question
+    that usually comes next, which is whether anything was waiting for a
+    connection at the time. Saturation looks like slow queries from the outside,
+    and the two are fixed differently.
+
+    `waiting` is `None` where the driver does not report it — asyncpg's pool
+    keeps no waiter count, and rowform's sqlite pool queues on an
+    `asyncio.Queue` whose waiters it does not track. A zero would be a claim;
+    `None` is the truth.
+    """
+
+    #: Connections that exist, idle or not.
+    size: int
+    #: Connections available to be checked out right now.
+    idle: int
+    #: The ceiling `size` will not pass.
+    max_size: int
+    #: Callers currently blocked waiting for one, where the driver reports it.
+    waiting: int | None = None
+
+    @property
+    def in_use(self) -> int:
+        return self.size - self.idle
+
 
 #: How many compiled statements an engine keeps. Matches SQLAlchemy's own
 #: `compiled_cache` default, and for the same reason: an application's statement
@@ -543,6 +573,20 @@ class Engine(ABC):
             observer(sql, perf_counter() - start, rows)
 
     # --- driver hooks -------------------------------------------------------
+
+    def pool_stats(self) -> PoolStats:
+        """A snapshot of the pool: how many connections exist, how many are free,
+        and — where the driver reports it — how many callers are waiting.
+
+        Pair it with the `observer`: a slow statement and a saturated pool look
+        the same from the outside and are fixed differently.
+        """
+        return self._pool_stats(self._require_pool())
+
+    @abstractmethod
+    def _pool_stats(self, pool: Any) -> PoolStats:
+        """Read the driver's own counters. Every pool here keeps them already, so
+        nothing is tracked twice."""
 
     @abstractmethod
     async def _open_pool(self) -> Any: ...

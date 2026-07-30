@@ -34,7 +34,7 @@ See docs/PLAN_CORE_COMPILER.md for why, what it costs, and what it retires.
 from typing import TYPE_CHECKING
 
 from .compile import compile_hydrator, result_processor
-from .engine import Engine, Observer
+from .engine import Engine, Observer, PoolStats
 from .errors import (
     ConfigurationError,
     DeclarationError,
@@ -74,6 +74,7 @@ __all__ = [
     "Observer",
     "Plan",
     "PlanError",
+    "PoolStats",
     "PsycopgEngine",
     "RowformError",
     "SqliteEngine",

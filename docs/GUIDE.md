@@ -388,6 +388,18 @@ def to_tracer(sql: str, seconds: float, rows: int | None) -> None:
     tracer.record("db.query", duration=seconds, attributes={"db.statement": sql, "db.rows": rows})
 ```
 
+`engine.pool_stats()` answers the other half — whether anything was *waiting*
+for a connection while that statement ran:
+
+```python
+stats = engine.pool_stats()
+log.info("pool %d/%d in use, %s waiting", stats.in_use, stats.max_size, stats.waiting)
+```
+
+Saturation and a slow database look the same from outside and are fixed
+differently, so it is worth exporting both. `waiting` is `None` on sqlite and
+asyncpg, whose pools do not count waiters; psycopg reports it.
+
 `logging.getLogger("rowform")` emits at DEBUG and nowhere else: one line per
 statement compiled — per compile, not per execute, so it also tells you whether
 the cache is working — one per hydrator built, carrying the generated source, and

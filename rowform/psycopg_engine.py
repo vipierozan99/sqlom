@@ -25,7 +25,7 @@ from typing import Any
 
 from sqlalchemy.dialects.postgresql import psycopg as _psycopg
 
-from .engine import Engine
+from .engine import Engine, PoolStats
 from .errors import ConfigurationError, UnsupportedError
 from .transaction import Transaction
 
@@ -49,6 +49,18 @@ class PsycopgEngine(Engine):
         pool = AsyncConnectionPool(self.dsn, open=False, **self._pool_kwargs)
         await pool.open(wait=True)
         return pool
+
+    def _pool_stats(self, pool: Any) -> PoolStats:
+        # The one pool of the three that counts blocked callers, which is the
+        # number that distinguishes "the database is slow" from "the pool is too
+        # small".
+        stats = pool.get_stats()
+        return PoolStats(
+            size=stats.get("pool_size", 0),
+            idle=stats.get("pool_available", 0),
+            max_size=pool.max_size,
+            waiting=stats.get("requests_waiting", 0),
+        )
 
     async def _close_pool(self, pool: Any) -> None:
         await pool.close()

@@ -125,6 +125,7 @@ connections that could have been dirtied — anything reached through `acquire()
 | `engine.dialect` | the SQLAlchemy dialect statements compile for |
 | `engine.observer` | see [Observer](#rowformobserver); reassignable at any time |
 | `engine.cached_statements` | how many compiled statements are held, of at most `cache_size` |
+| `engine.pool_stats()` | a `PoolStats` snapshot — see below |
 
 ### Reading
 
@@ -211,6 +212,19 @@ against this block's pinned connection.
 
 The innermost `Transaction` running in this task, from a `ContextVar`. This is what
 `engine.fetch_all()` consults in order to refuse to run inside a block.
+
+---
+
+## `rowform.PoolStats`
+
+What `engine.pool_stats()` returns: a frozen snapshot with `size` (connections
+that exist), `idle` (available right now), `max_size`, `waiting` (callers blocked
+on the pool) and an `in_use` property.
+
+`waiting` is `None` on `SqliteEngine` and `AsyncpgEngine`, because neither pool
+counts its waiters — a zero would be a claim rather than a measurement.
+`PsycopgEngine` reports it, and it is the number that separates "the database is
+slow" from "the pool is too small".
 
 ---
 

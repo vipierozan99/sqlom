@@ -36,7 +36,7 @@ from typing import Any
 
 from sqlalchemy.dialects.postgresql import asyncpg as _asyncpg
 
-from .engine import Engine
+from .engine import Engine, PoolStats
 from .transaction import Transaction
 
 
@@ -93,6 +93,14 @@ class AsyncpgEngine(Engine):
         await self.dialect.setup_asyncpg_jsonb_codec(shim)
         if self.dialect._native_inet_types is False:
             await self.dialect._disable_asyncpg_inet_codecs(shim)
+
+    def _pool_stats(self, pool: Any) -> PoolStats:
+        return PoolStats(
+            size=pool.get_size(),
+            idle=pool.get_idle_size(),
+            max_size=pool.get_max_size(),
+            waiting=None,  # asyncpg's pool keeps no waiter count
+        )
 
     async def _close_pool(self, pool: Any) -> None:
         await pool.close()
