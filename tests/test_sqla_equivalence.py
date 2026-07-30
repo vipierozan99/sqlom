@@ -68,7 +68,11 @@ class RfWidget(RfBase):
     made_time: Mapped[dt.time]
     price: Mapped[decimal.Decimal] = mapped_column(sa.Numeric(12, 3))
     weight: Mapped[float]
-    colour: Mapped[Colour]
+    # A named type so the postgres `CREATE TYPE` does not collide with any other
+    # module's enum in the shared test database: an unnamed `Enum(Colour)` maps
+    # to type "colour", which conftest also declares, and a lingering dependant
+    # of that shared type silently blocks this suite's `DROP TYPE` on teardown.
+    colour: Mapped[Colour] = mapped_column(sa.Enum(Colour, name="eq_colour"))
     serial: Mapped[uuid.UUID]
     spec: Mapped[dict]
     thumbnail: Mapped[bytes]
@@ -99,7 +103,7 @@ class SaWidget(SaBase):
     made_time: orm.Mapped[dt.time]
     price: orm.Mapped[decimal.Decimal] = orm.mapped_column(sa.Numeric(12, 3))
     weight: orm.Mapped[float]
-    colour: orm.Mapped[Colour]
+    colour: orm.Mapped[Colour] = orm.mapped_column(sa.Enum(Colour, name="eq_colour"))
     serial: orm.Mapped[uuid.UUID]
     # dict has no default SA mapping; rowform maps it through DEFAULT_TYPE_MAP.
     spec: orm.Mapped[dict] = orm.mapped_column(sa.JSON)
@@ -191,6 +195,23 @@ async def backend(request, tmp_path):
         sa_engine.dispose()
 
 
+def _canonical_type(value: object) -> type:
+    """The type to compare on.
+
+    rowform reads through asyncpg and the reference through psycopg (see
+    `_sync_pg_url`), and the two drivers agree on the Python type of every value
+    here except one: asyncpg decodes `uuid` to its own `pgproto.UUID`, a
+    `uuid.UUID` subclass, while psycopg returns stdlib `uuid.UUID`. That is a
+    driver choice, not a row-layer one — SQLAlchemy's own `Row` over asyncpg
+    returns `pgproto.UUID` too — so collapse the subclass to `uuid.UUID` before
+    the identity check rather than let the two drivers' UUID reprs read as a
+    type mismatch.
+    """
+    if isinstance(value, uuid.UUID):
+        return uuid.UUID
+    return type(value)
+
+
 def _assert_same(rf_obj: object, sa_obj: object, columns) -> None:
     """Every column matches in value and in type — the type check is the point,
     since the failure mode being guarded against is a right-looking value of the
@@ -199,7 +220,7 @@ def _assert_same(rf_obj: object, sa_obj: object, columns) -> None:
         rf_val = getattr(rf_obj, name)
         sa_val = getattr(sa_obj, name)
         assert rf_val == sa_val, f"{name}: {rf_val!r} != {sa_val!r}"
-        assert type(rf_val) is type(sa_val), (
+        assert _canonical_type(rf_val) is _canonical_type(sa_val), (
             f"{name}: {type(rf_val).__name__} != {type(sa_val).__name__}"
         )
 
