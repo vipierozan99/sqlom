@@ -15,10 +15,13 @@ looks it up in the engine's cache under SQLAlchemy's own structural cache key.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Generic, TypeVar
 
 from .compile import compile_hydrator
 from .planner import Plan, plan
+
+_LOG = logging.getLogger("rowform")
 
 R = TypeVar("R")
 
@@ -51,6 +54,9 @@ class CoreQuery(Generic[R]):
         )
         self._plan: Plan | None = plan(statement) if _returns_rows(statement) else None
         self._hydrate: Any = None
+        # Once per statement, not per execute: the compile is the cached thing, so
+        # this is also the log line that shows whether caching is working.
+        _LOG.debug("compiled: %s", self.sql)
 
     @property
     def returns_rows(self) -> bool:

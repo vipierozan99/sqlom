@@ -28,7 +28,7 @@ from typing import Any
 
 from sqlalchemy.dialects.sqlite import aiosqlite as _aiosqlite
 
-from .engine import Engine
+from .engine import Engine, Observer
 from .errors import ConfigurationError, UnsupportedError
 from .transaction import Transaction
 
@@ -111,7 +111,15 @@ class SqliteEngine(Engine):
 
     dialect = _aiosqlite.dialect()
 
-    def __init__(self, path: str, *, min_size: int = 1, max_size: int = 5, **kwargs: Any):
+    def __init__(
+        self,
+        path: str,
+        *,
+        min_size: int = 1,
+        max_size: int = 5,
+        observer: Observer | None = None,
+        **kwargs: Any,
+    ):
         if kwargs:
             raise ConfigurationError(f"unexpected keyword arguments: {sorted(kwargs)}")
         if min_size < 0 or max_size < 1 or max_size < min_size:
@@ -119,7 +127,7 @@ class SqliteEngine(Engine):
                 f"pool sizes must satisfy 0 <= min_size <= max_size and max_size >= 1; "
                 f"got min_size={min_size}, max_size={max_size}"
             )
-        super().__init__(path)
+        super().__init__(path, observer=observer)
         self.path = path
         self._min_size = min_size
         self._max_size = max_size

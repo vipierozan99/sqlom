@@ -17,9 +17,11 @@ compiles; this runs it.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
+from time import perf_counter
 from typing import Any, TypeVar, overload
 
 import sqlalchemy as sa
@@ -28,6 +30,14 @@ from sqlalchemy import Select
 from .errors import EngineStateError, StatementError
 from .query import CoreQuery
 from .transaction import _ACTIVE, Transaction
+
+_LOG = logging.getLogger("rowform")
+
+#: What an `observer` is handed after every statement: the SQL as executed, how
+#: long the round trip took in seconds, and how many rows came back — `None` for a
+#: statement that returns none, where the driver's own report is the useful number
+#: and `execute()` already returns it.
+Observer = Callable[[str, float, "int | None"], None]
 
 # One type variable per selected entity. The overloads below are written out per
 # arity rather than with a variadic, because that is exactly the information a
@@ -46,9 +56,16 @@ class Engine(ABC):
     #: type handling both come from it.
     dialect: Any
 
-    def __init__(self, dsn: str, **pool_kwargs: Any):
+    def __init__(self, dsn: str, *, observer: Observer | None = None, **pool_kwargs: Any):
         self.dsn = dsn
         self.pool: Any = None
+        #: Called after every statement with `(sql, seconds, rows)` — the hook for
+        #: slow-query logs, per-request counters or a tracing span. Reassignable at
+        #: any time; `None` disables it, which is one attribute load and a branch
+        #: per statement and nothing at all per row. Exceptions raised inside it
+        #: are not caught: it runs on the caller's path, so it must be cheap and
+        #: must not throw.
+        self.observer = observer
         self._pool_kwargs = pool_kwargs
         self._queries: dict[Any, CoreQuery[Any]] = {}
 
@@ -60,6 +77,7 @@ class Engine(ABC):
         connections open against the server with nothing holding them."""
         if self.pool is None:
             self.pool = await self._open_pool()
+            _LOG.debug("pool opened: %s", type(self).__name__)
         return self.pool
 
     async def close(self) -> None:
@@ -69,6 +87,7 @@ class Engine(ABC):
         pool, self.pool = self.pool, None
         if pool is not None:
             await self._close_pool(pool)
+            _LOG.debug("pool closed: %s", type(self).__name__)
 
     def _require_pool(self) -> Any:
         if self.pool is None:
@@ -221,8 +240,11 @@ class Engine(ABC):
                 "rather than execute(), which would discard them"
             )
         sql, bound = query.bind(params, extracted)
+        start = perf_counter() if self.observer is not None else 0.0
         async with self._acquire() as conn:
-            return await self._execute(conn, sql, bound)
+            result = await self._execute(conn, sql, bound)
+        self._observe(sql, start, None)
+        return result
 
     async def execute_many(self, statement: Any, params: Sequence[dict[str, Any]]) -> Any:
         """One compiled statement, many parameter sets, one driver round trip."""
@@ -233,8 +255,11 @@ class Engine(ABC):
         # One compiled statement, so every row shares its SQL; an expanding
         # statement would not, and executemany cannot express that anyway.
         sql = shaped[0][0]
+        start = perf_counter() if self.observer is not None else 0.0
         async with self._acquire() as conn:
-            return await self._execute_many(conn, sql, [bound for _, bound in shaped])
+            result = await self._execute_many(conn, sql, [bound for _, bound in shaped])
+        self._observe(sql, start, None)
+        return result
 
     # --- schema -------------------------------------------------------------
 
@@ -347,11 +372,24 @@ class Engine(ABC):
         """
         sql, bound = query.bind(params, extracted)
         hydrate = query._hydrate
+        start = perf_counter() if self.observer is not None else 0.0
         async with acquire() as conn:
             rows, description = await self._fetch(conn, sql, bound, hydrate is None)
         if hydrate is None:
             hydrate = query.hydrator(self.dialect, description)
+        self._observe(sql, start, len(rows))
         return rows, hydrate
+
+    def _observe(self, sql: str, start: float, rows: int | None) -> None:
+        """Hand one completed statement to the `observer`, if there is one.
+
+        Timing covers the driver round trip, not hydration: hydration is the part
+        this library controls and benchmarks, while the round trip is what a
+        slow-query log is actually about.
+        """
+        observer = self.observer
+        if observer is not None:
+            observer(sql, perf_counter() - start, rows)
 
     # --- driver hooks -------------------------------------------------------
 

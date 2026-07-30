@@ -309,6 +309,29 @@ a `RESET ALL` round trip on every release, worth 20–30% of throughput, and thi
 engine skips it for connections that only ran compiled statements. Anything
 through `acquire()` or `transaction()` is marked dirty and pays it.
 
+### Seeing what runs
+
+An `observer` is called after every statement — engine or transaction, read or
+write — with the SQL, how long the round trip took, and the row count (`None` for
+a statement that returns none):
+
+```python
+def slow_queries(sql: str, seconds: float, rows: int | None) -> None:
+    if seconds > 0.05:
+        log.warning("slow query %.1fms rows=%s: %s", seconds * 1000, rows, sql)
+
+engine = rowform.AsyncpgEngine(dsn, observer=slow_queries)   # or engine.observer = ...
+```
+
+Leaving it `None` costs one attribute load and a branch per statement and nothing
+per row, which is below the benchmark's noise floor. Exceptions raised inside it
+are not caught — it runs on the caller's path.
+
+`logging.getLogger("rowform")` emits at DEBUG and nowhere else: one line per
+statement *compiled* (not per execute, so it also shows whether the compile cache
+is working), one per hydrator built — carrying the generated source — and one per
+pool open and close.
+
 ---
 
 ## 🏗️ How it works
