@@ -42,6 +42,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # `gh` authenticates through GH_TOKEN below, and the only git command
+          # here is a local `rev-parse`, so the checkout token does not need to
+          # stay in .git/config.
+          persist-credentials: false
           ref: main
 
       # (1) Change detection. The tracking issue is the source of truth: if it

@@ -15,6 +15,12 @@ on:
   pull_request:
     branches: [main]
 
+# Neither job writes anything back to the repository, so the token they get should
+# not be able to. (benchmarks.yml declares its own, wider, set — it comments on an
+# issue.)
+permissions:
+  contents: read
+
 concurrency:
   group: perf-${{ github.ref }}
   cancel-in-progress: true
@@ -35,6 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
           fetch-depth: 0 # need the merge base, so the whole history
 
       - name: Install uv

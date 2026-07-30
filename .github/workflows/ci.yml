@@ -8,6 +8,12 @@ on:
   push:
     branches: [main]
 
+# Neither job writes anything back to the repository, so the token they get should
+# not be able to. (benchmarks.yml declares its own, wider, set — it comments on an
+# issue.)
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -20,6 +26,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
         # Pinned exactly, unlike the other actions here: astral-sh/setup-uv
@@ -79,6 +87,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -114,6 +124,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -140,6 +152,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
