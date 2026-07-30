@@ -1,5 +1,9 @@
 # ⚡ rowform
 
+[![CI](https://github.com/vipierozan99/sqlom/actions/workflows/ci.yml/badge.svg)](https://github.com/vipierozan99/sqlom/actions/workflows/ci.yml)
+[![Python 3.11–3.14](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://github.com/vipierozan99/sqlom/blob/main/pyproject.toml)
+[![Typed](https://img.shields.io/badge/typing-py.typed-blue)](https://peps.python.org/pep-0561/)
+
 **SQLAlchemy's schema and SQL. Compiled hydration. No instance state.**
 
 `rowform` is a read path for high-throughput Python services. SQLAlchemy Core
@@ -434,9 +438,9 @@ Stated plainly, because most of it is not recoverable:
 ## 🤝 Contributing
 
 ```bash
-git clone https://github.com/vipierozan99/rowform && cd rowform
+git clone https://github.com/vipierozan99/sqlom && cd sqlom
 uv sync --all-extras
-just test          # 259 tests, sqlite + postgres, plus the type checker
+just test          # sqlite + postgres, plus the type checker
 just lint
 just typecheck
 just bench micro run --shape flat
@@ -453,7 +457,13 @@ Types are tested, not just declared: `tests/typing/positive.py` asserts exact
 inference with `typing.assert_type`, `tests/typing/negative.py` carries a
 `# pyright: ignore` on every line that must fail, and the checker runs with
 `reportUnnecessaryTypeIgnoreComment` so a suppression that stops being needed
-fails the build.
+fails the build. And the row path is tested against SQLAlchemy Core as an oracle
+over *generated* statements (`tests/test_property_hydration.py`), because a fixed
+schema only catches what someone thought to put in it — which is how the
+converter table in correction 11 passed its tests while being wrong.
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the rest: what CI checks, how to run the
+benchmarks honestly, and what is deliberately out of scope.
 
 ---
 

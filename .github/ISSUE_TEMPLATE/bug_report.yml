@@ -1,0 +1,80 @@
+name: Bug report
+description: Something returns the wrong value, raises, or is slower than it should be
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The two fields that usually settle a bug here are the **statement** and the
+        **generated hydrator** — most of what can go wrong is a disagreement
+        between what the statement selects and what the hydrator writes.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: statement
+    attributes:
+      label: The statement
+      description: >
+        The `sa.select(...)` / `sa.insert(...)` involved, and the model
+        declarations it touches. A runnable snippet is ideal.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: hydrator
+    attributes:
+      label: The generated hydrator
+      description: >
+        If a value came back wrong, this is usually where the answer is. Get it
+        with `query = engine.prepare(statement)`, run it once, then print
+        `query._hydrate.__source__` — or set
+        `logging.getLogger("rowform").setLevel(logging.DEBUG)`, which logs it.
+      render: python
+    validations:
+      required: false
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine
+      multiple: true
+      options:
+        - SqliteEngine (aiosqlite)
+        - AsyncpgEngine (asyncpg)
+        - PsycopgEngine (psycopg3)
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: rowform, Python, SQLAlchemy, and the driver.
+      placeholder: "rowform 0.1.0, Python 3.12.4, SQLAlchemy 2.0.36, asyncpg 0.30.0"
+    validations:
+      required: true
+
+  - type: input
+    id: server
+    attributes:
+      label: Server version
+      description: PostgreSQL or SQLite version, if the database is involved.
+      placeholder: "PostgreSQL 16.3"
+    validations:
+      required: false
+
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Traceback
+      render: text
+    validations:
+      required: false
