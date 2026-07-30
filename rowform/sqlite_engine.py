@@ -117,6 +117,20 @@ class _SqlitePool:
             conn = await self._idle.get()
         try:
             yield conn
+        except asyncio.CancelledError:
+            # aiosqlite runs each statement in a worker thread, and cancelling the
+            # task that is awaiting it does not stop that thread. Handing the
+            # connection straight back would queue the *next* borrower behind work
+            # nobody is waiting for any more — with a small pool, a client
+            # disconnecting mid-query stalls everything, which reads as a leak.
+            #
+            # `interrupt()` reaches the sqlite3 connection directly instead of
+            # going through aiosqlite's queue, so it aborts the abandoned
+            # statement rather than waiting in line behind it. It never suspends,
+            # so awaiting it while unwinding a cancellation is safe, and it is a
+            # no-op when nothing is running.
+            await conn.interrupt()
+            raise
         finally:
             self._idle.put_nowait(conn)
 

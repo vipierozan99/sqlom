@@ -15,6 +15,7 @@ Every snippet here was run against a real database before being written down.
 - [Wiring it into FastAPI](#wiring-it-into-fastapi)
 - [Sizing the pool](#sizing-the-pool)
 - [Seeing what runs](#seeing-what-runs)
+- [Timeouts and cancellation](#timeouts-and-cancellation)
 - [Testing an app that uses rowform](#testing-an-app-that-uses-rowform)
 - [Schema and migrations](#schema-and-migrations)
 - [Coming from the SQLAlchemy ORM](#coming-from-the-sqlalchemy-orm)
@@ -391,6 +392,32 @@ def to_tracer(sql: str, seconds: float, rows: int | None) -> None:
 statement compiled — per compile, not per execute, so it also tells you whether
 the cache is working — one per hydrator built, carrying the generated source, and
 one per pool open and close.
+
+## Timeouts and cancellation
+
+There is no `timeout=` argument. `asyncio.timeout()` is the mechanism, and it
+composes:
+
+```python
+async with asyncio.timeout(2):
+    users = await engine.fetch_all(sa.select(User))
+```
+
+What matters is what happens to the connection afterwards, since a cancelled
+query is routine — any web framework cancels the handler's task when a client
+disconnects, and that handler is often awaiting a query.
+
+* **asyncpg and psycopg** cancel server-side and hand back a clean connection.
+  Nothing extra is needed, and nothing here interferes.
+* **sqlite** needs help. aiosqlite runs each statement in a worker thread, and
+  cancelling the awaiting task does not stop that thread, so a connection handed
+  straight back would make the next borrower queue behind work nobody is waiting
+  for. `SqliteEngine` interrupts the abandoned statement before returning the
+  connection.
+
+A cancelled `fetch_iter` closes its cursor and releases its connection the same
+way. Inside a transaction, cancellation unwinds the block and rolls back, as any
+other exception would.
 
 ## Testing an app that uses rowform
 
