@@ -207,6 +207,23 @@ against this block's pinned connection.
 | `tx.depth` | 0 for the outermost, 1+ for savepoints |
 | `tx.connection` | the pinned driver connection |
 | `tx.execute("SQL string")` | also accepts raw SQL, for DDL and session state — no parameters, no escaping |
+| `tx.pipeline()` | psycopg only — see below |
+
+### `async with tx.pipeline():`
+
+Statements go out without waiting for each result; the replies are collected when
+the block exits. Worth it only where the round trip is the cost: over 200 updates
+it is slightly *slower* on loopback (56 ms against 44 ms) and **13.5x** faster at
+1 ms of network latency (42 ms against 564 ms).
+
+It is on the transaction because a pipeline belongs to one connection. Two
+inherent consequences: a statement's result is unavailable while the block is
+open (psycopg reports a rowcount of -1), and an error raises when the pipeline
+synchronises rather than at the statement that caused it — it does still raise,
+and still rolls the transaction back.
+
+`AsyncpgEngine` and `SqliteEngine` raise `UnsupportedError`: asyncpg exposes no
+such API, and sqlite is a local file with no round trip to hide.
 
 ### `rowform.active_transaction() -> Transaction | None`
 

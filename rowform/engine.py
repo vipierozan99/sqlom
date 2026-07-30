@@ -505,6 +505,14 @@ class Engine(ABC):
             f"Use execute_many() instead."
         )
 
+    def _pipeline(self, conn: Any) -> Any:
+        """Per-driver pipeline mode. Only psycopg has one."""
+        raise UnsupportedError(
+            f"{type(self).__name__} has no pipeline mode. psycopg3 is the only "
+            f"driver here that implements one; asyncpg has no such API, and "
+            f"sqlite is a local file with no round trip to hide."
+        )
+
     # --- schema -------------------------------------------------------------
 
     async def create_all(self, metadata: sa.MetaData) -> None:

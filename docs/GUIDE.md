@@ -271,6 +271,20 @@ async with engine.transaction(isolation="serializable", readonly=True) as tx:
 
 sqlite raises `UnsupportedError` for those rather than accepting them as no-ops.
 
+**Pipelining** is worth reaching for when the database is a network hop away:
+
+```python
+async with engine.transaction() as tx, tx.pipeline():
+    for row in rows:
+        await tx.execute(update, **row)
+```
+
+200 updates took 564 ms one at a time and 42 ms pipelined at 1 ms of latency —
+13.5x. On loopback it is marginally slower, so it is not a default. psycopg only.
+While the block is open a statement's result is not available (rowcount is -1),
+and an error raises when the pipeline synchronises rather than at the statement
+that caused it.
+
 ## Handling errors
 
 Everything the library rejects on purpose is a `RowformError`, and each class also

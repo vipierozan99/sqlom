@@ -127,6 +127,23 @@ class PsycopgEngine(Engine):
             await cursor.executemany(sql, params)
             return cursor.rowcount
 
+    def _pipeline(self, conn: Any) -> Any:
+        """psycopg's pipeline mode: statements go out without waiting for each
+        result, and the server's replies are collected on exit.
+
+        Needs libpq 14+, so it is checked rather than assumed — an older libpq
+        would otherwise fail somewhere less obvious.
+        """
+        import psycopg
+
+        supported = getattr(getattr(psycopg, "capabilities", None), "has_pipeline", None)
+        available = supported() if supported is not None else psycopg.Pipeline.is_supported()
+        if not available:
+            raise UnsupportedError(
+                "this psycopg build has no pipeline mode; it needs libpq 14 or newer"
+            )
+        return conn.pipeline()
+
     def _block(self, conn: Any, depth: int, kwargs: dict[str, Any]) -> Any:
         return _psycopg_block(self, conn, depth, kwargs)
 
