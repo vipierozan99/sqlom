@@ -31,6 +31,8 @@ builds real SQL; and instances are ordinary dataclasses.
 See docs/PLAN_CORE_COMPILER.md for why, what it costs, and what it retires.
 """
 
+from typing import TYPE_CHECKING
+
 from .compile import compile_hydrator, result_processor
 from .engine import Engine
 from .errors import (
@@ -49,12 +51,19 @@ from .query import CoreQuery
 from .sqlite_engine import SqliteEngine
 from .transaction import Transaction, active_transaction
 
+if TYPE_CHECKING:
+    # Imported for checkers only. `__getattr__` below is what serves it at
+    # runtime, and this is what makes `rowform.AsyncpgEngine` resolve to the
+    # class itself rather than to that function's return type.
+    from .asyncpg_engine import AsyncpgEngine
+
 #: Read by [tool.hatch.version] in pyproject.toml, so this is the one place the
 #: version is written.
 __version__ = "0.1.0"
 
 __all__ = [
     "DEFAULT_TYPE_MAP",
+    "AsyncpgEngine",
     "Base",
     "ConfigurationError",
     "CoreQuery",

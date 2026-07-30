@@ -288,6 +288,22 @@ because `Base.metadata` is an ordinary `MetaData` full of ordinary `Table`s.
 API. Each owns a pool and a dialect; the dialect decides paramstyle and type
 handling, so the same statement runs on all three.
 
+**Pools.** All three size the same way — `min_size` connections opened when
+`connect()` runs, growing to `max_size` on demand and never past it:
+
+```python
+db = rowform.SqliteEngine("app.db", min_size=1, max_size=5)
+db = rowform.AsyncpgEngine(dsn, min_size=4, max_size=16, command_timeout=5)
+```
+
+Beyond those two, keyword arguments go straight to the driver's own pool —
+`asyncpg.create_pool` and `psycopg_pool.AsyncConnectionPool`, where timeouts,
+connection lifetimes and health checks live, and whose defaults differ from each
+other. `SqliteEngine` has no third-party pool behind it and so accepts nothing
+else; an unrecognised keyword is a `ConfigurationError` rather than a silent
+no-op. `connect()` is idempotent, `close()` is repeatable, and `async with
+engine` does both.
+
 `AsyncpgEngine` keeps rowform's **conditional session reset**: asyncpg's pool runs
 a `RESET ALL` round trip on every release, worth 20–30% of throughput, and this
 engine skips it for connections that only ran compiled statements. Anything

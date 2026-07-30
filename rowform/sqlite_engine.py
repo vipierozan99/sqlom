@@ -46,36 +46,60 @@ def _reject_unsupported(kwargs: dict[str, Any]) -> None:
 
 
 class _SqlitePool:
-    """Fixed-size pool of aiosqlite connections. `min_size`/`max_size` are
-    accepted by `SqliteEngine` only for call-site parity with the other engines —
-    there is no elastic growth to configure."""
+    """`min_size` connections opened up front, growing to `max_size` on demand.
 
-    def __init__(self, path: str, size: int):
+    The same two knobs asyncpg's pool and `psycopg_pool` take, so the three
+    engines size alike. They used to be accepted and then collapsed to
+    `max(min_size, max_size)`, which opened `min_size` connections eagerly when
+    it was the larger of the two and made `max_size` not a maximum.
+    """
+
+    def __init__(self, path: str, min_size: int, max_size: int):
         self._path = path
-        self._size = size
+        self._min = min_size
+        self._max = max_size
+        self._count = 0
         self._all: list[Any] = []
         self._idle: asyncio.Queue[Any] = asyncio.Queue()
 
     async def open(self) -> None:
+        for _ in range(self._min):
+            self._count += 1
+            self._idle.put_nowait(await self._connect())
+
+    async def _connect(self) -> Any:
         import aiosqlite
 
-        for _ in range(self._size):
-            conn = await aiosqlite.connect(self._path, isolation_level=None)
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("PRAGMA synchronous=NORMAL")
-            self._all.append(conn)
-            self._idle.put_nowait(conn)
+        conn = await aiosqlite.connect(self._path, isolation_level=None)
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA synchronous=NORMAL")
+        self._all.append(conn)
+        return conn
 
     async def close(self) -> None:
         while not self._idle.empty():
             self._idle.get_nowait()
         conns, self._all = self._all, []
+        self._count = 0
         for conn in conns:
             await conn.close()
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[Any]:
-        conn = await self._idle.get()
+        # Below the ceiling, open rather than queue: a waiter blocking on an idle
+        # queue while the pool is still allowed to grow is waiting for a
+        # connection that need not exist yet. The counter is bumped *before* the
+        # await, so two tasks arriving together cannot both decide there is room
+        # and overshoot `max_size`.
+        if self._idle.empty() and self._count < self._max:
+            self._count += 1
+            try:
+                conn = await self._connect()
+            except BaseException:
+                self._count -= 1
+                raise
+        else:
+            conn = await self._idle.get()
         try:
             yield conn
         finally:
@@ -90,12 +114,18 @@ class SqliteEngine(Engine):
     def __init__(self, path: str, *, min_size: int = 1, max_size: int = 5, **kwargs: Any):
         if kwargs:
             raise ConfigurationError(f"unexpected keyword arguments: {sorted(kwargs)}")
+        if min_size < 0 or max_size < 1 or max_size < min_size:
+            raise ConfigurationError(
+                f"pool sizes must satisfy 0 <= min_size <= max_size and max_size >= 1; "
+                f"got min_size={min_size}, max_size={max_size}"
+            )
         super().__init__(path)
         self.path = path
-        self._pool_size = max(min_size, max_size)
+        self._min_size = min_size
+        self._max_size = max_size
 
     async def _open_pool(self) -> Any:
-        pool = _SqlitePool(self.path, self._pool_size)
+        pool = _SqlitePool(self.path, self._min_size, self._max_size)
         await pool.open()
         return pool
 
