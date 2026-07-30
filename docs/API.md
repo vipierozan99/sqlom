@@ -98,7 +98,7 @@ connections that could have been dirtied — anything reached through `acquire()
 | `async with engine:` | both |
 | `engine.pool` | the driver's pool, or `None` |
 | `engine.dialect` | the SQLAlchemy dialect statements compile for |
-| `engine.observer` | see [Observer](#observer); reassignable at any time |
+| `engine.observer` | see [Observer](#rowformobserver); reassignable at any time |
 
 ### Reading
 

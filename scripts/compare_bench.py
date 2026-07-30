@@ -74,15 +74,21 @@ def main() -> int:
             f"  {'REGRESSION' if bad else 'ok'}"
         )
 
-    # A contender that exists on only one side is reported rather than ignored: it
-    # usually means a renamed or dropped benchmark, which silently empties the gate.
-    for name in sorted(set(base) ^ set(head)):
-        print(f"note: {name!r} recorded on only one side, not compared")
+    # A contender the base measured and the head does not is a benchmark that was
+    # renamed or dropped, which narrows the gate without anyone noticing — so it
+    # fails rather than printing a note. The other direction is a benchmark being
+    # *added*, which is a normal thing for a PR to do and has nothing to compare
+    # against yet.
+    dropped = sorted(set(base) - set(head))
+    for name in sorted(set(head) - set(base)):
+        print(f"note: {name!r} is new in this PR, nothing to compare it against")
 
-    if regressions:
+    if regressions or dropped:
         print()
         for name, ratio in regressions:
             print(f"FAIL {name} is {ratio:.2f}x slower than base (tolerance {args.tolerance}x)")
+        for name in dropped:
+            print(f"FAIL {name!r} is measured on base but not on head — renamed or dropped?")
         return 1
 
     print(f"\nOK — nothing beyond {args.tolerance}x of base.")
