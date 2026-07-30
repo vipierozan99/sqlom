@@ -105,6 +105,59 @@ jobs:
       - name: Test (incl. postgres)
         run: just test . --pg-required
 
+  # The floors in pyproject are a promise to anyone resolving against an older
+  # environment, and an unverified one drifts: `sqlalchemy>=2.0` was wrong by 18
+  # patch releases, because `AsyncpgEngine` reads dialect internals that only
+  # appeared in 2.0.18. This job resolves every direct dependency to its declared
+  # minimum and runs the suite there, so the numbers stay facts.
+  floor:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rowform_bench
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install just
+        uses: extractions/setup-just@v4
+
+      - name: Sync dependencies at their declared minimums
+        run: uv sync --all-groups --resolution lowest-direct
+
+      - name: Show what resolved
+        run: |
+          uv run --no-sync python -c "
+          import sqlalchemy, pytest, asyncpg, aiosqlite, psycopg
+          for m in (sqlalchemy, pytest, asyncpg, aiosqlite, psycopg):
+              print(f'{m.__name__}=={m.__version__}')
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Tests only. Lint and typecheck run against the resolved versions in
+      # `check`; pinning ruff and basedpyright to their floors here would report
+      # on tooling nobody uses rather than on the library.
+      - name: Test (incl. postgres)
+        run: just test . --pg-required
+
   coverage:
     runs-on: ubuntu-latest
 
