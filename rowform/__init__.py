@@ -40,6 +40,10 @@ from .query import CoreQuery
 from .sqlite_engine import SqliteEngine
 from .transaction import Transaction, active_transaction
 
+#: Read by [tool.hatch.version] in pyproject.toml, so this is the one place the
+#: version is written.
+__version__ = "0.1.0"
+
 __all__ = [
     "DEFAULT_TYPE_MAP",
     "Base",
@@ -50,6 +54,7 @@ __all__ = [
     "PsycopgEngine",
     "SqliteEngine",
     "Transaction",
+    "__version__",
     "active_transaction",
     "alias",
     "compile_hydrator",

@@ -1745,7 +1745,6 @@ wheels = [
 
 [[package]]
 name = "rowform"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "sqlalchemy" },
@@ -1809,7 +1808,7 @@ requires-dist = [
     { name = "psycopg-pool", marker = "extra == 'psycopg'", specifier = ">=3.2" },
     { name = "sqlalchemy", specifier = ">=2.0" },
 ]
-provides-extras = ["asyncpg", "psycopg", "sqlite", "orjson"]
+provides-extras = ["asyncpg", "orjson", "psycopg", "sqlite"]
 
 [package.metadata.requires-dev]
 bench = [
