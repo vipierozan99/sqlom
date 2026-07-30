@@ -100,6 +100,21 @@ class PsycopgEngine(Engine):
                     return
                 yield rows, description
 
+    async def _copy_in(self, conn, table, columns, records):
+        """`COPY ... FROM STDIN`, a row at a time into psycopg's writer.
+
+        Identifiers are quoted by SQLAlchemy's own preparer rather than by hand:
+        a table or column needing quotes is exactly the case a hand-rolled f-string
+        gets wrong.
+        """
+        preparer = self.dialect.identifier_preparer
+        target = preparer.format_table(table)
+        names = ", ".join(preparer.quote(name) for name in columns)
+        async with conn.cursor() as cursor, cursor.copy(f"COPY {target} ({names}) FROM STDIN") as copy:
+            for record in records:
+                await copy.write_row(record)
+        return len(records)
+
     async def _execute(self, conn, sql, params):
         # psycopg binds a sequence or mapping, never varargs; None means "no
         # parameters", which matters because passing an empty one makes psycopg

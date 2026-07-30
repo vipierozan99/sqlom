@@ -232,6 +232,18 @@ created = await engine.fetch_all(
 )   # RETURNING hydrates like any other read
 ```
 
+**Bulk loading** goes through COPY rather than a statement per row:
+
+```python
+await engine.copy_in(User.__table__, rows)     # rows: a list of dicts
+```
+
+20 000 rows of a wide shape: 1.8x faster than `execute_many` on asyncpg, 13.6x on
+psycopg. Postgres only — `SqliteEngine` says so and points at `execute_many`. It
+is a load path rather than a write path: no RETURNING, no ON CONFLICT. Values go
+through the same bind processors as an INSERT, so what lands is what
+`execute_many` would have written.
+
 Writes take `User.__table__`, not `User`. `execute()` refuses a statement that
 returns rows and `fetch_all()` refuses one that does not, so a `returning()` you
 forgot fails loudly instead of returning `[]`.

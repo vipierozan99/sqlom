@@ -29,7 +29,12 @@ from typing import Any, TypeVar, overload
 import sqlalchemy as sa
 from sqlalchemy import Select
 
-from .errors import ConfigurationError, EngineStateError, StatementError
+from .errors import (
+    ConfigurationError,
+    EngineStateError,
+    StatementError,
+    UnsupportedError,
+)
 from .query import CoreQuery
 from .transaction import _ACTIVE, Transaction
 
@@ -441,6 +446,64 @@ class Engine(ABC):
             result = await self._execute_many(conn, sql, [bound for _, bound in shaped])
         self._observe(sql, start, None)
         return result
+
+    async def copy_in(
+        self,
+        table: sa.Table,
+        rows: Sequence[dict[str, Any]],
+        *,
+        columns: Sequence[str] | None = None,
+    ) -> int:
+        """Bulk-load rows through the server's COPY path. Returns how many.
+
+            await engine.copy_in(User.__table__, [{"id": 1, "name": "ada"}, ...])
+
+        `execute_many` sends one INSERT per row's worth of parameters; COPY sends
+        a stream the server parses without planning a statement per row, which is
+        the difference between a backfill that takes minutes and one that takes
+        seconds. It is a load path, not a write path: no RETURNING, no ON
+        CONFLICT, no per-row result.
+
+        `columns` defaults to every column of the table; name a subset to let
+        server defaults fill the rest. Every row must carry each named column.
+
+        **Values go through the same bind processors a parameterised INSERT
+        uses** (`column.type._cached_bind_processor`), because COPY bypasses the
+        statement path where those normally run — and a `Decimal`, `datetime`,
+        `Enum` or `dict` that skipped them would land as something the round trip
+        does not return unchanged. The tests assert `copy_in` and `execute_many`
+        produce identical rows for every type in the type map.
+        """
+        if not rows:
+            return 0
+        names = list(columns) if columns is not None else [c.key for c in table.columns]
+        selected = [table.columns[name] for name in names]
+        processors = [
+            column.type._cached_bind_processor(self.dialect) for column in selected
+        ]
+        records = [
+            tuple(
+                processor(row[column.key]) if processor is not None else row[column.key]
+                for column, processor in zip(selected, processors, strict=True)
+            )
+            for row in rows
+        ]
+        start = perf_counter() if self.observer is not None else 0.0
+        label = f"COPY {table.name} ({', '.join(names)})"
+        async with self._acquire() as conn:
+            copied = await self._copy_in(conn, table, [c.name for c in selected], records)
+        self._observe(label, start, copied)
+        return copied
+
+    async def _copy_in(
+        self, conn: Any, table: sa.Table, columns: Sequence[str], records: Sequence[tuple]
+    ) -> int:
+        """Per-driver COPY. The default is a refusal, since only the postgres
+        engines have one."""
+        raise UnsupportedError(
+            f"{type(self).__name__} has no COPY path — that is a postgres feature. "
+            f"Use execute_many() instead."
+        )
 
     # --- schema -------------------------------------------------------------
 

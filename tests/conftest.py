@@ -239,3 +239,16 @@ async def sqlite_engine(sqlite_path):
         yield db
     finally:
         await db.close()
+
+
+@pytest.fixture
+async def pg_engine(pg_dsn):
+    """A seeded PostgreSQL engine, for the postgres-only surface — COPY, server
+    cursors, pipelining. Skips with the rest when no server is reachable."""
+    db = rf.AsyncpgEngine(pg_dsn)
+    await db.connect()
+    try:
+        await seed(db)
+        yield db
+    finally:
+        await db.close()

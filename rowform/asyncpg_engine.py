@@ -171,6 +171,21 @@ class AsyncpgEngine(Engine):
                     return
                 yield rows, description
 
+    async def _copy_in(self, conn, table, columns, records):
+        """asyncpg's own COPY, over the binary protocol.
+
+        It encodes each value with the same codec a parameterised query would
+        use, so the bind-processed values `copy_in` hands over are exactly what
+        an INSERT of the same rows would have sent.
+        """
+        await conn.copy_records_to_table(
+            table.name,
+            records=records,
+            columns=list(columns),
+            schema_name=table.schema or "public",
+        )
+        return len(records)
+
     async def _execute(self, conn, sql, params):
         """asyncpg returns its own status tag, e.g. "INSERT 0 3" — the driver's
         report of what happened, not a normalised count, because normalising it
