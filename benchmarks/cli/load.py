@@ -59,7 +59,7 @@ from benchmarks.service.launch import ServiceWorker, launch
 app = typer.Typer(help="Load-test one case with locust, auditing every level.")
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
-DEFAULT_WARMUP_S = 5.0
+DEFAULT_WARMUP_S = 2.0
 
 
 async def _provision(
@@ -197,9 +197,9 @@ def _save(name: str, payload: dict) -> Path:
 def run(
     case: str = typer.Option("postgres-flat-rowform", help=load_registry.CASE_HELP),
     rows: int = typer.Option(50_000),
-    limit: int = typer.Option(100),
+    limit: int = typer.Option(250),
     levels: str = typer.Option("1,128", help="locust concurrency levels to sweep"),
-    duration: float = typer.Option(30.0),
+    duration: float = typer.Option(5.0),
     warmup: float = typer.Option(
         DEFAULT_WARMUP_S, help="unmeasured locust ramp before each level's measured window"
     ),
