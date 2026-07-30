@@ -178,11 +178,16 @@ class AsyncpgEngine(Engine):
         use, so the bind-processed values `copy_in` hands over are exactly what
         an INSERT of the same rows would have sent.
         """
+        # `table.schema` straight through, including None: asyncpg then leaves the
+        # name unqualified and postgres resolves it through `search_path`, which is
+        # what psycopg's `format_table` does for the same table. Defaulting to
+        # "public" instead would send the two engines to different tables under a
+        # non-default search_path.
         await conn.copy_records_to_table(
             table.name,
             records=records,
             columns=list(columns),
-            schema_name=table.schema or "public",
+            schema_name=table.schema,
         )
         return len(records)
 

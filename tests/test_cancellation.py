@@ -58,9 +58,18 @@ async def assert_usable(engine, expected: list[str]) -> None:
     The timeout is the assertion: without it a stalled pool hangs the suite
     instead of failing it.
     """
-    rows = await asyncio.wait_for(
-        engine.fetch_all(sa.select(Author).order_by(Author.id)), timeout=10
-    )
+    try:
+        rows = await asyncio.wait_for(
+            engine.fetch_all(sa.select(Author).order_by(Author.id)), timeout=10
+        )
+    except TimeoutError:
+        # Only reached when the fix under test is absent. The abandoned CTE is
+        # still running, so fixture teardown would queue `close()` behind it and
+        # the failure would arrive slowly; interrupt first so it arrives now.
+        if isinstance(engine, rowform.SqliteEngine):
+            for conn in engine._require_pool()._all:
+                await conn.interrupt()
+        raise
     assert [a.name for a in rows] == expected
 
 

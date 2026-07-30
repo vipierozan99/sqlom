@@ -16,7 +16,7 @@ import asyncio
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author
+from conftest import Author, seed
 
 import rowform
 
@@ -37,6 +37,7 @@ class TestSnapshot:
 
     async def test_it_reflects_growth(self, sqlite_path):
         async with rowform.SqliteEngine(sqlite_path, min_size=1, max_size=4) as db:
+            await seed(db)
             assert db.pool_stats().size == 1
             await asyncio.gather(*(db.fetch_all(sa.select(Author)) for _ in range(10)))
             grown = db.pool_stats()

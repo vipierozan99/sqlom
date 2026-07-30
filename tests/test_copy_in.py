@@ -81,6 +81,96 @@ class TestWhatItRefuses:
         with pytest.raises(KeyError):
             await pg_engine.copy_in(Author.__table__, [{"id": 1}], columns=["id", "name"])
 
+    async def test_it_is_refused_inside_a_transaction(self, pg_engine):
+        """It would take a different pooled connection and commit on its own, so a
+        rollback of the surrounding block would leave the loaded rows behind —
+        the same reason `fetch_all` is refused there."""
+        async with pg_engine.transaction():
+            with pytest.raises(rowform.EngineStateError, match="copy_in"):
+                await pg_engine.copy_in(Wide.__table__, wide_rows(1, 400))
+
+
+class TestSchemaQualification:
+    """A table with no explicit schema must resolve through `search_path`, and both
+    postgres engines must agree about where the rows went.
+
+    asyncpg qualifies the target itself from `schema_name`; psycopg gets a name
+    quoted by SQLAlchemy's preparer. Defaulting the asyncpg side to `"public"`
+    would send the two to different tables whenever `search_path` says otherwise —
+    invisible until someone runs with a per-tenant search_path.
+    """
+
+    @pytest.fixture
+    async def two_schemas(self, pg_dsn):
+        """The same table name in `tenant_a` and in `public`, both empty.
+
+        Which one a copy lands in is then a question with a wrong answer, which is
+        what makes the search_path behaviour testable at all.
+        """
+        async with rowform.AsyncpgEngine(pg_dsn) as db, db.acquire() as conn:
+            await conn.execute("CREATE SCHEMA IF NOT EXISTS tenant_a")
+            for schema in ("tenant_a", "public"):
+                await conn.execute(f"DROP TABLE IF EXISTS {schema}.copy_target")
+                await conn.execute(
+                    f"CREATE TABLE {schema}.copy_target (id int primary key, name text)"
+                )
+        yield
+        async with rowform.AsyncpgEngine(pg_dsn) as db, db.acquire() as conn:
+            for schema in ("tenant_a", "public"):
+                await conn.execute(f"DROP TABLE IF EXISTS {schema}.copy_target")
+
+    @staticmethod
+    def _unqualified() -> sa.Table:
+        return sa.Table(
+            "copy_target",
+            sa.MetaData(),
+            sa.Column("id", sa.Integer, primary_key=True),
+            sa.Column("name", sa.String),
+        )
+
+    @staticmethod
+    def _tenant_scoped(pg_dsn: str, driver: str):
+        """An engine whose connections resolve unqualified names to `tenant_a`."""
+        if driver == "asyncpg":
+            return rowform.AsyncpgEngine(
+                pg_dsn, server_settings={"search_path": "tenant_a"}
+            )
+        return rowform.PsycopgEngine(
+            pg_dsn, kwargs={"options": "-c search_path=tenant_a"}
+        )
+
+    @pytest.mark.parametrize("driver", ["asyncpg", "psycopg"])
+    async def test_an_unqualified_table_follows_search_path(
+        self, pg_dsn, two_schemas, driver
+    ):
+        """The regression this guards: qualifying the target as "public" whenever
+        the table declares no schema sends asyncpg somewhere psycopg would not go,
+        and nothing says so until a tenant's rows appear in the wrong schema."""
+        table = self._unqualified()
+        async with self._tenant_scoped(pg_dsn, driver) as db:
+            await db.copy_in(table, [{"id": 1, "name": driver}])
+
+        async with rowform.AsyncpgEngine(pg_dsn) as check, check.acquire() as conn:
+            tenant = await conn.fetch("SELECT name FROM tenant_a.copy_target")
+            public = await conn.fetch("SELECT name FROM public.copy_target")
+        assert [r["name"] for r in tenant] == [driver], "did not follow search_path"
+        assert public == [], "landed in public despite the search_path"
+
+    @pytest.mark.parametrize("driver", ["asyncpg", "psycopg"])
+    async def test_an_explicit_schema_is_honoured(self, pg_dsn, two_schemas, driver):
+        table = sa.Table(
+            "copy_target",
+            sa.MetaData(),
+            sa.Column("id", sa.Integer, primary_key=True),
+            sa.Column("name", sa.String),
+            schema="tenant_a",
+        )
+        maker = rowform.AsyncpgEngine if driver == "asyncpg" else rowform.PsycopgEngine
+        async with maker(pg_dsn) as db:
+            await db.copy_in(table, [{"id": 2, "name": driver}])
+            landed = await db.fetch_all(sa.select(table.c.name))
+            assert landed == [driver]
+
 
 class TestBothPostgresDrivers:
     """asyncpg copies over the binary protocol and psycopg over `FROM STDIN`, so

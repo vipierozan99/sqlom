@@ -473,7 +473,12 @@ class Engine(ABC):
         `Enum` or `dict` that skipped them would land as something the round trip
         does not return unchanged. The tests assert `copy_in` and `execute_many`
         produce identical rows for every type in the type map.
+
+        Refused inside `engine.transaction()`, as the reads are: it would take a
+        different pooled connection and commit on its own, so a rollback of the
+        surrounding block would leave the loaded rows behind.
         """
+        self._reject_if_in_transaction("copy_in")
         if not rows:
             return 0
         names = list(columns) if columns is not None else [c.key for c in table.columns]
