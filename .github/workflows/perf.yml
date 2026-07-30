@@ -97,7 +97,9 @@ jobs:
           {
             echo "## Performance gate"
             echo
-            echo "head \`${{ github.sha }}\` vs merge base \`${{ steps.base.outputs.sha }}\`,"
+            # `github.sha` on a pull_request event is the synthetic merge commit,
+            # which is not a SHA anyone can look up in the branch.
+            echo "head \`${{ github.event.pull_request.head.sha }}\` vs merge base \`${{ steps.base.outputs.sha }}\`,"
             echo "best of 2 runs per side, alternating on one shared runner."
             echo
             echo '```'
