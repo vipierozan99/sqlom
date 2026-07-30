@@ -102,6 +102,15 @@ class Transaction:
         rows, hydrate = await self._engine._run(query, params, self._pinned, extracted)
         return hydrate(rows)
 
+    def fetch_iter(self, statement: Any, *, chunk: int = 1000, **params: Any) -> Any:
+        """`Engine.fetch_iter`, on this block's connection.
+
+        Worth preferring over `engine.fetch_iter` when the stream is long: the
+        cursor and everything read through it then sit inside one transaction the
+        caller controls, rather than one opened per stream.
+        """
+        return self._engine._iterate(statement, chunk, params, self._pinned)
+
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
         rows = await self.fetch_all(statement, **params)
         return rows[0] if rows else None

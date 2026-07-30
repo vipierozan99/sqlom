@@ -150,6 +150,21 @@ class SqliteEngine(Engine):
         # None — which is exactly what SQLAlchemy passes its own processors here.
         return rows, cursor.description if describe else None
 
+    async def _stream(self, conn, sql, params, chunk, query):
+        """sqlite3's own cursor is already incremental, so `fetchmany` is the whole
+        implementation — and unlike postgres it will stream anything that returns
+        rows, `INSERT ... RETURNING` included."""
+        cursor = await conn.execute(sql, params)
+        try:
+            description = cursor.description
+            while True:
+                rows = await cursor.fetchmany(chunk)
+                if not rows:
+                    return
+                yield rows, description
+        finally:
+            await cursor.close()
+
     async def _execute(self, conn, sql, params):
         cursor = await conn.execute(sql, params or ())
         return cursor.rowcount

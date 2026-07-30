@@ -130,6 +130,23 @@ async def reads() -> None:
     assert_type(await engine.fetch_all(sa.select(recent)), list[Author])
 
 
+async def streams() -> None:
+    # fetch_iter is overloaded on the same arity rule as fetch_all, so the loop
+    # variable is exact rather than Any.
+    async for author in engine.fetch_iter(sa.select(Author)):
+        assert_type(author, Author)
+
+    async for name in engine.fetch_iter(sa.select(Author.name), chunk=10):
+        assert_type(name, str)
+
+    async for pair in engine.fetch_iter(sa.select(Author, Book)):
+        assert_type(pair, tuple[Author, Book])
+
+    hoisted = engine.prepare(sa.select(Author))
+    async for hoisted_author in engine.fetch_iter(hoisted, chunk=100):
+        assert_type(hoisted_author, Author)
+
+
 async def transactions() -> None:
     async with engine.transaction() as tx:
         assert_type(tx.depth, int)

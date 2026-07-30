@@ -142,6 +142,27 @@ class AsyncpgEngine(Engine):
         description = [(a.name, a.type.oid) for a in prepared.get_attributes()]
         return rows, description
 
+    async def _stream(self, conn, sql, params, chunk, query):
+        """A portal over the prepared statement, which asyncpg will only open
+        inside a transaction — so one is opened here rather than made the caller's
+        problem. Inside `transaction()` it nests as a savepoint, which is
+        harmless.
+
+        The connection is *not* marked dirty. Only a compiled statement ran, and
+        the portal dies with the transaction on either exit path — including a
+        consumer that abandons the loop — so there is no session state left for
+        `RESET ALL` to clean up.
+        """
+        async with conn.transaction():
+            prepared = await conn.prepare(sql)
+            description = [(a.name, a.type.oid) for a in prepared.get_attributes()]
+            cursor = await prepared.cursor(*params)
+            while True:
+                rows = await cursor.fetch(chunk)
+                if not rows:
+                    return
+                yield rows, description
+
     async def _execute(self, conn, sql, params):
         """asyncpg returns its own status tag, e.g. "INSERT 0 3" — the driver's
         report of what happened, not a normalised count, because normalising it

@@ -29,7 +29,16 @@ R = TypeVar("R")
 class CoreQuery(Generic[R]):
     """One statement, compiled for one dialect."""
 
-    __slots__ = ("_compiled", "_expanding", "_hydrate", "_keys", "_plan", "_positional", "sql")
+    __slots__ = (
+        "_compiled",
+        "_expanding",
+        "_hydrate",
+        "_keys",
+        "_plan",
+        "_positional",
+        "is_select",
+        "sql",
+    )
 
     def __init__(self, statement: Any, dialect: Any):
         # Compiling *with* the cache key is what later lets `bind()` accept
@@ -54,6 +63,10 @@ class CoreQuery(Generic[R]):
         )
         self._plan: Plan | None = plan(statement) if _returns_rows(statement) else None
         self._hydrate: Any = None
+        #: A SELECT, as opposed to a write with RETURNING. Recorded because
+        #: postgres will only `DECLARE` a cursor for the former, which decides
+        #: whether `PsycopgEngine` can stream this statement at all.
+        self.is_select: bool = bool(getattr(statement, "is_select", False))
         # Once per statement, not per execute: the compile is the cached thing, so
         # this is also the log line that shows whether caching is working.
         _LOG.debug("compiled: %s", self.sql)

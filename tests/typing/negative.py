@@ -105,6 +105,18 @@ async def reads() -> None:
     )
 
 
+async def streams() -> None:
+    # fetch_iter follows the same rule, so the loop variable is not interchangeable
+    # either — and it is an async iterator, never awaited.
+    async for author in engine.fetch_iter(sa.select(Author)):
+        book: Book = author  # pyright: ignore[reportAssignmentType]
+
+    async for pair in engine.fetch_iter(sa.select(Author, Book)):
+        only: Author = pair  # pyright: ignore[reportAssignmentType]
+
+    rows = await engine.fetch_iter(sa.select(Author))  # pyright: ignore[reportGeneralTypeIssues]
+
+
 # --- declaration ------------------------------------------------------------
 # `frozen` is declared on the Base as well: a checker treats every model under a
 # Base as sharing its dataclass configuration, and refuses a frozen class

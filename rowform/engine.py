@@ -27,7 +27,7 @@ from typing import Any, TypeVar, overload
 import sqlalchemy as sa
 from sqlalchemy import Select
 
-from .errors import EngineStateError, StatementError
+from .errors import ConfigurationError, EngineStateError, StatementError
 from .query import CoreQuery
 from .transaction import _ACTIVE, Transaction
 
@@ -198,6 +198,87 @@ class Engine(ABC):
         query, extracted = self._require_rows(statement)
         rows, hydrate = await self._run(query, params, self._acquire, extracted)
         return hydrate(rows)
+
+    @overload
+    def fetch_iter(
+        self, statement: CoreQuery[R], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[R]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Select[tuple[R]], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[R]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Select[tuple[R, R2]], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[tuple[R, R2]]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Select[tuple[R, R2, R3]], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[tuple[R, R2, R3]]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Select[tuple[R, R2, R3, R4]], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[tuple[R, R2, R3, R4]]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Any, *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[Any]: ...
+
+    def fetch_iter(self, statement: Any, *, chunk: int = 1000, **params: Any) -> Any:
+        """The same rows as `fetch_all`, `chunk` at a time, without ever holding
+        them all.
+
+            async for user in engine.fetch_iter(sa.select(User), chunk=500):
+                await sink.write(user)
+
+        `fetch_all` builds one list, so peak memory is the whole result; an export
+        or a backfill over a large table is the case that does not fit. Here each
+        chunk is hydrated by the same generated function and handed over row by
+        row, so what is live is one chunk, not one result set.
+
+        The connection is held for the whole iteration — that is what makes it a
+        cursor rather than repeated `LIMIT`/`OFFSET` queries, and it means a slow
+        consumer holds a pooled connection for as long as it takes. Abandoning the
+        loop early is safe: leaving the `async for` closes the cursor.
+
+        Not every statement can stream on every driver, and the difference is the
+        server's, not this library's: `PsycopgEngine` uses a server-side cursor,
+        which postgres cannot `DECLARE` for `INSERT ... RETURNING` — it raises
+        `UnsupportedError` saying so. asyncpg streams the same statement through a
+        portal, and sqlite streams anything.
+        """
+        self._reject_if_in_transaction("fetch_iter")
+        return self._iterate(statement, chunk, params, self._acquire)
+
+    async def _iterate(
+        self, statement: Any, chunk: int, params: dict[str, Any], acquire: Any
+    ) -> AsyncIterator[Any]:
+        """Shared by `Engine.fetch_iter` and `Transaction.fetch_iter`; the only
+        difference is whether the connection comes from the pool or is the
+        transaction's own."""
+        if chunk < 1:
+            raise ConfigurationError(f"chunk must be at least 1, got {chunk}")
+        query, extracted = self._require_rows(statement)
+        sql, bound = query.bind(params, extracted)
+        start = perf_counter() if self.observer is not None else 0.0
+        total = 0
+        async with acquire() as conn:
+            async for rows, description in self._stream(conn, sql, bound, chunk, query):
+                hydrate = query._hydrate
+                if hydrate is None:
+                    hydrate = query.hydrator(self.dialect, description)
+                total += len(rows)
+                for row in hydrate(rows):
+                    yield row
+        # One call for the whole stream, with the total row count. Unlike the
+        # other paths, this duration includes the consumer's own time between
+        # chunks — there is no round trip to time in isolation.
+        self._observe(sql, start, total)
 
     @overload
     async def fetch_one(self, statement: CoreQuery[R], **params: Any) -> R | None: ...
@@ -414,6 +495,19 @@ class Engine(ABC):
         `describe` is true, so a driver that has to do extra work for it (asyncpg
         must prepare the statement to read attribute OIDs) can skip that work on
         every subsequent call.
+        """
+
+    @abstractmethod
+    def _stream(
+        self, conn: Any, sql: str, params: Any, chunk: int, query: CoreQuery[Any]
+    ) -> AsyncIterator[tuple[Any, Any]]:
+        """Yield `(rows, description)` per chunk, incrementally from the server.
+
+        Same `description` contract as `_fetch`, but supplied on every chunk
+        because the first one is where the hydrator gets built. Each driver's own
+        incremental primitive differs — `fetchmany` on a sqlite cursor, a portal
+        on asyncpg, a `DECLARE`d cursor on psycopg — and so does what it can
+        stream, which is why the statement is passed in.
         """
 
     @abstractmethod

@@ -214,6 +214,27 @@ first = rf.alias(User, of=(
 The mark lands on the from clause you passed, not on a wrapper of it, so
 `active.id` and the CTE's own `.c.id` stay the same column — wrapping would make
 `select(active, cte.c.id)` two from clauses and a cartesian product.
+### Streaming
+
+`fetch_all` builds one list, so peak memory is the whole result. For an export or
+a backfill, `fetch_iter` reads through a cursor and hydrates a chunk at a time:
+
+```python
+async for user in engine.fetch_iter(sa.select(User), chunk=500):
+    await sink.write(user)          # one chunk live, not one result set
+```
+
+Same rows, same generated hydrator, same exact types — the loop variable is a
+`User`, not an `Any`. The connection is held for the whole iteration, which is
+what makes it a cursor rather than repeated `LIMIT`/`OFFSET` queries, so a slow
+consumer holds a pooled connection while it works. Leaving the loop early closes
+the cursor. Inside a transaction, use `tx.fetch_iter` — on the engine it raises,
+for the same reason `fetch_all` does.
+
+Each driver streams through its own primitive, and one difference is visible:
+`PsycopgEngine` uses a server-side cursor, and postgres will not `DECLARE` one for
+`INSERT ... RETURNING`, so that combination raises `UnsupportedError` naming the
+alternatives. asyncpg streams it through a portal; sqlite streams anything.
 
 ### Hoisting the compile
 
