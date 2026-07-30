@@ -30,7 +30,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from rowform.sqlite_engine import SqliteEngine
+import rowform as rf
 
 
 class _MockAioCursor:
@@ -130,7 +130,7 @@ def mock_sqlalchemy_engine(columns: Sequence[str], rows: list[tuple[Any, ...]]) 
     )
 
 
-class MockEngine(SqliteEngine):
+class MockEngine(rf.SqliteEngine):
     """A `SqliteEngine` whose driver call is canned — see module docstring.
 
     Subclasses the sqlite engine rather than a postgres one so the *processors*

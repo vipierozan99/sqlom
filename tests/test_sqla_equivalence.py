@@ -27,8 +27,7 @@ import sqlalchemy as sa
 from sqlalchemy import orm
 from sqlalchemy.orm import Mapped
 
-import rowform
-from rowform import mapped_column
+import rowform as rf
 
 
 class Colour(enum.Enum):
@@ -44,14 +43,14 @@ class Colour(enum.Enum):
 # --------------------------------------------------------------------------
 
 
-class RfBase(rowform.Base):
+class RfBase(rf.Base):
     metadata = sa.MetaData()
 
 
 class RfMaker(RfBase):
     __tablename__ = "eq_maker"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     name: Mapped[str]
     founded: Mapped[dt.date]
 
@@ -59,20 +58,20 @@ class RfMaker(RfBase):
 class RfWidget(RfBase):
     __tablename__ = "eq_widget"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    maker_id: Mapped[int] = mapped_column(sa.ForeignKey("eq_maker.id"))
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
+    maker_id: Mapped[int] = rf.mapped_column(sa.ForeignKey("eq_maker.id"))
     name: Mapped[str]
     in_stock: Mapped[bool]
     made_at: Mapped[dt.datetime]
     made_on: Mapped[dt.date]
     made_time: Mapped[dt.time]
-    price: Mapped[decimal.Decimal] = mapped_column(sa.Numeric(12, 3))
+    price: Mapped[decimal.Decimal] = rf.mapped_column(sa.Numeric(12, 3))
     weight: Mapped[float]
     # A named type so the postgres `CREATE TYPE` does not collide with any other
     # module's enum in the shared test database: an unnamed `Enum(Colour)` maps
     # to type "colour", which conftest also declares, and a lingering dependant
     # of that shared type silently blocks this suite's `DROP TYPE` on teardown.
-    colour: Mapped[Colour] = mapped_column(sa.Enum(Colour, name="eq_colour"))
+    colour: Mapped[Colour] = rf.mapped_column(sa.Enum(Colour, name="eq_colour"))
     serial: Mapped[uuid.UUID]
     spec: Mapped[dict]
     thumbnail: Mapped[bytes]
@@ -161,11 +160,11 @@ def _sync_pg_url(dsn: str) -> str:
     return dsn.replace("postgresql://", "postgresql+psycopg://", 1)
 
 
-async def _seed(rf: rowform.Engine) -> None:
-    await rf.drop_all(RfBase.metadata)
-    await rf.create_all(RfBase.metadata)
-    await rf.execute_many(sa.insert(RfMaker.__table__), MAKERS)
-    await rf.execute_many(sa.insert(RfWidget.__table__), WIDGETS)
+async def _seed(rf_engine: rf.Engine) -> None:
+    await rf_engine.drop_all(RfBase.metadata)
+    await rf_engine.create_all(RfBase.metadata)
+    await rf_engine.execute_many(sa.insert(RfMaker.__table__), MAKERS)
+    await rf_engine.execute_many(sa.insert(RfWidget.__table__), WIDGETS)
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
@@ -178,20 +177,20 @@ async def backend(request, tmp_path):
     """
     if request.param == "sqlite":
         path = str(tmp_path / "eq.sqlite3")
-        rf: rowform.Engine = rowform.SqliteEngine(path)
+        rf_engine: rf.Engine = rf.SqliteEngine(path)
         sa_engine = sa.create_engine(f"sqlite:///{path}")
     else:
         dsn = request.getfixturevalue("pg_dsn")
-        rf = rowform.AsyncpgEngine(dsn)
+        rf_engine = rf.AsyncpgEngine(dsn)
         sa_engine = sa.create_engine(_sync_pg_url(dsn))
 
-    await rf.connect()
+    await rf_engine.connect()
     try:
-        await _seed(rf)
-        yield rf, sa_engine
+        await _seed(rf_engine)
+        yield rf_engine, sa_engine
     finally:
-        await rf.drop_all(RfBase.metadata)
-        await rf.close()
+        await rf_engine.drop_all(RfBase.metadata)
+        await rf_engine.close()
         sa_engine.dispose()
 
 
@@ -226,9 +225,9 @@ def _assert_same(rf_obj: object, sa_obj: object, columns) -> None:
 
 
 async def test_a_whole_model_matches_the_orm_field_by_field(backend):
-    rf, sa_engine = backend
+    rf_engine, sa_engine = backend
 
-    rf_rows = await rf.fetch_all(sa.select(RfWidget).order_by(RfWidget.id))
+    rf_rows = await rf_engine.fetch_all(sa.select(RfWidget).order_by(RfWidget.id))
     with orm.Session(sa_engine) as session:
         sa_rows = session.scalars(sa.select(SaWidget).order_by(SaWidget.id)).all()
 
@@ -238,9 +237,9 @@ async def test_a_whole_model_matches_the_orm_field_by_field(backend):
 
 
 async def test_a_join_matches_the_orm_field_by_field(backend):
-    rf, sa_engine = backend
+    rf_engine, sa_engine = backend
 
-    rf_rows = await rf.fetch_all(
+    rf_rows = await rf_engine.fetch_all(
         sa.select(RfMaker, RfWidget).join(RfWidget).order_by(RfWidget.id)
     )
     with orm.Session(sa_engine) as session:

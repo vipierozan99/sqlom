@@ -18,8 +18,7 @@ import sqlalchemy as sa
 from conftest import Base, Wide
 from sqlalchemy.orm import Mapped
 
-import rowform
-from rowform import mapped_column
+import rowform as rf
 
 alembic = pytest.importorskip("alembic")
 from alembic.autogenerate import compare_metadata, produce_migrations
@@ -111,20 +110,20 @@ class TestAutogenerate:
 def test_a_model_added_later_joins_the_same_metadata(blank_db):
     """The realistic workflow: declare a model, and it is in the next migration."""
 
-    class Scratch(rowform.Base):
+    class Scratch(rf.Base):
         metadata = sa.MetaData()
 
     class Event(Scratch):
         __tablename__ = "events"
-        id: Mapped[int] = mapped_column(primary_key=True)
+        id: Mapped[int] = rf.mapped_column(primary_key=True)
         at: Mapped[dt.datetime]
 
     Scratch.metadata.create_all(blank_db)
 
     class Later(Scratch):
         __tablename__ = "later"
-        id: Mapped[int] = mapped_column(primary_key=True)
-        event_id: Mapped[int] = mapped_column(sa.ForeignKey("events.id"))
+        id: Mapped[int] = rf.mapped_column(primary_key=True)
+        event_id: Mapped[int] = rf.mapped_column(sa.ForeignKey("events.id"))
 
     with blank_db.connect() as conn:
         diffs = compare_metadata(context(conn, Scratch.metadata), Scratch.metadata)

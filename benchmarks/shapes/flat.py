@@ -20,12 +20,12 @@ from __future__ import annotations
 import sqlalchemy as sa
 from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
 
-import rowform
+import rowform as rf
 
 TABLE_NAME = "users"
 
 
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()
 
 
@@ -34,7 +34,7 @@ class User(Base):
 
     __tablename__ = TABLE_NAME
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True, autoincrement=False)
+    id: Mapped[int] = rf.mapped_column(primary_key=True, autoincrement=False)
     name: Mapped[str]
     email: Mapped[str]
     is_active: Mapped[bool]

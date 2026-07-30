@@ -16,15 +16,14 @@ import sqlalchemy as sa
 from conftest import Author, Book, Wide
 from sqlalchemy.orm import Mapped
 
-import rowform
-from rowform import compile_hydrator, mapped_column, plan
+import rowform as rf
 
-SQLITE = rowform.SqliteEngine(":memory:").dialect
+SQLITE = rf.SqliteEngine(":memory:").dialect
 
 
 def build(statement, dialect=SQLITE):
-    p = plan(statement)
-    return p, compile_hydrator(p, dialect, [None] * len(p.columns))
+    p = rf.plan(statement)
+    return p, rf.compile_hydrator(p, dialect, [None] * len(p.columns))
 
 
 class TestShape:
@@ -112,8 +111,8 @@ class TestProcessors:
         assert converted == {"flag", "when", "day", "clock", "amount", "colour", "uid", "payload"}
 
     def test_result_processor_is_none_where_the_driver_already_decodes(self):
-        assert rowform.result_processor(Author.id, SQLITE, None) is None
-        assert rowform.result_processor(Author.active, SQLITE, None) is not None
+        assert rf.result_processor(Author.id, SQLITE, None) is None
+        assert rf.result_processor(Author.active, SQLITE, None) is not None
 
     def test_a_datetime_round_trips_through_sqlite_s_string_storage(self):
         _, hydrate = build(sa.select(Wide.when))
@@ -148,12 +147,12 @@ def test_a_slotted_model_hydrates():
     stores; a slotted model has no `__dict__` slot for those, so this checks the
     stores land in the slots rather than raising."""
 
-    class Base(rowform.Base):
+    class Base(rf.Base):
         metadata = sa.MetaData()
 
     class Slotted(Base, slots=True):
         __tablename__ = "slotted_hydrate"
-        id: Mapped[int] = mapped_column(primary_key=True)
+        id: Mapped[int] = rf.mapped_column(primary_key=True)
         name: Mapped[str]
         active: Mapped[bool]
 
@@ -165,7 +164,7 @@ def test_a_slotted_model_hydrates():
 
 def test_a_description_of_the_wrong_width_is_refused():
     """Rather than mis-assign fields: the driver's account of the result is the
-    authority, and if it disagrees with the plan something is wrong upstream."""
-    p = plan(sa.select(Author))
+    authority, and if it disagrees with the rf.plan something is wrong upstream."""
+    p = rf.plan(sa.select(Author))
     with pytest.raises(ValueError, match="refusing to hydrate"):
-        compile_hydrator(p, SQLITE, [None, None])
+        rf.compile_hydrator(p, SQLITE, [None, None])

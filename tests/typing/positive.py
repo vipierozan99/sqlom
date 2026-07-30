@@ -19,18 +19,17 @@ from typing import Any, assert_type
 import sqlalchemy as sa
 from sqlalchemy.orm import InstrumentedAttribute, Mapped
 
-import rowform
-from rowform import CoreQuery, mapped_column
+import rowform as rf
 
 
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()
 
 
 class Author(Base):
     __tablename__ = "authors"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     name: Mapped[str]
     active: Mapped[bool]
     born: Mapped[dt.date | None]
@@ -39,8 +38,8 @@ class Author(Base):
 class Book(Base):
     __tablename__ = "books"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    author_id: Mapped[int] = mapped_column(sa.ForeignKey("authors.id"))
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
+    author_id: Mapped[int] = rf.mapped_column(sa.ForeignKey("authors.id"))
     title: Mapped[str]
     price: Mapped[decimal.Decimal]
     uid: Mapped[uuid.UUID]
@@ -72,12 +71,31 @@ assert_type(sa.select(Author, Book), sa.Select[tuple[Author, Book]])
 assert_type(sa.select(Author, Book.title), sa.Select[tuple[Author, str]])
 assert_type(sa.select(Author).where(Author.id > 1), sa.Select[tuple[Author]])
 
-# --- prepare() and fetch_all() preserve them -------------------------------
-engine = rowform.SqliteEngine("app.db")
+# --- an alias types exactly as the model it aliases ------------------------
+# The whole reason `alias()` is declared `type[_M]`: an alias class of its own
+# could only expose `__getattr__`, and every field below would be `Any`.
+manager = rf.alias(Author, "mgr")
 
-assert_type(engine.prepare(sa.select(Author)), CoreQuery[Author])
-assert_type(engine.prepare(sa.select(Author.name)), CoreQuery[str])
-assert_type(engine.prepare(sa.select(Author, Book)), CoreQuery[tuple[Author, Book]])
+assert_type(manager.id, InstrumentedAttribute[int])
+assert_type(manager.born, InstrumentedAttribute["dt.date | None"])
+assert_type(manager.id > 100, sa.ColumnElement[bool])
+assert_type(sa.select(manager), sa.Select[tuple[Author]])
+assert_type(sa.select(Author, manager), sa.Select[tuple[Author, Author]])
+
+# A declared subquery or CTE is the model too — which is the whole point of
+# `of=` refusing anything but that model's exact columns.
+recent = rf.alias(Author, of=sa.select(Author).limit(10).subquery())
+
+assert_type(recent.name, InstrumentedAttribute[str])
+assert_type(sa.select(recent), sa.Select[tuple[Author]])
+
+
+# --- prepare() and fetch_all() preserve them -------------------------------
+engine = rf.SqliteEngine("app.db")
+
+assert_type(engine.prepare(sa.select(Author)), rf.CoreQuery[Author])
+assert_type(engine.prepare(sa.select(Author.name)), rf.CoreQuery[str])
+assert_type(engine.prepare(sa.select(Author, Book)), rf.CoreQuery[tuple[Author, Book]])
 
 
 async def reads() -> None:
@@ -104,11 +122,18 @@ async def reads() -> None:
     assert_type(await engine.fetch_one(sa.select(Author)), "Author | None")
     assert_type(await engine.fetch_one(sa.select(Author.name)), "str | None")
 
+    # A self-join is a list of pairs of the model, with no cast.
+    assert_type(
+        await engine.fetch_all(sa.select(Author, manager).join(manager, Author.id < manager.id)),
+        list[tuple[Author, Author]],
+    )
+    assert_type(await engine.fetch_all(sa.select(recent)), list[Author])
+
 
 async def transactions() -> None:
     async with engine.transaction() as tx:
         assert_type(tx.depth, int)
-        assert_type(rowform.active_transaction(), "rowform.Transaction | None")
+        assert_type(rf.active_transaction(), "rf.Transaction | None")
 
 
 # --- schema surface --------------------------------------------------------
@@ -126,7 +151,7 @@ class Timestamped(Base):
 class Review(Timestamped, kw_only=True):
     __tablename__ = "reviews"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     body: Mapped[str]
 
 

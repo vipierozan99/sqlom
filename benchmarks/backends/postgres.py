@@ -17,10 +17,10 @@ import time
 import uuid
 from dataclasses import dataclass
 
-import rowform
+import rowform as rf
 from benchmarks.harness import seed as seed_module
 
-_DIALECT = rowform.AsyncpgEngine.dialect
+_DIALECT = rf.AsyncpgEngine.dialect
 
 DEFAULT_DB = "rowform_bench"
 DEFAULT_USER = "postgres"

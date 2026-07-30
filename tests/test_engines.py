@@ -12,7 +12,7 @@ import pytest
 import sqlalchemy as sa
 from conftest import Author, Base, Book, Tag
 
-import rowform
+import rowform as rf
 
 
 class TestLifecycle:
@@ -25,7 +25,7 @@ class TestLifecycle:
         await engine.close()
 
     async def test_use_before_connect_raises(self, sqlite_path):
-        db = rowform.SqliteEngine(sqlite_path)
+        db = rf.SqliteEngine(sqlite_path)
         with pytest.raises(RuntimeError, match="not connected"):
             await db.fetch_all(sa.select(Author))
 
@@ -35,13 +35,13 @@ class TestLifecycle:
             await engine.fetch_all(sa.select(Author))
 
     async def test_async_context_manager(self, sqlite_path):
-        async with rowform.SqliteEngine(sqlite_path) as db:
+        async with rf.SqliteEngine(sqlite_path) as db:
             assert db.pool is not None
         assert db.pool is None
 
     def test_an_unknown_kwarg_is_refused(self, sqlite_path):
         with pytest.raises(TypeError, match="unexpected keyword"):
-            rowform.SqliteEngine(sqlite_path, conditional_reset=True)
+            rf.SqliteEngine(sqlite_path, conditional_reset=True)
 
 
 class TestFetchAll:
@@ -204,6 +204,33 @@ class TestStatementMatrix:
         assert isinstance(first, Author) and isinstance(second, Author)
         assert first.id < second.id
 
+    async def test_self_join_through_rowform_alias(self, engine):
+        other = rf.alias(Author, "a2")
+        rows = await engine.fetch_all(
+            sa.select(Author, other)
+            .join(other, Author.id < other.id)
+            .where(other.active)
+            .order_by(Author.id, other.id)
+        )
+        first, second = rows[0]
+        assert isinstance(first, Author) and isinstance(second, Author)
+        assert first.id < second.id and second.active is True
+
+    async def test_a_cte_hydrates_as_a_model(self, engine):
+        active = rf.alias(Author, of=sa.select(Author).where(Author.active).cte("active"))
+        rows = await engine.fetch_all(sa.select(active).order_by(active.id))
+        assert [a.name for a in rows] == ["ada", "brian", "dan"]
+        assert all(isinstance(a, Author) for a in rows)
+
+    async def test_a_subquery_joins_back_against_its_table(self, engine):
+        newest = rf.alias(
+            Author, of=sa.select(Author).order_by(Author.id.desc()).limit(2).subquery()
+        )
+        rows = await engine.fetch_all(
+            sa.select(Book, newest).join(newest, Book.author_id == newest.id).order_by(Book.id)
+        )
+        assert [(b.title, a.name) for b, a in rows] == [("typography", "carol")]
+
     async def test_group_by_and_having(self, engine):
         rows = await engine.fetch_all(
             sa.select(Author.name, sa.func.count(Book.id))
@@ -291,4 +318,4 @@ class TestAcquire:
     async def test_yields_a_raw_driver_connection(self, engine):
         async with engine.acquire() as conn:
             assert conn is not None
-            assert not isinstance(conn, rowform.Engine)
+            assert not isinstance(conn, rf.Engine)

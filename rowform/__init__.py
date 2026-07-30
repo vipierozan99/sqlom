@@ -9,16 +9,16 @@ ORM identity.
     from sqlalchemy.orm import Mapped
     import rowform
 
-    class Base(rowform.Base):
+    class Base(rf.Base):
         pass
 
     class User(Base):
         __tablename__ = "users"
-        id: Mapped[int] = rowform.mapped_column(primary_key=True)
+        id: Mapped[int] = rf.mapped_column(primary_key=True)
         name: Mapped[str]
         email: Mapped[str | None]
 
-    engine = rowform.SqliteEngine("app.db")
+    engine = rf.SqliteEngine("app.db")
     await engine.connect()
     await engine.create_all(Base.metadata)
 
@@ -33,7 +33,7 @@ See docs/PLAN_CORE_COMPILER.md for why, what it costs, and what it retires.
 
 from .compile import compile_hydrator, result_processor
 from .engine import Engine
-from .model import DEFAULT_TYPE_MAP, Base, ModelMeta, mapped_column, model_for
+from .model import DEFAULT_TYPE_MAP, Base, ModelMeta, alias, mapped_column, model_for
 from .planner import Plan, plan
 from .psycopg_engine import PsycopgEngine
 from .query import CoreQuery
@@ -51,6 +51,7 @@ __all__ = [
     "SqliteEngine",
     "Transaction",
     "active_transaction",
+    "alias",
     "compile_hydrator",
     "mapped_column",
     "model_for",

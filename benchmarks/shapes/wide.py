@@ -34,7 +34,7 @@ import uuid
 import sqlalchemy as sa
 from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
 
-import rowform
+import rowform as rf
 
 TABLE_NAME = "w_events"
 
@@ -46,19 +46,19 @@ class Severity(enum.Enum):
     HIGH = "high"
 
 
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()
 
 
 class Event(Base):
     __tablename__ = TABLE_NAME
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True, autoincrement=False)
+    id: Mapped[int] = rf.mapped_column(primary_key=True, autoincrement=False)
     label: Mapped[str]
     seen: Mapped[bool]
     at: Mapped[dt.datetime]
     day: Mapped[dt.date]
-    amount: Mapped[decimal.Decimal] = rowform.mapped_column(sa.Numeric(12, 3))
+    amount: Mapped[decimal.Decimal] = rf.mapped_column(sa.Numeric(12, 3))
     severity: Mapped[Severity]
     trace: Mapped[uuid.UUID]
     note: Mapped[str | None]

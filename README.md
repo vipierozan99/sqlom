@@ -13,19 +13,19 @@ and pay for none of its result layer.
 ```python
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped
-import rowform
+import rowform as rf
 
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()
 
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     name: Mapped[str]
     email: Mapped[str | None]
 
-engine = rowform.AsyncpgEngine("postgresql://localhost/app")
+engine = rf.AsyncpgEngine("postgresql://localhost/app")
 await engine.connect()
 
 users = await engine.fetch_all(
@@ -98,25 +98,25 @@ Declaration is SQLAlchemy's own vocabulary — `Mapped[int]`, `mapped_column()` 
 on a base class of your own:
 
 ```python
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()          # what Alembic's target_metadata points at
 
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     name: Mapped[str]
     email: Mapped[str | None]                       # -> nullable column
     role: Mapped[Role]                              # an Enum class -> sa.Enum
-    balance: Mapped[Decimal] = rowform.mapped_column(sa.Numeric(12, 2))
-    owner_id: Mapped[int] = rowform.mapped_column(sa.ForeignKey("orgs.id"))
-    slug: Mapped[str] = rowform.mapped_column("url_slug", unique=True)
+    balance: Mapped[Decimal] = rf.mapped_column(sa.Numeric(12, 2))
+    owner_id: Mapped[int] = rf.mapped_column(sa.ForeignKey("orgs.id"))
+    slug: Mapped[str] = rf.mapped_column("url_slug", unique=True)
 ```
 
 Anything `mapped_column()` does not recognise goes straight to `sa.Column`, so
 `ForeignKey`, `Index`, `server_default`, `__table_args__` and the rest work as
 they always did. `Mapped[T | None]` makes the column nullable; the Python type
-maps to a SQLAlchemy type through `rowform.DEFAULT_TYPE_MAP`, which you can
+maps to a SQLAlchemy type through `rf.DEFAULT_TYPE_MAP`, which you can
 extend per-base with `type_annotation_map`.
 
 Instances are ordinary dataclasses: `repr()`, `==`, `dataclasses.fields()` and
@@ -128,14 +128,14 @@ look like:
 class User(Base, slots=True):
     __tablename__ = "users"
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     name: Mapped[str]
 ```
 
 `dataclasses.dataclass(slots=True)` rebuilds the class, and the class-level
 Column access survives that rebuild — `User.id` is still the `sa.Column`,
 `user.id` is still the `int`, and the generated hydrator writes straight into the
-slots. The base chain is itself slotted (`rowform.Base` and your own `Base` carry
+slots. The base chain is itself slotted (`rf.Base` and your own `Base` carry
 `__slots__ = ()`), so a `slots=True` model is *fully* slotted: no per-instance
 `__dict__` at all. That is the layout that actually saves memory and
 GC-traversal cost — a slotted class under a dict-carrying base keeps the
@@ -167,6 +167,54 @@ gives `None` for that slot rather than an object full of `None`s.
 The same rule is what makes the types exact: `fetch_all` is overloaded on the
 statement's arity, so all of the above infer without a cast.
 
+### Aliases and self-joins
+
+`sa.orm.aliased()` raises `NoInspectionAvailable` here and always will — it looks
+for a `Mapper`, and there is none. `rf.alias()` is the equivalent:
+
+```python
+mgr = rf.alias(User, "mgr")
+
+await engine.fetch_all(
+    sa.select(User, mgr).join(mgr, User.manager_id == mgr.id)
+)   # list[tuple[User, User]]
+```
+
+It reads as the model does — `mgr.name` is that alias's column, and the alias
+hydrates as a `User`, so a self-join needs no cast. `sa.alias(User)` also works
+and hydrates the same way; what it does not do is keep the types, since its
+columns are only reachable as `.c.name`.
+
+A **subquery or CTE** does not hydrate on its own: its columns belong to it, not
+to any table, so there is nothing to recognise. `of=` says the rows are that
+model's:
+
+```python
+active = rf.alias(User, of=sa.select(User).where(User.active).cte("active"))
+
+await engine.fetch_all(sa.select(active).order_by(active.id))   # list[User]
+```
+
+`of=` demands that model's columns, in order, and **nothing else** — an extra
+column is a `TypeError` rather than a row that hydrates as `(User, int)` while
+still typed `Select[tuple[User]]`. `select()` on a from clause expands to all of
+its columns, and without a `Mapper` there is no notion of "the entity's columns"
+to narrow that to. So filter on the extras inside the subquery and select out the
+model's columns:
+
+```python
+inner = sa.select(User, sa.func.row_number().over(...).label("rk")).subquery()
+first = rf.alias(User, of=(
+    sa.select(*[inner.c[c.key] for c in User.__table__.c])
+      .where(inner.c.rk == 1)
+      .subquery()
+))
+```
+
+The mark lands on the from clause you passed, not on a wrapper of it, so
+`active.id` and the CTE's own `.c.id` stay the same column — wrapping would make
+`select(active, cte.c.id)` two from clauses and a cartesian product.
+
 ### Hoisting the compile
 
 `fetch_all` accepts a bare statement and caches the compiled form under
@@ -184,14 +232,17 @@ await engine.fetch_all(recent, floor=1000)     # list[User]
 ### Writing
 
 ```python
-await engine.execute(sa.insert(User.__table__).values(name="ada"))
-await engine.execute_many(sa.insert(User.__table__), [{...}, {...}])
-await engine.execute(sa.update(User.__table__).where(User.id == 1).values(hits=User.hits + 1))
+await engine.execute(sa.insert(User).values(name="ada"))
+await engine.execute_many(sa.insert(User), [{...}, {...}])
+await engine.execute(sa.update(User).where(User.id == 1).values(hits=User.hits + 1))
 
 rows = await engine.fetch_all(
-    sa.insert(User.__table__).values(name="ada").returning(User.__table__)
+    sa.insert(User).values(name="ada").returning(User)
 )   # RETURNING hydrates like any other read
 ```
+
+The class stands in for its table in writes exactly as it does in reads, so
+`sa.insert(User)` and `sa.insert(User.__table__)` are the same statement.
 
 `execute()` refuses a statement that returns rows, and `fetch_all()` refuses one
 that does not — a write whose `returning()` you forgot fails loudly instead of
@@ -201,8 +252,8 @@ returning `[]`.
 
 ```python
 async with engine.transaction() as tx:
-    await tx.execute(sa.update(Account.__table__)...)
-    await tx.execute(sa.update(Account.__table__)...)
+    await tx.execute(sa.update(Account)...)
+    await tx.execute(sa.update(Account)...)
     rows = await tx.fetch_all(sa.select(Account).where(...))
 
     async with tx.transaction() as sp:      # a savepoint
