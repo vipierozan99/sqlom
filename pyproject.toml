@@ -21,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Database",
     "Topic :: Database :: Front-Ends",
     "Typing :: Typed",
@@ -125,6 +126,20 @@ reportUnnecessaryTypeIgnoreComment = "error"
 include = ["rowform", "benchmarks", "tests/typing"]
 extraPaths = ["."]
 
+
+[tool.coverage.run]
+source = ["rowform"]
+branch = true
+
+[tool.coverage.report]
+# `...` bodies (abstract driver hooks, overload stubs) and TYPE_CHECKING blocks
+# are declarations, not code paths — counting them would measure how many
+# overloads `fetch_all` has rather than how much of the library runs.
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "@overload",
+    '^\s*\.\.\.$',
+]
 
 [tool.ruff]
 line-length = 100
