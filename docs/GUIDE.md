@@ -120,17 +120,34 @@ One selected entity yields that entity; two or more yield a tuple, in select
 order. An `outerjoin` with no match gives `None` for that slot rather than an
 object full of `None`s.
 
-**Self-joins** go through `Table.alias()`, and hydrate as models:
+**Self-joins** go through `rowform.alias()`, and hydrate as models:
 
 ```python
-manager = User.__table__.alias("manager")
+mgr = rowform.alias(User, "mgr")
 rows = await engine.fetch_all(
-    sa.select(User, manager).join(manager, manager.c.id == User.manager_id)
+    sa.select(User, mgr).join(mgr, User.manager_id == mgr.id)
 )   # list[tuple[User, User]]
 ```
 
-`sqlalchemy.orm.aliased()` is *not* usable here — it needs an ORM mapper and
-raises `NoInspectionAvailable`. `Table.alias()` is the equivalent.
+`sqlalchemy.orm.aliased()` is *not* usable here — it looks for a `Mapper` and
+raises `NoInspectionAvailable`. `rowform.alias()` is the equivalent, and it keeps
+the types: `mgr.id` is that alias's column, so the join needs no cast.
+`User.__table__.alias("mgr")` and `sa.alias(User)` hydrate identically, but their
+columns are only reachable as `.c.id` and typed `Column[Any]`, which degrades the
+slot to `Any`.
+
+A **subquery or CTE** hydrates only if you say whose rows it holds, since its
+columns belong to it rather than to any table:
+
+```python
+active = rowform.alias(User, of=sa.select(User).where(User.active).cte("active"))
+await engine.fetch_all(sa.select(active).order_by(active.id))   # list[User]
+```
+
+`of=` demands exactly that model's columns, in order — anything else is a
+`DeclarationError` rather than rows that quietly hydrate as `(User, extra)` while
+still typed `Select[tuple[User]]`. See
+[Aliases and self-joins](../README.md#aliases-and-self-joins) for the full rules.
 
 **Hoist the compile** out of the request when you can:
 
@@ -438,7 +455,7 @@ nothing is tracked.
 | `user.posts` (lazy load) | `sa.select(User, Post).join(Post)`, written out |
 | `selectinload(User.posts)` | two statements, or one join and group in Python |
 | `session.begin()` | `engine.transaction()` |
-| `aliased(User)` | `User.__table__.alias("x")` |
+| `aliased(User)` | `rowform.alias(User, "x")` |
 
 Things that will bite in order of likelihood:
 

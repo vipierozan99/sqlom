@@ -30,12 +30,17 @@ class RowformError(Exception):
 
 
 class DeclarationError(RowformError, TypeError):
-    """A model declaration cannot be turned into a table.
+    """A model declaration cannot be turned into a table, or an alias of one.
 
     An unmappable annotation, a `Mapped[]` union of several types, a reserved
     field name, an incomplete `__column_order__`, a field-order conflict from an
-    inherited default, or selecting from a class with no `__tablename__`. Raised
-    at class-creation time, so it fires on import rather than on first query.
+    inherited default, or selecting from a class with no `__tablename__`. Those
+    are raised at class-creation time, so they fire on import rather than on
+    first query.
+
+    `alias()` raises it too, for a from clause whose columns are not exactly that
+    model's — the case where the rows would hydrate differently from what the
+    statement's type says.
     """
 
 

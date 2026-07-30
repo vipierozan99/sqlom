@@ -85,6 +85,37 @@ class TestAgreesWithFetchAll:
         ]
 
 
+class TestAliases:
+    """`alias()` and `fetch_iter` landed independently; this is where they meet.
+
+    A stream builds its hydrator from the *driver's* description of a cursor
+    result, so an alias or CTE resolving to a model has to survive that path as
+    well as the `fetch_all` one.
+    """
+
+    async def test_a_self_join_through_an_alias_streams_as_models(self, engine):
+        mgr = rowform.alias(Author, "mgr")
+        statement = (
+            sa.select(Author, mgr).join(mgr, mgr.id == Author.id).order_by(Author.id)
+        )
+        streamed = await collect(engine.fetch_iter(statement, chunk=2))
+        expected = await engine.fetch_all(statement)
+        assert len(streamed) == len(expected)
+        for author, aliased in streamed:
+            assert isinstance(author, Author)
+            assert isinstance(aliased, Author)
+
+    async def test_a_cte_marked_with_of_streams_as_models(self, engine):
+        active = rowform.alias(
+            Author, of=sa.select(Author).where(Author.active).cte("act_stream")
+        )
+        statement = sa.select(active).order_by(active.id)
+        streamed = await collect(engine.fetch_iter(statement, chunk=1))
+        assert streamed
+        assert all(isinstance(a, Author) for a in streamed)
+        assert [a.id for a in streamed] == [a.id for a in await engine.fetch_all(statement)]
+
+
 class TestChunking:
     @pytest.mark.parametrize("chunk", [1, 2, 3, 1000])
     async def test_the_result_is_the_same_at_any_chunk_size(self, engine, chunk):

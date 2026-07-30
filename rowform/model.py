@@ -585,13 +585,15 @@ def alias(model: type[_M], name: str | None = None, *, of: Any = None) -> type[_
         try:
             table = type.__getattribute__(model, "__table__")
         except AttributeError:
-            raise TypeError(
+            raise DeclarationError(
                 f"{model.__name__} is abstract (no __tablename__), so it has no table to alias"
             ) from None
         source = table.alias(name)
     else:
         if name is not None:
-            raise TypeError("pass a name to .subquery()/.cte() itself, not to alias(of=...)")
+            raise DeclarationError(
+            "pass a name to .subquery()/.cte() itself, not to alias(of=...)"
+        )
         source = of
         _require_exact_columns(model, source)
         setattr(source, MODEL_ATTR, model)
@@ -608,7 +610,7 @@ def _require_exact_columns(model: type[Any], from_clause: Any) -> None:
     scalars. Both are silent, so both are refused here instead.
     """
     if not isinstance(from_clause, sa.FromClause):
-        raise TypeError(
+        raise DeclarationError(
             f"alias(of=...) needs a FromClause — a subquery, CTE, alias or table — "
             f"not {type(from_clause).__name__}. A Select becomes one with "
             f".subquery() or .cte()."
@@ -618,7 +620,7 @@ def _require_exact_columns(model: type[Any], from_clause: Any) -> None:
     want = [col.key for col in declared.values()]
     got = list(from_clause.columns.keys())
     if got != want:
-        raise TypeError(
+        raise DeclarationError(
             f"alias({model.__name__}, of=...) needs exactly that model's columns, "
             f"in order: expected {want}, got {got}. `select()` on a from clause "
             f"expands to all of its columns, so an extra or reordered one would "

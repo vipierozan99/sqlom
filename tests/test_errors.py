@@ -69,6 +69,25 @@ class TestDeclarationError:
                 id: Mapped[int] = mapped_column(primary_key=True)
                 nope: Mapped[complex]
 
+    def test_an_alias_of_something_that_is_not_the_model(self):
+        """`alias(of=...)` refuses a from clause whose columns are not exactly the
+        model's, and that refusal is part of the same hierarchy."""
+        class Base(rowform.Base):
+            metadata = sa.MetaData()
+
+        class Row(Base):
+            __tablename__ = "err_alias"
+
+            id: Mapped[int] = mapped_column(primary_key=True)
+            name: Mapped[str]
+
+        wider = sa.select(Row, sa.literal(1).label("extra")).subquery()
+        with pytest.raises(rowform.DeclarationError, match="exactly that model's columns"):
+            rowform.alias(Row, of=wider)
+
+        with pytest.raises(rowform.DeclarationError, match="A Select becomes one with"):
+            rowform.alias(Row, of=sa.select(Row))
+
     def test_selecting_an_abstract_class(self):
         class Base(rowform.Base):
             metadata = sa.MetaData()

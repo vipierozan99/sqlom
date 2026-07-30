@@ -61,6 +61,31 @@ The metaclass. Carries `@dataclass_transform`, which is why field types survive
 into the constructor's signature — and why a model cannot also inherit `ABC` or
 `Protocol` ([workaround](GUIDE.md#working-around-the-metaclass)).
 
+### `rowform.alias(model, name=None, *, of=None) -> type[Model]`
+
+A second reference to a model's rows, typed as the model.
+
+```python
+mgr = rowform.alias(User, "mgr")                       # another alias of its table
+sa.select(User, mgr).join(mgr, User.manager_id == mgr.id)   # list[tuple[User, User]]
+
+active = rowform.alias(User, of=sa.select(User).where(User.active).cte("active"))
+sa.select(active)                                       # list[User]
+```
+
+Returns a proxy declared `type[Model]`, so `mgr.name` and `select(User, mgr)`
+infer exactly as the model does — the same type-level fiction as `User.id`. Field
+names resolve to the alias's columns, which matters when a column was renamed.
+
+`sqlalchemy.orm.aliased()` cannot do this: it inspects its argument for a
+`Mapper`, and a rowform model has none.
+
+`of=` marks an existing from clause — a subquery, CTE or alias — as holding that
+model's rows, and demands exactly its columns in order. Anything else raises
+`DeclarationError`, because `select()` on a from clause expands to *all* of its
+columns and there is no `Mapper` to narrow that to "the entity's". A `name` with
+`of=` is refused too; name the subquery or CTE itself.
+
 ### `rowform.model_for(from_clause) -> type | None`
 
 The model a `Table` — or an `alias()` of one — was built from, else `None`. This is
