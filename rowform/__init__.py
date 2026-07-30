@@ -9,16 +9,16 @@ ORM identity.
     from sqlalchemy.orm import Mapped
     import rowform
 
-    class Base(rowform.Base):
+    class Base(rf.Base):
         pass
 
     class User(Base):
         __tablename__ = "users"
-        id: Mapped[int] = rowform.mapped_column(primary_key=True)
+        id: Mapped[int] = rf.mapped_column(primary_key=True)
         name: Mapped[str]
         email: Mapped[str | None]
 
-    engine = rowform.SqliteEngine("app.db")
+    engine = rf.SqliteEngine("app.db")
     await engine.connect()
     await engine.create_all(Base.metadata)
 

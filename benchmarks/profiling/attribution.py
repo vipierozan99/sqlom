@@ -15,13 +15,13 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-import rowform as _rowform_pkg
+import rowform as rf
 
 # Resolved once. Substring matching on "rowform" is a trap: this repo's own
 # directory is named rowform, so a naive r"/rowform/" pattern also matches
 # /home/user/rowform/benchmarks/... and credits harness work to the library.
 # Compare against real package directories instead.
-ROWFORM_DIR = str(Path(_rowform_pkg.__file__).resolve().parent) + os.sep
+ROWFORM_DIR = str(Path(rf.__file__).resolve().parent) + os.sep
 BENCH_DIR = str(Path(__file__).resolve().parent.parent) + os.sep
 
 # Functions rowform generates via exec(). Their code object filename is

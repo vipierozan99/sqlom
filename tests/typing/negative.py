@@ -16,18 +16,17 @@ import datetime as dt
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped
 
-import rowform
-from rowform import mapped_column
+import rowform as rf
 
 
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()
 
 
 class Author(Base):
     __tablename__ = "authors"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     name: Mapped[str]
     active: Mapped[bool]
 
@@ -35,11 +34,11 @@ class Author(Base):
 class Book(Base):
     __tablename__ = "books"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     title: Mapped[str]
 
 
-engine = rowform.SqliteEngine("app.db")
+engine = rf.SqliteEngine("app.db")
 
 
 # --- construction ----------------------------------------------------------
@@ -62,7 +61,7 @@ _ = Author.missing  # pyright: ignore[reportAttributeAccessIssue]
 
 
 # --- an alias exposes the model's fields, and only those -------------------
-other = rowform.alias(Author, "a2")
+other = rf.alias(Author, "a2")
 
 _ = other.missing  # pyright: ignore[reportAttributeAccessIssue]
 
@@ -110,14 +109,14 @@ async def reads() -> None:
 # `frozen` is declared on the Base as well: a checker treats every model under a
 # Base as sharing its dataclass configuration, and refuses a frozen class
 # inheriting from a non-frozen one. Stdlib dataclasses say the same thing.
-class FrozenBase(rowform.Base, frozen=True):
+class FrozenBase(rf.Base, frozen=True):
     metadata = sa.MetaData()
 
 
 class Frozen(FrozenBase, frozen=True):
     __tablename__ = "frozen"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
 
 
 Frozen(id=1).id = 2  # pyright: ignore[reportAttributeAccessIssue]
@@ -130,7 +129,7 @@ class Timestamped(Base):
 class Review(Timestamped, kw_only=True):
     __tablename__ = "reviews"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
 
 
 # kw_only means positional construction is refused, and the inherited field is

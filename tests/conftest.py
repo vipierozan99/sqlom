@@ -39,8 +39,7 @@ from sqlalchemy.orm import Mapped
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import rowform
-from rowform import mapped_column
+import rowform as rf
 
 PG_DSN = os.environ.get(
     "ROWFORM_TEST_DSN",
@@ -63,14 +62,14 @@ def pytest_addoption(parser):
 # --------------------------------------------------------------------------
 
 
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()
 
 
 class Author(Base):
     __tablename__ = "t_authors"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     name: Mapped[str]
     active: Mapped[bool]
 
@@ -78,16 +77,16 @@ class Author(Base):
 class Book(Base):
     __tablename__ = "t_books"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    author_id: Mapped[int] = mapped_column(sa.ForeignKey("t_authors.id"))
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
+    author_id: Mapped[int] = rf.mapped_column(sa.ForeignKey("t_authors.id"))
     title: Mapped[str]
 
 
 class Tag(Base):
     __tablename__ = "t_tags"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    book_id: Mapped[int] = mapped_column(sa.ForeignKey("t_books.id"))
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
+    book_id: Mapped[int] = rf.mapped_column(sa.ForeignKey("t_books.id"))
     label: Mapped[str]
 
 
@@ -107,13 +106,13 @@ class Wide(Base):
 
     __tablename__ = "t_wide"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     text: Mapped[str]
     flag: Mapped[bool]
     when: Mapped[dt.datetime]
     day: Mapped[dt.date]
     clock: Mapped[dt.time]
-    amount: Mapped[decimal.Decimal] = mapped_column(sa.Numeric(12, 3))
+    amount: Mapped[decimal.Decimal] = rf.mapped_column(sa.Numeric(12, 3))
     ratio: Mapped[float]
     colour: Mapped[Colour]
     uid: Mapped[uuid.UUID]
@@ -218,10 +217,10 @@ async def engine(request):
     """
     if request.param == "sqlite":
         path = request.getfixturevalue("sqlite_path")
-        db = rowform.SqliteEngine(path)
+        db = rf.SqliteEngine(path)
     else:
         dsn = request.getfixturevalue("pg_dsn")
-        db = rowform.AsyncpgEngine(dsn)
+        db = rf.AsyncpgEngine(dsn)
 
     await db.connect()
     try:
@@ -233,7 +232,7 @@ async def engine(request):
 
 @pytest.fixture
 async def sqlite_engine(sqlite_path):
-    db = rowform.SqliteEngine(sqlite_path)
+    db = rf.SqliteEngine(sqlite_path)
     await db.connect()
     try:
         await seed(db)

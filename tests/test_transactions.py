@@ -6,7 +6,7 @@ import pytest
 import sqlalchemy as sa
 from conftest import Author, Book, Tag
 
-import rowform
+import rowform as rf
 
 
 class Boom(Exception):
@@ -152,7 +152,7 @@ class TestTheFootgunGuard:
         assert len(await engine.fetch_all(sa.select(Author))) == 4
 
     async def test_the_guard_is_scoped_to_the_same_engine(self, engine, sqlite_path):
-        other = rowform.SqliteEngine(sqlite_path)
+        other = rf.SqliteEngine(sqlite_path)
         await other.connect()
         try:
             async with engine.transaction():
@@ -161,13 +161,13 @@ class TestTheFootgunGuard:
             await other.close()
 
     async def test_active_transaction_tracks_the_innermost_block(self, engine):
-        assert rowform.active_transaction() is None
+        assert rf.active_transaction() is None
         async with engine.transaction() as tx:
-            assert rowform.active_transaction() is tx
+            assert rf.active_transaction() is tx
             async with tx.transaction() as sp:
-                assert rowform.active_transaction() is sp
-            assert rowform.active_transaction() is tx
-        assert rowform.active_transaction() is None
+                assert rf.active_transaction() is sp
+            assert rf.active_transaction() is tx
+        assert rf.active_transaction() is None
 
 
 class TestSqliteRefusesWhatItCannotDo:

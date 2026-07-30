@@ -21,21 +21,21 @@ from __future__ import annotations
 import sqlalchemy as sa
 from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
 
-import rowform
+import rowform as rf
 
 AUTHORS_TABLE = "j_authors"
 POSTS_TABLE = "j_posts"
 POSTS_PER_AUTHOR = 5
 
 
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()
 
 
 class Author(Base):
     __tablename__ = AUTHORS_TABLE
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True, autoincrement=False)
+    id: Mapped[int] = rf.mapped_column(primary_key=True, autoincrement=False)
     name: Mapped[str]
     email: Mapped[str]
     is_active: Mapped[bool]
@@ -44,8 +44,8 @@ class Author(Base):
 class Post(Base):
     __tablename__ = POSTS_TABLE
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True, autoincrement=False)
-    author_id: Mapped[int] = rowform.mapped_column(sa.ForeignKey(f"{AUTHORS_TABLE}.id"))
+    id: Mapped[int] = rf.mapped_column(primary_key=True, autoincrement=False)
+    author_id: Mapped[int] = rf.mapped_column(sa.ForeignKey(f"{AUTHORS_TABLE}.id"))
     title: Mapped[str]
     score: Mapped[int]
     published: Mapped[bool]

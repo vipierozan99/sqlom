@@ -57,6 +57,9 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+# Conventions
+- Reach the library through `import rowform as rf` — in docs, tests, benchmarks and examples alike. Not `import rowform`, not `from rowform import x`. One name for the package everywhere, so `rf` is free to mean nothing else.
+
 # Commands
 - Run linting with: `just lint --fix` (`--fix` will already fix fixable errors)
 - Run typechecking with: `just typecheck`

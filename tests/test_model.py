@@ -14,15 +14,14 @@ import sqlalchemy as sa
 from conftest import Author, Base, Book, Colour, Wide
 from sqlalchemy.orm import Mapped
 
-import rowform
-from rowform import mapped_column
+import rowform as rf
 
 
 def make_base():
     """A throwaway Base, so a test that declares tables cannot collide with
     another test's names in a shared MetaData."""
 
-    class Scratch(rowform.Base):
+    class Scratch(rf.Base):
         metadata = sa.MetaData()
 
     return Scratch
@@ -86,8 +85,8 @@ class TestTableConstruction:
 
         class Renamed(Scratch):
             __tablename__ = "renamed"
-            id: Mapped[int] = mapped_column(primary_key=True)
-            title: Mapped[str] = mapped_column("headline", index=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
+            title: Mapped[str] = rf.mapped_column("headline", index=True)
 
         assert Renamed.__table__.c.keys() == ["id", "headline"]
         assert Renamed.title.name == "headline"
@@ -100,7 +99,7 @@ class TestTableConstruction:
         class Constrained(Scratch):
             __tablename__ = "constrained"
             __table_args__ = (sa.UniqueConstraint("a", "b"),)
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
             a: Mapped[int]
             b: Mapped[int]
 
@@ -110,13 +109,13 @@ class TestTableConstruction:
         assert len(uniques) == 1
 
     def test_type_annotation_map_extends_the_defaults(self):
-        class Scratch(rowform.Base):
+        class Scratch(rf.Base):
             metadata = sa.MetaData()
             type_annotation_map = {str: sa.Text()}
 
         class Doc(Scratch):
             __tablename__ = "doc"
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
             body: Mapped[str]
 
         assert isinstance(Doc.__table__.c.body.type, sa.Text)
@@ -128,7 +127,7 @@ class TestTableConstruction:
 
             class Odd(Scratch):
                 __tablename__ = "odd"
-                id: Mapped[int] = mapped_column(primary_key=True)
+                id: Mapped[int] = rf.mapped_column(primary_key=True)
                 thing: Mapped[complex]
 
 
@@ -189,7 +188,7 @@ class TestInstances:
 
         class Frozen(Scratch, frozen=True):
             __tablename__ = "frozen"
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
 
         with pytest.raises(dataclasses.FrozenInstanceError):
             Frozen(id=1).id = 2
@@ -204,7 +203,7 @@ class TestInstances:
 
         class Slotted(Scratch, slots=True):
             __tablename__ = "slotted"
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
             name: Mapped[str]
             active: Mapped[bool]
 
@@ -227,19 +226,19 @@ class TestInstances:
     def test_the_base_chain_is_slotted_so_slots_true_actually_pays_off(self):
         """The memory/GC win of `slots=True` exists only if *no* class in the MRO
         carries a `__dict__`; otherwise the object keeps the managed-dict overhead
-        and slots save nothing. `rowform.Base` and the abstract user `Base` both
+        and slots save nothing. `rf.Base` and the abstract user `Base` both
         declare `__slots__ = ()` to guarantee that. The other half of the contract
         is that a *default* model still re-acquires its own `__dict__`, which is
         what keeps orjson on its fast native-dict path — base-slotting must not
         break it.
         """
         Scratch = make_base()
-        assert rowform.Base.__slots__ == ()
+        assert rf.Base.__slots__ == ()
         assert Scratch.__slots__ == ()
 
         class Default(Scratch):
             __tablename__ = "plain_default"
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
             name: Mapped[str]
 
         assert Default(id=1, name="x").__dict__ == {"id": 1, "name": "x"}
@@ -249,7 +248,7 @@ class TestInstances:
 
         class FrozenSlotted(Scratch, frozen=True, slots=True):
             __tablename__ = "frozen_slotted"
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
 
         assert FrozenSlotted.__slots__ == ("id",)
         with pytest.raises(dataclasses.FrozenInstanceError):
@@ -260,8 +259,8 @@ class TestInstances:
 
         class Defaulted(Scratch):
             __tablename__ = "defaulted"
-            id: Mapped[int] = mapped_column(primary_key=True)
-            active: Mapped[bool] = mapped_column(default=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
+            active: Mapped[bool] = rf.mapped_column(default=True)
 
         assert Defaulted(id=1).active is True
         assert Defaulted.__table__.c.active.default.arg is True
@@ -271,7 +270,7 @@ class TestInstances:
 
         class Generated(Scratch):
             __tablename__ = "generated"
-            id: Mapped[int] = mapped_column(primary_key=True, init=False)
+            id: Mapped[int] = rf.mapped_column(primary_key=True, init=False)
             name: Mapped[str]
 
         instance = Generated(name="x")
@@ -287,7 +286,7 @@ class TestMixinsAndOrder:
 
         class Note(Timestamped):
             __tablename__ = "note"
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
             body: Mapped[str]
 
         assert Note.__table__.c.keys() == ["created", "id", "body"]
@@ -313,11 +312,11 @@ class TestMixinsAndOrder:
 
         class A(Timestamped):
             __tablename__ = "a"
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
 
         class B(Timestamped):
             __tablename__ = "b"
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
 
         assert A.created is not B.created
         assert A.created.table is A.__table__
@@ -333,7 +332,7 @@ class TestMixinsAndOrder:
 
         class Note(Timestamped):
             __tablename__ = "note"
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
 
         assert Note.__column_order__ == ("created", "id")
 
@@ -346,7 +345,7 @@ class TestMixinsAndOrder:
         class Note(Timestamped):
             __tablename__ = "note"
             __column_order__ = ("id", "created")
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
 
         assert Note.__table__.c.keys() == ["id", "created"]
         # The pin governs the *column* order — CREATE TABLE, and what a plain
@@ -362,7 +361,7 @@ class TestMixinsAndOrder:
             class Note(Scratch):
                 __tablename__ = "note"
                 __column_order__ = ("id",)
-                id: Mapped[int] = mapped_column(primary_key=True)
+                id: Mapped[int] = rf.mapped_column(primary_key=True)
                 body: Mapped[str]
 
     def test_a_reordering_default_explains_itself(self):
@@ -371,23 +370,23 @@ class TestMixinsAndOrder:
         Scratch = make_base()
 
         class Timestamped(Scratch):
-            created: Mapped[int] = mapped_column(default=0)
+            created: Mapped[int] = rf.mapped_column(default=0)
 
         with pytest.raises(TypeError, match="inherited from a base or mixin"):
 
             class Note(Timestamped):
                 __tablename__ = "note"
-                id: Mapped[int] = mapped_column(primary_key=True)
+                id: Mapped[int] = rf.mapped_column(primary_key=True)
 
     def test_kw_only_is_the_documented_way_out(self):
         Scratch = make_base()
 
         class Timestamped(Scratch):
-            created: Mapped[int] = mapped_column(default=0)
+            created: Mapped[int] = rf.mapped_column(default=0)
 
         class Note(Timestamped, kw_only=True):
             __tablename__ = "note"
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
 
         assert Note(id=1).created == 0
 
@@ -409,7 +408,7 @@ class TestGuards:
 
             class Bad(Scratch):
                 __tablename__ = "bad"
-                id: Mapped[int] = mapped_column(primary_key=True)
+                id: Mapped[int] = rf.mapped_column(primary_key=True)
                 thing: Mapped[int | str]
 
     def test_metaclass_conflict_is_real_and_documented(self):
@@ -422,18 +421,18 @@ class TestGuards:
 
             class Bad(Scratch, ABC):
                 __tablename__ = "bad"
-                id: Mapped[int] = mapped_column(primary_key=True)
+                id: Mapped[int] = rf.mapped_column(primary_key=True)
 
 
 class TestModelLookup:
     def test_a_table_knows_the_model_it_was_built_from(self):
-        assert rowform.model_for(Author.__table__) is Author
+        assert rf.model_for(Author.__table__) is Author
 
     def test_an_alias_resolves_through_to_the_model(self):
-        assert rowform.model_for(sa.alias(Author.__table__, "a2")) is Author
+        assert rf.model_for(sa.alias(Author.__table__, "a2")) is Author
 
     def test_a_foreign_table_has_no_model(self):
-        assert rowform.model_for(sa.table("elsewhere", sa.column("id"))) is None
+        assert rf.model_for(sa.table("elsewhere", sa.column("id"))) is None
 
 
 class TestAlias:
@@ -445,20 +444,20 @@ class TestAlias:
             sa.orm.aliased(Author)
 
     def test_it_coerces_to_an_alias_of_the_table(self):
-        other = rowform.alias(Author, "a2")
+        other = rf.alias(Author, "a2")
         element = other.__clause_element__()
         assert isinstance(element, sa.Alias)
         assert element.name == "a2"
         assert element.element is Author.__table__
 
     def test_attributes_are_the_alias_columns(self):
-        other = rowform.alias(Author, "a2")
+        other = rf.alias(Author, "a2")
         assert other.name is not Author.name
         assert other.name.key == "name"
         assert str(other.name) == "a2.name"
 
     def test_it_selects_and_joins_like_the_model(self):
-        other = rowform.alias(Author, "a2")
+        other = rf.alias(Author, "a2")
         rendered = str(sa.select(other).where(other.id > 1))
         assert "FROM t_authors AS a2" in rendered
         assert "a2.id >" in rendered
@@ -467,26 +466,26 @@ class TestAlias:
         class Renamed(make_base()):
             __tablename__ = "renamed"
 
-            id: Mapped[int] = mapped_column(primary_key=True)
-            slug: Mapped[str] = mapped_column("url_slug")
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
+            slug: Mapped[str] = rf.mapped_column("url_slug")
 
-        other = rowform.alias(Renamed, "r2")
+        other = rf.alias(Renamed, "r2")
         assert str(other.slug) == "r2.url_slug"
 
     def test_an_unknown_field_raises(self):
-        other = rowform.alias(Author, "a2")
+        other = rf.alias(Author, "a2")
         with pytest.raises(AttributeError, match="no column 'missing'"):
             _ = other.missing
 
     def test_an_abstract_model_cannot_be_aliased(self):
         class Abstract(make_base()):
-            id: Mapped[int] = mapped_column(primary_key=True)
+            id: Mapped[int] = rf.mapped_column(primary_key=True)
 
         with pytest.raises(TypeError, match="abstract"):
-            rowform.alias(Abstract)
+            rf.alias(Abstract)
 
     def test_repr_names_the_model_and_the_alias(self):
-        assert repr(rowform.alias(Author, "a2")) == "<alias Author AS a2>"
+        assert repr(rf.alias(Author, "a2")) == "<alias Author AS a2>"
 
 
 class TestAliasOf:
@@ -496,30 +495,30 @@ class TestAliasOf:
 
     def test_a_subquery_is_scalars_until_it_is_declared(self):
         sub = sa.select(Author).subquery()
-        assert rowform.model_for(sub) is None
+        assert rf.model_for(sub) is None
 
-        rowform.alias(Author, of=sub)
-        assert rowform.model_for(sub) is Author
+        rf.alias(Author, of=sub)
+        assert rf.model_for(sub) is Author
 
     def test_the_mark_lands_on_the_given_from_clause(self):
         """Not on a wrapper of it: `select(top, newest.c.id)` has to stay one
         from clause, or it is a cartesian product."""
         newest = sa.select(Author).limit(5).subquery()
-        top = rowform.alias(Author, of=newest)
+        top = rf.alias(Author, of=newest)
         assert top.id is newest.c.id
 
     def test_a_cte_hydrates_as_the_model(self):
         cte = sa.select(Author).cte("recent")
-        recent = rowform.alias(Author, of=cte)
+        recent = rf.alias(Author, of=cte)
         rendered = str(sa.select(recent).where(recent.active))
         assert "WITH recent AS" in rendered
         assert "FROM recent" in rendered
 
     def test_a_union_hydrates_as_the_model(self):
         both = sa.union_all(sa.select(Author), sa.select(Author)).subquery()
-        assert rowform.model_for(both) is None
-        rowform.alias(Author, of=both)
-        assert rowform.model_for(both) is Author
+        assert rf.model_for(both) is None
+        rf.alias(Author, of=both)
+        assert rf.model_for(both) is Author
 
     def test_an_extra_column_is_refused(self):
         """`select()` expands every column of a from clause, so an extra one
@@ -528,12 +527,12 @@ class TestAliasOf:
             Author, sa.func.row_number().over(order_by=Author.id).label("rk")
         ).subquery()
         with pytest.raises(TypeError, match="exactly that model's columns"):
-            rowform.alias(Author, of=ranked)
+            rf.alias(Author, of=ranked)
 
     def test_reordered_columns_are_refused(self):
         reordered = sa.select(Author.name, Author.id, Author.active).subquery()
         with pytest.raises(TypeError, match="exactly that model's columns"):
-            rowform.alias(Author, of=reordered)
+            rf.alias(Author, of=reordered)
 
     def test_narrowing_past_the_extra_column_is_what_the_error_asks_for(self):
         inner = sa.select(
@@ -545,17 +544,17 @@ class TestAliasOf:
             .subquery()
         )
 
-        first = rowform.alias(Author, of=narrowed)
-        assert rowform.model_for(narrowed) is Author
+        first = rf.alias(Author, of=narrowed)
+        assert rf.model_for(narrowed) is Author
         assert "rk" in str(sa.select(first))
 
     def test_a_select_is_refused(self):
         with pytest.raises(TypeError, match="A Select becomes one with"):
-            rowform.alias(Author, of=sa.select(Author))
+            rf.alias(Author, of=sa.select(Author))
 
     def test_a_name_belongs_to_the_subquery_not_the_alias(self):
         with pytest.raises(TypeError, match="not to alias"):
-            rowform.alias(Author, "a2", of=sa.select(Author).subquery())
+            rf.alias(Author, "a2", of=sa.select(Author).subquery())
 
 
 class TestDdl:
@@ -568,7 +567,7 @@ class TestDdl:
     def test_sqlite_renders_the_types_it_has_no_native_form_for(self):
         ddl = str(
             sa.schema.CreateTable(Wide.__table__).compile(
-                dialect=rowform.SqliteEngine("x").dialect
+                dialect=rf.SqliteEngine("x").dialect
             )
         )
         assert "CHAR(32)" in ddl  # sqlite has no native uuid
@@ -576,9 +575,9 @@ class TestDdl:
 
 
 def test_default_type_map_covers_the_types_the_wide_shape_uses():
-    assert isinstance(rowform.DEFAULT_TYPE_MAP[uuid.UUID], sa.Uuid)
-    assert isinstance(rowform.DEFAULT_TYPE_MAP[decimal.Decimal], sa.Numeric)
-    assert isinstance(rowform.DEFAULT_TYPE_MAP[dt.datetime], sa.DateTime)
+    assert isinstance(rf.DEFAULT_TYPE_MAP[uuid.UUID], sa.Uuid)
+    assert isinstance(rf.DEFAULT_TYPE_MAP[decimal.Decimal], sa.Numeric)
+    assert isinstance(rf.DEFAULT_TYPE_MAP[dt.datetime], sa.DateTime)
 
 
 def test_enum_members_survive_declaration():
