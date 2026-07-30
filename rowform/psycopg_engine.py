@@ -18,6 +18,7 @@ get a tuple. That branch is decided by the dialect, not by this module.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -27,6 +28,12 @@ from sqlalchemy.dialects.postgresql import psycopg as _psycopg
 from .engine import Engine
 from .errors import ConfigurationError, UnsupportedError
 from .transaction import Transaction
+
+# Cursor names are per *session*, so two streams sharing one connection — which is
+# exactly what `tx.fetch_iter()` inside another `tx.fetch_iter()` does — must not
+# ask for the same name. A fixed one raises `DuplicateCursor: cursor
+# "rowform_stream" already exists` on the second.
+_STREAM_NAMES = itertools.count()
 
 
 class PsycopgEngine(Engine):
@@ -72,7 +79,7 @@ class PsycopgEngine(Engine):
                 "RETURNING. Use fetch_all() for this statement, or AsyncpgEngine, "
                 "which streams it through a portal."
             )
-        async with conn.cursor(name="rowform_stream") as cursor:
+        async with conn.cursor(name=f"rowform_stream_{next(_STREAM_NAMES)}") as cursor:
             await cursor.execute(sql, params)
             description = cursor.description
             while True:

@@ -66,6 +66,63 @@ class TestPoolSizing:
             rowform.SqliteEngine(sqlite_path, min_size=min_size, max_size=max_size)
 
 
+class TestPoolFailures:
+    """Opening the pool can fail half-way, and what it opened has to be closed.
+
+    `_open_pool` never returns in that case, so `engine.pool` is never assigned
+    and nothing else holds a reference to the connections already made — a
+    retried `connect()` would just accumulate file handles.
+    """
+
+    @staticmethod
+    def _flaky_aiosqlite(monkeypatch, fail_on_pragma_after: int):
+        """Stand in for `aiosqlite.connect`, failing a PRAGMA after N connections."""
+        import aiosqlite
+
+        opened: list[object] = []
+        closed: list[object] = []
+
+        class FakeConn:
+            def __init__(self, index: int):
+                self.index = index
+
+            async def execute(self, sql, *args):
+                if self.index >= fail_on_pragma_after and sql.startswith("PRAGMA"):
+                    raise OSError("disk I/O error")
+
+            async def close(self):
+                closed.append(self)
+
+        async def fake_connect(*args, **kwargs):
+            conn = FakeConn(len(opened))
+            opened.append(conn)
+            return conn
+
+        monkeypatch.setattr(aiosqlite, "connect", fake_connect)
+        return opened, closed
+
+    async def test_a_failing_pragma_closes_the_connection_it_opened(
+        self, sqlite_path, monkeypatch
+    ):
+        opened, closed = self._flaky_aiosqlite(monkeypatch, fail_on_pragma_after=0)
+        db = rowform.SqliteEngine(sqlite_path, min_size=1, max_size=2)
+        with pytest.raises(OSError, match="disk I/O error"):
+            await db.connect()
+        assert len(opened) == 1
+        assert closed == opened, "the connection whose PRAGMA failed was left open"
+
+    async def test_a_failure_part_way_closes_the_earlier_connections(
+        self, sqlite_path, monkeypatch
+    ):
+        opened, closed = self._flaky_aiosqlite(monkeypatch, fail_on_pragma_after=2)
+        db = rowform.SqliteEngine(sqlite_path, min_size=4, max_size=4)
+        with pytest.raises(OSError, match="disk I/O error"):
+            await db.connect()
+        assert len(opened) == 3  # two good, one that failed its PRAGMA
+        assert len(closed) == 3, "connections opened before the failure leaked"
+        assert db.pool is None
+
+
 class TestExports:
     def test_asyncpg_engine_is_exported(self):
         assert "AsyncpgEngine" in rowform.__all__

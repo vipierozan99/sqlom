@@ -63,16 +63,31 @@ class _SqlitePool:
         self._idle: asyncio.Queue[Any] = asyncio.Queue()
 
     async def open(self) -> None:
-        for _ in range(self._min):
-            self._count += 1
-            self._idle.put_nowait(await self._connect())
+        # A failure part-way through leaves this pool object unreferenced —
+        # `_open_pool` never returns, so `engine.pool` is never assigned and
+        # nothing can close what was already opened. Close it here instead, or a
+        # retried `connect()` accumulates file handles.
+        try:
+            for _ in range(self._min):
+                self._count += 1
+                self._idle.put_nowait(await self._connect())
+        except BaseException:
+            await self.close()
+            raise
 
     async def _connect(self) -> Any:
         import aiosqlite
 
         conn = await aiosqlite.connect(self._path, isolation_level=None)
-        await conn.execute("PRAGMA journal_mode=WAL")
-        await conn.execute("PRAGMA synchronous=NORMAL")
+        # Registered in `_all` only once it is fully set up, so a PRAGMA that
+        # raises has to close the connection itself — nothing else knows about it
+        # yet.
+        try:
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA synchronous=NORMAL")
+        except BaseException:
+            await conn.close()
+            raise
         self._all.append(conn)
         return conn
 

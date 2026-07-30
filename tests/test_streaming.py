@@ -187,6 +187,25 @@ class TestStatementsItRefuses:
             with pytest.raises(rowform.UnsupportedError, match="only DECLARE one for a SELECT"):
                 await collect(db.fetch_iter(statement))
 
+    async def test_psycopg_streams_nested_on_one_connection(self, pg_dsn):
+        """Two live streams on the same pinned connection.
+
+        Cursor names are per session, so a fixed one made the second stream fail
+        with `DuplicateCursor: cursor "rowform_stream" already exists`. Only
+        `PsycopgEngine` declares a named cursor, so only it can hit this.
+        """
+        async with rowform.PsycopgEngine(pg_dsn) as db:
+            await seed(db)
+            async with db.transaction() as tx:
+                outer = tx.fetch_iter(sa.select(Author).order_by(Author.id), chunk=1)
+                try:
+                    async for _first in outer:
+                        inner = await collect(tx.fetch_iter(sa.select(Author), chunk=1))
+                        assert inner
+                        break
+                finally:
+                    await outer.aclose()
+
     async def test_psycopg_streams_a_select(self, pg_dsn):
         async with rowform.PsycopgEngine(pg_dsn) as db:
             await seed(db)
