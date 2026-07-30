@@ -21,9 +21,18 @@ Four jobs, all of which you can run locally:
 | `just test . --pg-required` | the suite on Python 3.11, 3.12, 3.13 and 3.14 |
 | `just cov --cov-fail-under=90` | branch coverage |
 | `uv build` + wheel install | that the artifact still ships `py.typed` |
+| `uv sync --resolution lowest-direct` + tests | that the dependency floors in pyproject are real |
 
-A fifth workflow compares the micro benchmarks against the merge base and fails
-a PR that is more than 1.25x slower. See below before arguing with it.
+Two more workflows run outside the PR: one compares the micro benchmarks against
+the merge base and fails a PR more than 1.25x slower (see below before arguing
+with it), and a weekly canary runs the suite against SQLAlchemy's **main** branch.
+
+That canary is worth understanding before changing the row path. rowform reads a
+dozen SQLAlchemy internals on purpose — `_cached_result_processor`,
+`construct_params`, `_generate_cache_key` and friends — which is the design
+working, and also a standing bet that they do not move. The canary is how that
+bet is watched, and it is deliberately allowed to fail loudly: a scheduled
+workflow going red notifies the maintainer, which is the entire mechanism.
 
 ## The test suite
 

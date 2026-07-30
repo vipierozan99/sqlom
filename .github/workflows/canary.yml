@@ -1,0 +1,98 @@
+name: SQLAlchemy canary
+
+# rowform reads SQLAlchemy's internals on purpose. The row path calls
+# `_cached_result_processor`, `construct_params`, `_generate_cache_key`,
+# `_process_parameters_for_postcompile`, `_bind_processors`, `escaped_bind_names`,
+# `positiontup`, `post_compile_params`, `literal_execute_params`, `_returning`,
+# `extracted_parameters` and `_limit_clause`, and `AsyncpgEngine` calls four more
+# on the dialect. That is the design working — Core compiles, rowform runs — and
+# it is also a standing bet that those do not move.
+#
+# This job is how the bet is monitored: the suite against SQLAlchemy's main
+# branch, weekly. It is expected to be green, and when it is not, the failure is
+# the point. Deliberately *not* `continue-on-error`: a scheduled workflow that
+# goes red notifies the repository owner, which is the whole mechanism here, and
+# a job that always reports success notifies nobody.
+#
+# It runs on a schedule only. A broken SQLAlchemy main is not a reason to block a
+# PR against a released one.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays, 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rowform_bench
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install just
+        uses: extractions/setup-just@v4
+
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      # Replaces the resolved release with the development branch. `--prerelease
+      # allow` because main reports itself as a beta of the next minor.
+      - name: Install SQLAlchemy from main
+        run: |
+          uv pip install --prerelease=allow \
+            "sqlalchemy @ git+https://github.com/sqlalchemy/sqlalchemy.git@main"
+          uv run --no-sync python -c "
+          import sqlalchemy
+          print('SQLAlchemy under test:', sqlalchemy.__version__)
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Test (incl. postgres)
+        run: just test . --pg-required
+
+      # Typing drift is worth seeing but not worth crying wolf over: the exact
+      # inference `fetch_all` promises rests on SQLAlchemy's `Select` generics, and
+      # a pre-release can move those for reasons that will be settled before it
+      # ships. Reported, not fatal.
+      - name: Typecheck (reported, not fatal)
+        continue-on-error: true
+        run: just typecheck
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## SQLAlchemy canary"
+            echo
+            echo "The suite against SQLAlchemy's main branch. A failure here means"
+            echo "an internal this library reads has moved — see the workflow"
+            echo "comment for the list."
+          } >> "$GITHUB_STEP_SUMMARY"

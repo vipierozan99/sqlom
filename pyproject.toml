@@ -28,7 +28,12 @@ classifiers = [
 ]
 # SQLAlchemy is a hard, unconditional dependency: it compiles every statement and
 # owns the schema (docs/PLAN_CORE_COMPILER.md §1a). There is no standalone mode.
-dependencies = ["sqlalchemy>=2.0"]
+#
+# The floor is 2.0.18, not 2.0: `AsyncpgEngine` reads `dialect._native_inet_types`
+# and calls `_disable_asyncpg_inet_codecs`, and neither exists before then — the
+# whole suite errors on 2.0.17 and passes on 2.0.18. CI resolves to this floor on
+# every PR so the number stays a fact.
+dependencies = ["sqlalchemy>=2.0.18"]
 
 [project.urls]
 Homepage = "https://github.com/vipierozan99/sqlom"
@@ -100,7 +105,9 @@ bench = [
     "locust>=2.32",
     "psutil>=6.0",
     "rich>=13.0",
-    "sqlalchemy>=2.0",
+    # Matches the project floor, so a lowest-direct resolution installs one
+    # SQLAlchemy rather than arguing about two.
+    "sqlalchemy>=2.0.18",
     # async-typer 0.2.1 imports `typer.clear`, removed in typer 0.26 — cap until
     # async-typer publishes a release that drops it (see PLAN.md discoveries).
     "typer>=0.15,<0.26",
