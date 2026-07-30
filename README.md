@@ -135,13 +135,16 @@ class User(Base, slots=True):
 `dataclasses.dataclass(slots=True)` rebuilds the class, and the class-level
 Column access survives that rebuild — `User.id` is still the `sa.Column`,
 `user.id` is still the `int`, and the generated hydrator writes straight into the
-slots. Two things worth knowing: your `Base` is itself a plain, non-slotted class
-(so it can carry `metadata` and still allow `frozen=True` subclasses), which
-means instances inherit its `__dict__` — `slots=True` keeps the model's *fields*
-in slots, but does not remove the dict entirely. And a slotted instance drops
-`orjson` off its fast native-dict path, which is why the default is non-slotted
-(docs/FINDINGS.md,
-[the orjson dataclass trap](docs/FINDINGS.md#the-orjson-dataclass-trap)).
+slots. The base chain is itself slotted (`rowform.Base` and your own `Base` carry
+`__slots__ = ()`), so a `slots=True` model is *fully* slotted: no per-instance
+`__dict__` at all. That is the layout that actually saves memory and
+GC-traversal cost — a slotted class under a dict-carrying base keeps the
+managed-dict overhead and saves neither. The default stays non-slotted (its leaf
+re-acquires its own `__dict__`) to keep `orjson` on its fast native-dict path,
+which a slotted instance drops off (docs/FINDINGS.md,
+[the orjson dataclass trap](docs/FINDINGS.md#the-orjson-dataclass-trap)). Reach
+for `slots=True` when instance count and GC pressure matter more than
+serialization speed.
 
 ### Reading
 

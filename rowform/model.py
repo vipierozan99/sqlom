@@ -195,11 +195,21 @@ class ModelMeta(type):
                     f"would build a table with no columns"
                 )
             # A user's own `Base`: carries `metadata` and nothing else. Left as a
-            # plain class on purpose — making it a field-less dataclass would
-            # make every model inherit dataclass-ness from it, and stdlib then
-            # refuses `class User(Base, frozen=True)` with "cannot inherit frozen
-            # dataclass from a non-frozen one".
-            return probe
+            # plain (non-dataclass) class on purpose — making it a field-less
+            # dataclass would make every model inherit dataclass-ness from it, and
+            # stdlib then refuses `class User(Base, frozen=True)` with "cannot
+            # inherit frozen dataclass from a non-frozen one".
+            #
+            # `__slots__ = ()` so the base contributes no `__dict__` to the MRO.
+            # A model that opts into `slots=True` is then *fully* slotted — no
+            # per-instance `__dict__` at all — which is the only layout that
+            # actually saves memory and GC-traversal cost (a slotted class under a
+            # dict-carrying base keeps the managed-dict overhead and saves
+            # neither). A default model declares no `__slots__`, so it re-acquires
+            # its own `__dict__` and keeps orjson's fast native-dict path.
+            slotted = dict(ns)
+            slotted.setdefault("__slots__", ())
+            return super().__new__(mcls, name, bases, slotted)
 
         namespace: dict[str, Any] = {
             key: value
@@ -446,7 +456,13 @@ class Base(metaclass=ModelMeta):
     is the most-copied line in every `env.py`. A subclass that declares its own
     `metadata = sa.MetaData()` gets a separate schema; otherwise every model in
     the process shares this one.
+
+    `__slots__ = ()` so the base itself contributes no `__dict__`; the metaclass
+    does the same for the field-less abstract base a user derives (see
+    `__new__`), which is what lets a `slots=True` model be fully slotted.
     """
+
+    __slots__ = ()
 
     metadata = sa.MetaData()
 
