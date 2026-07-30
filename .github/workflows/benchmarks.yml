@@ -3,11 +3,15 @@ name: Benchmarks (periodic)
 # Explores the three-step idea in the task: (1) has main moved since we last
 # benchmarked, (2) if so run the benchmarks, (3) post the result somewhere.
 #
-# Caveat baked into the output below: GitHub-hosted runners are shared and
-# unpinned, so these numbers are a *trend / regression* signal, not a quotable
-# baseline (docs/METHODOLOGY.md: absolutes drift with the machine). The
-# in-process micro suite is used precisely because it has the best
-# signal-to-noise here — no docker, no event-loop/pool/TLS.
+# Posts to a single tracking issue (one comment per run). That same issue is
+# also the change-detection state: step (1) skips when a comment already exists
+# for main's current commit, so there is no separate marker to drift.
+#
+# Caveat baked into the output: GitHub-hosted runners are shared and unpinned,
+# so these numbers are a *trend / regression* signal, not a quotable baseline
+# (docs/METHODOLOGY.md: absolutes drift with the machine). The in-process micro
+# suite is used precisely because it has the best signal-to-noise here — no
+# docker, no event-loop/pool/TLS.
 
 on:
   schedule:
@@ -19,9 +23,9 @@ on:
         type: boolean
         default: false
 
-# Needed to push the dated results branch (step 3).
 permissions:
-  contents: write
+  contents: read
+  issues: write
 
 concurrency:
   group: benchmarks
@@ -29,6 +33,8 @@ concurrency:
 
 env:
   UV_PYTHON: "3.11"
+  GH_TOKEN: ${{ github.token }}
+  TRACKING_TITLE: "Benchmark trend (automated)"
 
 jobs:
   bench:
@@ -37,18 +43,20 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-          fetch-depth: 0
 
-      # (1) Change detection. The source of truth for "already benchmarked this
-      # commit" is the existence of a results branch whose name ends in the
-      # commit's short sha — no separate state store to drift out of sync.
-      - name: Detect whether main changed since the last benchmark
+      # (1) Change detection. The tracking issue is the source of truth: if it
+      # already carries a comment for this commit's short sha, we've run it.
+      - name: Find tracking issue and detect change
         id: detect
         run: |
           SHORT=$(git rev-parse --short HEAD)
           echo "short=$SHORT" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event.inputs.force }}" != "true" ] \
-             && git ls-remote --heads origin | grep -q "refs/heads/bench/auto-.*-$SHORT$"; then
+          NUM=$(gh issue list --state open --limit 100 --json number,title \
+                --jq "map(select(.title==\"$TRACKING_TITLE\"))|.[0].number // empty")
+          echo "issue=$NUM" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event.inputs.force }}" != "true" ] && [ -n "$NUM" ] \
+             && gh issue view "$NUM" --json comments \
+                  --jq '.comments[].body' | grep -qF "main @ \`$SHORT\`"; then
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "main @ \`$SHORT\` already benchmarked — skipping." >> "$GITHUB_STEP_SUMMARY"
           else
@@ -65,18 +73,17 @@ jobs:
       # the empty `--pin ""` survives — `just`'s {{args}} re-tokenisation would
       # drop the empty token and bind `--pin` to the next flag. `--pin ""`
       # disables CPU pinning (the local default targets cores that don't exist
-      # on a 2-core runner). `--record` writes run.json under results/runs/.
+      # on a 2-core runner).
       - name: Run micro benchmarks
         if: steps.detect.outputs.run == 'true'
         run: |
           set -o pipefail
           for shape in flat join; do
             uv run --all-groups python -m benchmarks micro run \
-              --shape "$shape" --record --pin "" 2>&1 | tee "bench-$shape.log"
+              --shape "$shape" --pin "" 2>&1 | tee "bench-$shape.log"
           done
 
-      # (3a) Post to the job summary — always visible on the run page.
-      - name: Write job summary
+      - name: Build report
         if: steps.detect.outputs.run == 'true'
         run: |
           {
@@ -94,20 +101,16 @@ jobs:
             done
           } | tee SUMMARY.md >> "$GITHUB_STEP_SUMMARY"
 
-      # (3b) Post to a dated results branch so any run is reproducible from a
-      # commit (CLAUDE.md: "make a branch and commit the results there, such
-      # that I can always go back to a commit and reproduce a benchmark").
-      - name: Commit results to a dated branch
+      # (3) Post to the tracking issue — creating it on the first-ever run. The
+      # header line above carries the short sha that step (1) greps for.
+      - name: Post results to the tracking issue
         if: steps.detect.outputs.run == 'true'
         run: |
-          BRANCH="bench/auto-$(date -u +%Y%m%d)-${{ steps.detect.outputs.short }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
-          # results/runs/ is gitignored on main (PLAN.md D15); force-add just this
-          # run's artifacts so the branch is self-contained.
-          git add -f benchmarks/results/runs/
-          git add SUMMARY.md bench-flat.log bench-join.log
-          git commit -m "bench: automated micro run on main @ ${{ steps.detect.outputs.short }}"
-          git push -u origin "$BRANCH"
-          echo "Pushed results to \`$BRANCH\`." >> "$GITHUB_STEP_SUMMARY"
+          NUM="${{ steps.detect.outputs.issue }}"
+          if [ -z "$NUM" ]; then
+            URL=$(gh issue create --title "$TRACKING_TITLE" --body \
+              "Automated benchmark trend — one comment per run of the in-process micro suite on a GitHub-hosted runner (shared, unpinned: a trend signal, **not** a quotable baseline).")
+            NUM=$(basename "$URL")
+          fi
+          gh issue comment "$NUM" --body-file SUMMARY.md
+          echo "Posted to issue #$NUM." >> "$GITHUB_STEP_SUMMARY"
