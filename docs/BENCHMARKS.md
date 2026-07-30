@@ -1,5 +1,95 @@
 # rowform benchmark results
 
+> ## ⚠️ Everything below the "Current results" section is **pre-rewrite history**
+>
+> rowform was rewritten around SQLAlchemy Core
+> ([PLAN_CORE_COMPILER.md](PLAN_CORE_COMPILER.md)). Every "rowform vs SQLAlchemy
+> Core" figure in this document compares a library that generated its own SQL
+> against one that did not — a comparison that no longer has a subject, because
+> Core now compiles the statements on both sides.
+>
+> Those numbers are **kept, not deleted**: they are the record of a library that
+> existed, and the corrections attached to them are the most useful part of this
+> repository. Reproduce them at commit **`b7ae88d`**, the last commit before the
+> rewrite:
+>
+> ```bash
+> git checkout b7ae88d && just bench micro run --shape flat
+> ```
+>
+> Current numbers are in the next section and in [README.md](../README.md).
+
+---
+
+## Current results (post-rewrite)
+
+Produced by `just bench micro run`, which is the only way to produce them.
+sqlite is an ephemeral 200,000-row database; postgres is a container on the same
+host. 1000 rows per read, 300 timed iterations after 50 warmup, GC off, process
+pinned to cpus 6-9. Medians in milliseconds.
+
+Recorded runs: [`benchmarks/results/runs/`](../benchmarks/results/runs/).
+
+### sqlite
+
+| contender | flat | join | wide |
+|---|---|---|---|
+| raw driver → dicts *(floor)* | 0.9226 | 1.8090 | — |
+| raw driver + the same hydrator *(floor)* | 1.0117 | 2.1178 | — |
+| **rowform** | **1.0515** | **2.0960** | **4.0700** |
+| SQLAlchemy Core (positional) | 1.6337 | 2.4253 | 5.5812 |
+| SQLAlchemy Core (`.mappings()`) | 3.6406 | — | — |
+| SQLAlchemy ORM | 4.9284 | 8.3629 | 9.4309 |
+| SQLAlchemy ORM (`MappedAsDataclass`) | 6.1918 | 10.8190 | 21.0983 |
+
+### postgres (asyncpg)
+
+| contender | flat | join | wide |
+|---|---|---|---|
+| raw driver → dicts *(floor)* | 1.0330 | — | — |
+| **rowform** | **1.0075** | **1.8827** | **3.3459** |
+| SQLAlchemy Core (positional) | 1.5053 | 2.3630 | 4.0825 |
+| SQLAlchemy Core (`.mappings()`) | 3.7085 | — | — |
+| SQLAlchemy ORM | 5.1658 | 8.3664 | 8.5904 |
+
+`flat/postgres` is the one cell where rowform and the floor are inside each
+other's noise (1.0075 vs 1.0330, and that run's rowform IQR was 38%). Read it as
+"indistinguishable from hand-rolling the driver", not as "faster than the floor".
+
+### Row layer alone (`mock` backend, zero driver cost)
+
+| contender | flat | join |
+|---|---|---|
+| **rowform** | **0.3091** | **0.6474** |
+| SQLAlchemy Core (positional) | 0.6577 | — |
+| SQLAlchemy ORM | 3.9507 | 6.7420 |
+
+### Ratios, and the one that matters most
+
+vs rowform, sqlite: Core **1.55x / 1.16x / 1.37x** (flat/join/wide), ORM
+**4.7x / 4.0x / 2.3x**. Row layer alone: Core **2.1x**, ORM **12.8x**.
+
+**`wide` is the honest number.** It is the shape whose columns are
+`DateTime`/`Date`/`Numeric`/`Enum`/`Uuid`/nullable, where per-column type
+processors dominate — and since both sides run the *same* processors, there is
+proportionally less to skip. It also shows the ORM gap closing (2.3x, against
+4.7x on `flat`) for the same reason. A suite quoting only `flat` would be
+quoting its best case without saying so.
+
+### What is gated, and what that proves
+
+Every table above passed the equivalence gate: each contender's JSON is compared
+byte for byte before any timing starts. The `wide` shape produces
+**sha256=60c3f426… on both sqlite and postgres** — the same 194,647 bytes from
+two drivers that disagree about how to store almost every column in it. That is
+the strongest available evidence that bypassing `Row` is faithful rather than
+merely fast, and it is the check that a
+[`{bool: bool}` converter table would have failed](METHODOLOGY.md) 7 columns of.
+
+---
+
+# Pre-rewrite results
+
 Every number here was produced by a script in `benchmarks/`, on the machine
 described in each section. Raw output artifacts are checked in under
 [`benchmarks/results/`](../benchmarks/results/).

@@ -3,6 +3,21 @@
 Engineering conclusions from building and measuring rowform. Numbers are from
 [BENCHMARKS.md](BENCHMARKS.md); the reasoning about *why* is here.
 
+> **Read the scope note first.** rowform was rewritten around SQLAlchemy Core
+> ([PLAN_CORE_COMPILER.md](PLAN_CORE_COMPILER.md)): Core now compiles every
+> statement and owns the schema, and the in-house query builder — expressions,
+> `Query`, DML, dialects — was deleted. This document predates that.
+>
+> | section | status |
+> |---|---|
+> | everything about **hydration and codegen** (§ "Code-generate the hydrator", "Batch the hydrator", "The `@model` metaclass", "The orjson dataclass trap") | **current and load-bearing.** This is the part that survived, and it is now the whole value proposition. |
+> | everything about **where the CPU goes**, the scaling model, and what to optimise next | **current in substance.** The shares shift because SQL generation is no longer rowform's, but the conclusion — transport dominates, then the row layer — is unchanged. |
+> | the **"vs Core" and "vs ORM" ratios** in the next section | **historical.** They compare a library that generated its own SQL against one that did not. Both sides now compile identically, so the comparison is purely the result layer — see the table in [README.md](../README.md) and correction 9 in [METHODOLOGY.md](METHODOLOGY.md), which found that every published Core ratio was inflated a second time. |
+> | anything describing `@model`, `Column[int]`, `rf.select` or `Query` **as API** | **deleted.** The design *rationale* in those sections is still why the current metaclass looks the way it does; the syntax is gone. |
+>
+> Two retractions and three new corrections came out of the rewrite; they are at
+> the bottom of this file under "Retracted".
+
 ---
 
 ## The bottom line, and how much it depends on the setup
@@ -490,3 +505,86 @@ object path needs those objects, so that cost is not addressable from rowform.
   (`Query.to_json_sql`, `DatabaseEngine.fetch_json`) but parked — it is not an
   object mapper. If your endpoint only ever emits JSON, it is the faster answer and
   rowform's object path is the wrong tool.
+
+
+---
+
+## Retracted
+
+Three predictions that measurement contradicted, and one that measurement
+confirmed but for a different reason than expected. Recorded because each was
+acted on, or nearly was.
+
+### Collapsing sqlite's extra round trip is not a win
+
+`SqliteEngine._fetch_rows` does `execute` then `fetchall` — two thread handoffs —
+where SQLAlchemy's aiosqlite adapter buffers both in one. Predicted that
+collapsing it via `aiosqlite.execute_fetchall()` would be free throughput.
+
+Measured the opposite: 1 round trip = 1.0702 ms, 2 round trips = 1.0366 ms.
+**Do not act on this.**
+
+### Hydrating off the adapter's row deque is not a win
+
+SQLAlchemy's asyncpg adapter buffers rows in a `deque`, and `cursor.fetchall()`
+copies it to a list. Predicted that hydrating straight off the deque would save
+the copy. Measured *slower*: 1.0947 ms against 1.0115 ms.
+
+### `exec_driver_sql` to skip compilation is not a win
+
+Predicted that bypassing the compile-cache lookup would show up. Measured a
+wash-to-slightly-worse (1.0308 vs 1.0115) — exactly as a ~0.001 ms cache hit
+predicts. **There was never anything there to win**, which is the useful part:
+the compile step had been assumed expensive for long enough to be worth
+measuring, and it is not.
+
+### `AUTOCOMMIT` does not pay for itself on the read path
+
+SQLAlchemy's implicit `BEGIN`/`COMMIT` around a pooled read was assumed to be a
+material per-request cost. Setting `isolation_level="AUTOCOMMIT"` measured
+*slower*: 1.2193 ms against 1.1944 ms.
+
+The per-request cost that *is* real is pool acquisition — SQLAlchemy's costs
+~0.18 ms against rowform's ~0.03–0.08 ms, which is the whole reason the current
+design has Core compile and rowform's engine execute.
+
+---
+
+## New, from the rewrite
+
+### orjson's native UUID path is exact-type
+
+orjson serializes `uuid.UUID` natively, but the check is on the exact type.
+asyncpg returns `asyncpg.pgproto.UUID`, a genuine `uuid.UUID` *subclass* holding
+an identical value — and orjson falls through to `default=` for it. Stock
+SQLAlchemy Core returns the same object (its asyncpg dialect sets
+`supports_native_uuid`, so `Uuid.result_processor` is `None`), so this is a
+serializer quirk rather than a hydration difference. It still has to be handled,
+and handled *identically for every contender*, or it reads as one.
+
+### A hand-written converter table cannot be right
+
+The retired `SQLITE_CONVERTERS = {bool: bool}` was keyed by exact Python type.
+Two things follow, and both are unfixable without abandoning the approach:
+
+* A nullable column wants `bool | None`, which never matches `bool`, so
+  conversion silently did not run.
+* `type.python_type` is not total — it raises for some types, and `Enum` resolves
+  to bare `str`, losing the enum class.
+
+Asking each *column* for its own `result_processor` has neither problem: the
+lookup is per-column rather than per-type, so nullability is irrelevant, and the
+dialect supplies the answer so `python_type` is never consulted on the read path
+at all.
+
+### Compiling with the cache key is not optional
+
+SQLAlchemy's structural cache key deliberately ignores literal values — that is
+what makes compiling once worthwhile. The consequence is that a cached compiled
+statement holds whichever literals the *first* caller had, so
+`insert(...).values(id=51)` executed against a query compiled from `values(id=50)`
+inserts 50 again, silently.
+
+The fix is SQLAlchemy's own: compile *with* the cache key, and pass the current
+statement's `CacheKey.bindparams` as `extracted_parameters` on every call. Without
+the first half, the second raises.

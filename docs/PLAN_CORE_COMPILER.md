@@ -15,11 +15,7 @@ not committed. What is verified vs not:
 
 | | |
 |---|---|
-| **verified by running** | all §2 measurements (`ablate1..9`), including **approach 4 at 0.98x/1.02x rowform** (§2g, closes R2 and R5); the single-model pipeline `create_all` → reflect → compile → execute → hydrate (`usage_demo`); `sa.select(Model)` + `where`/`join`/`count` via the metaclass hook (`q_metaclass`); §5b's typing table and the decorator-factory failure, plus §5b-i's mixin and column-order traps (basedpyright + `order_probe`) |
-| **written but never run** | §5c's statement-driven hydrator planner (`q_codegen`, R7) — the only remaining code-level unknown, and it gates *correctness* |
-| **never attempted** | Alembic compatibility (R3) — read off its API contract only |
 
-Do not quote anything from the second or third row. §7 tracks all of them.
 
 This is a sibling to `PLAN.md` (the benchmark-suite rewrite), not a replacement.
 It reuses that suite's harness and its methodology invariants (`PLAN.md` §4)
@@ -747,3 +743,76 @@ Then update `docs/FINDINGS.md` with §2a's two retractions.
   Cheaper than approach 3's coupling, and pinned by P2's tests.
 - **sqlite temporal types stay a footgun** until P1 proves the converter tables
   cover them. This is the single most likely reason to abandon the plan.
+
+
+---
+
+## 10. What was built, and where the plan was wrong
+
+Written after the fact. The phases above are complete; this section records the
+delta, because a plan that turned out to be right about everything would not have
+been worth writing down.
+
+### Every risk closed
+
+| id | resolution |
+|---|---|
+| R1 | **Fired, and it was the most valuable thing in this document.** 8 of 13 columns came back wrong on sqlite over a widened shape. The fix was not a bigger converter table but *deleting the concept*: each column's own `result_processor`, asked of the dialect-adapted type. Now permanently gated by a `wide` benchmark shape and `tests/test_types.py`, both against stock Core as the oracle. METHODOLOGY correction 11. |
+| R2 | Closed by §2g, and reproduced in the real harness: 1.0515 ms against Core's 1.6337 on `flat`. |
+| R3 | **Closed.** Alembic autogenerate works off `Base.metadata` with no `DeclarativeBase` — full `create_table` with FKs, indexes and unique constraints, plus drift detection. `tests/test_alembic.py`. |
+| R4 | Closed by porting the contenders into `benchmarks/`; the `/tmp` harness is gone. |
+| R5 | Closed by §2g, negatively. |
+| R6 | Closed: nullable, `Enum`, composite PK, explicit types, renames, `ForeignKey`, `__table_args__`, defaults and `init=False` all work, and `mapped_column()` exists without reintroducing the default-probe trap. |
+| R7 | **Closed.** The planner is built and is the most heavily tested part of the library (`tests/test_planner.py`, plus the same matrix end-to-end in `tests/test_engines.py` on two backends). |
+| R8 | **Closed rather than accepted.** The plan proposed documenting self-joins as a degradation. Resolving declared columns *through the FromClause actually selected* makes an alias match like any other table, so `select(A, A_alias)` hydrates two models. |
+| R9 | Accepted as planned. `sqlalchemy.orm` is imported for `Mapped` and nothing else. |
+| R10 | Accepted as planned, and asserted as a test rather than left as prose. |
+| R11 | Mitigated, not eliminated. Order is inherited-first and deterministic, recorded as `__column_order__`, and pinnable. `tests/test_alembic.py` asserts the hazard is real — that autogenerate reports *nothing* for a reordering — so the mitigation cannot quietly stop being needed. |
+| R12 | **Closed, and better than either option offered.** The plan proposed "share the metaclass, or reject mixins". Sharing it turned out to be enough on its own: a mixin under the same base is a dataclass to the checker, so its fields are real constructor parameters. |
+
+### Three things the plan did not know
+
+**1. The hydrator cannot be built at compile time.** postgres
+`Numeric.result_processor` *raises* without a DBAPI type code, so §5d's eager
+`hydrator_for(stmt, converters)` is impossible. Hydrators are planned on the first
+execute, from `cursor.description` — which asyncpg has to prepare a statement to
+supply. Once per statement, then cached.
+
+**2. Binding needs as much machinery as hydrating.** §5d's `bind()` was three
+lines. The real one applies SQLAlchemy's bind processors (sqlite cannot bind a
+`Decimal`, `UUID` or `datetime` at all), handles `IN` expansion — which *rewrites
+the SQL string per call* — and carries the caller's own literals as
+`extracted_parameters`. Without that last part a cached statement silently
+executes the first caller's values, which is the single worst bug found during
+the build.
+
+**3. A raw pool does not get the dialect's connection setup.** SQLAlchemy's
+asyncpg dialect registers json/jsonb codecs in `on_connect`, and its
+`JSON.result_processor` then returns `None` because "the driver already did it".
+Running on a raw pool, nothing had. The engine now runs the dialect's own codec
+coroutines. **Generalises past this bug**: adopting a dialect's *type* contract
+means adopting its *connection* contract too.
+
+### One thing decided differently
+
+§5c had a lone model unwrap (`[User, ...]`) but a lone scalar stay a 1-tuple
+(`[(int,)]`), on the grounds of mirroring SQLAlchemy. That is two rules where one
+will do — and, decisively, it is not expressible in the type system:
+`select(User)` and `select(User.name)` are `Select[Tuple[User]]` and
+`Select[Tuple[str]]`, distinguishable only by arity. Since §5b makes exact typing
+the reason the declaration layer is a base class at all, arity now decides alone:
+**one entity yields that entity, two or more yield a tuple**, and `fetch_all` is
+overloaded to match exactly.
+
+### What the deletion actually cost
+
+4,580 lines of library and 9,100 lines of tests, against ~1,400 lines of new
+library. The join-graph validation, the dialect-validated feature gating and the
+typed expression tree all went, as §9 said they would. What came back is larger
+than what the plan promised: not just DDL, reflection and Alembic, but every SQL
+construct SQLAlchemy can build — window functions, CTEs, lateral joins, dialect
+extensions — none of which anyone now has to write or test here.
+
+The bet in §9 was "SQLAlchemy's equivalents are good enough that none of that was
+the moat". The measured answer is that the moat was the 215 lines in
+`compile.py`, and it is still there.
