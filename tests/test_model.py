@@ -194,6 +194,67 @@ class TestInstances:
         with pytest.raises(dataclasses.FrozenInstanceError):
             Frozen(id=1).id = 2
 
+    def test_slots_true_still_builds_a_usable_model(self):
+        """`slots=True` reaches `dataclasses.dataclass`, which rebuilds the class
+        through this same metaclass — so the class-level Column interception has
+        to survive that rebuild and compose with `__slots__`. docs/FINDINGS.md
+        ("The `@model` metaclass") is the mechanism; this is the guarantee.
+        """
+        Scratch = make_base()
+
+        class Slotted(Scratch, slots=True):
+            __tablename__ = "slotted"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            name: Mapped[str]
+            active: Mapped[bool]
+
+        assert Slotted.__slots__ == ("id", "name", "active")
+        # Class access is still the Column (metaclass wins over the slot
+        # descriptor); instance access is still the plain value.
+        assert Slotted.id is Slotted.__table__.c.id
+        instance = Slotted(id=1, name="ada", active=True)
+        assert (instance.id, instance.name, instance.active) == (1, "ada", True)
+        assert instance == Slotted(id=1, name="ada", active=True)
+        assert repr(instance).endswith("Slotted(id=1, name='ada', active=True)")
+        # Fully slotted: the base chain carries `__slots__ = ()`, so a slots=True
+        # model has no per-instance __dict__ at all — the layout that actually
+        # saves memory and GC-traversal cost (a slotted class under a dict-
+        # carrying base keeps the managed-dict overhead and saves neither).
+        assert not hasattr(instance, "__dict__")
+        with pytest.raises(AttributeError):
+            instance.stray = 1
+
+    def test_the_base_chain_is_slotted_so_slots_true_actually_pays_off(self):
+        """The memory/GC win of `slots=True` exists only if *no* class in the MRO
+        carries a `__dict__`; otherwise the object keeps the managed-dict overhead
+        and slots save nothing. `rowform.Base` and the abstract user `Base` both
+        declare `__slots__ = ()` to guarantee that. The other half of the contract
+        is that a *default* model still re-acquires its own `__dict__`, which is
+        what keeps orjson on its fast native-dict path — base-slotting must not
+        break it.
+        """
+        Scratch = make_base()
+        assert rowform.Base.__slots__ == ()
+        assert Scratch.__slots__ == ()
+
+        class Default(Scratch):
+            __tablename__ = "plain_default"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            name: Mapped[str]
+
+        assert Default(id=1, name="x").__dict__ == {"id": 1, "name": "x"}
+
+    def test_slots_composes_with_other_class_keywords(self):
+        Scratch = make_base()
+
+        class FrozenSlotted(Scratch, frozen=True, slots=True):
+            __tablename__ = "frozen_slotted"
+            id: Mapped[int] = mapped_column(primary_key=True)
+
+        assert FrozenSlotted.__slots__ == ("id",)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            FrozenSlotted(id=1).id = 2
+
     def test_defaults_make_a_field_optional(self):
         Scratch = make_base()
 
