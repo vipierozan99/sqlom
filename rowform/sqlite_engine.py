@@ -28,7 +28,7 @@ from typing import Any
 
 from sqlalchemy.dialects.sqlite import aiosqlite as _aiosqlite
 
-from .engine import Engine, Observer
+from .engine import DEFAULT_CACHE_SIZE, Engine, Observer
 from .errors import ConfigurationError, UnsupportedError
 from .transaction import Transaction
 
@@ -133,6 +133,7 @@ class SqliteEngine(Engine):
         min_size: int = 1,
         max_size: int = 5,
         observer: Observer | None = None,
+        cache_size: int | None = DEFAULT_CACHE_SIZE,
         **kwargs: Any,
     ):
         if kwargs:
@@ -142,7 +143,7 @@ class SqliteEngine(Engine):
                 f"pool sizes must satisfy 0 <= min_size <= max_size and max_size >= 1; "
                 f"got min_size={min_size}, max_size={max_size}"
             )
-        super().__init__(path, observer=observer)
+        super().__init__(path, observer=observer, cache_size=cache_size)
         self.path = path
         self._min_size = min_size
         self._max_size = max_size

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from time import perf_counter
@@ -64,6 +65,13 @@ def _one_row(statement: Any) -> Any:
 #: and `execute()` already returns it.
 Observer = Callable[[str, float, "int | None"], None]
 
+#: How many compiled statements an engine keeps. Matches SQLAlchemy's own
+#: `compiled_cache` default, and for the same reason: an application's statement
+#: set is normally small and fixed, but one built from a request — a filter set
+#: that varies, an `IN` whose length varies — mints a new cache key every time,
+#: and an uncapped dict would hold every one of them for the life of the process.
+DEFAULT_CACHE_SIZE = 500
+
 # One type variable per selected entity. The overloads below are written out per
 # arity rather than with a variadic, because that is exactly the information a
 # checker has: `Select` is parameterised by a tuple of its selected types.
@@ -81,7 +89,18 @@ class Engine(ABC):
     #: type handling both come from it.
     dialect: Any
 
-    def __init__(self, dsn: str, *, observer: Observer | None = None, **pool_kwargs: Any):
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        observer: Observer | None = None,
+        cache_size: int | None = DEFAULT_CACHE_SIZE,
+        **pool_kwargs: Any,
+    ):
+        if cache_size is not None and cache_size < 1:
+            raise ConfigurationError(
+                f"cache_size must be at least 1, or None for no limit; got {cache_size}"
+            )
         self.dsn = dsn
         self.pool: Any = None
         #: Called after every statement with `(sql, seconds, rows)` — the hook for
@@ -92,7 +111,8 @@ class Engine(ABC):
         #: must not throw.
         self.observer = observer
         self._pool_kwargs = pool_kwargs
-        self._queries: dict[Any, CoreQuery[Any]] = {}
+        self._cache_size = cache_size
+        self._queries: OrderedDict[Any, CoreQuery[Any]] = OrderedDict()
 
     # --- lifecycle ----------------------------------------------------------
 
@@ -169,14 +189,34 @@ class Engine(ABC):
 
         `.key` rather than the `CacheKey` itself, whose `__hash__` deliberately
         returns None — only the structural tuple inside it is hashable.
+
+        The cache is bounded and least-recently-used. Unbounded, an application
+        that builds statements per request holds every one of them forever; a
+        plain cap would instead evict whatever happened to be compiled first,
+        which for a long-lived service is its startup statements — the hot ones.
+        The bookkeeping is one `move_to_end` per cached execute, measured at no
+        cost against the flat micro shape.
         """
         if isinstance(statement, CoreQuery):
             return statement, None
         cache_key = statement._generate_cache_key()
-        query = self._queries.get(cache_key.key)
+        queries = self._queries
+        query = queries.get(cache_key.key)
         if query is None:
-            query = self._queries[cache_key.key] = self.prepare(statement)
+            query = queries[cache_key.key] = self.prepare(statement)
+            if self._cache_size is not None and len(queries) > self._cache_size:
+                queries.popitem(last=False)
+        else:
+            queries.move_to_end(cache_key.key)
         return query, cache_key.bindparams
+
+    @property
+    def cached_statements(self) -> int:
+        """How many compiled statements are held. Worth watching: an application
+        whose statement set is fixed sits at a constant here, and one building
+        statements per request pins itself to `cache_size` and recompiles
+        forever."""
+        return len(self._queries)
 
     # --- reads --------------------------------------------------------------
 

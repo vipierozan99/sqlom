@@ -99,9 +99,9 @@ how the planner resolves an aliased self-join back to a model.
 only in how they open a pool, run a statement, and open a transaction block.
 
 ```python
-rowform.SqliteEngine(path, *, min_size=1, max_size=5, observer=None)
-rowform.AsyncpgEngine(dsn, *, conditional_reset=True, observer=None, **pool_kwargs)
-rowform.PsycopgEngine(dsn, *, observer=None, **pool_kwargs)
+rowform.SqliteEngine(path, *, min_size=1, max_size=5, observer=None, cache_size=500)
+rowform.AsyncpgEngine(dsn, *, conditional_reset=True, observer=None, cache_size=500, **pool_kwargs)
+rowform.PsycopgEngine(dsn, *, observer=None, cache_size=500, **pool_kwargs)
 ```
 
 `pool_kwargs` reach `asyncpg.create_pool` and `psycopg_pool.AsyncConnectionPool`
@@ -124,6 +124,7 @@ connections that could have been dirtied — anything reached through `acquire()
 | `engine.pool` | the driver's pool, or `None` |
 | `engine.dialect` | the SQLAlchemy dialect statements compile for |
 | `engine.observer` | see [Observer](#rowformobserver); reassignable at any time |
+| `engine.cached_statements` | how many compiled statements are held, of at most `cache_size` |
 
 ### Reading
 

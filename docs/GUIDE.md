@@ -345,6 +345,15 @@ rowform.AsyncpgEngine(dsn, min_size=4, max_size=16, command_timeout=5)
 rowform.PsycopgEngine(dsn, min_size=4, max_size=16, timeout=5)
 ```
 
+`cache_size` (default 500) caps the compiled statements an engine keeps, evicting
+the least recently used. Statements built per request vary in *shape* and so mint
+a new cache entry each time; without the cap that dict grows for the life of the
+process. `engine.cached_statements` is the number to watch — a fixed statement set
+sits at a constant, and one pinned to `cache_size` is recompiling forever, which
+is worth knowing since compiling is the cost `prepare()` exists to hoist. (An
+`IN` list of varying length is *not* one of these: it compiles to a single
+expanding placeholder and shares one entry.)
+
 Anything else you pass reaches the driver's own pool
 (`asyncpg.create_pool`, `psycopg_pool.AsyncConnectionPool`), where timeouts,
 connection lifetimes and health checks live. `SqliteEngine` has no third-party
