@@ -79,8 +79,6 @@ justified, say so in the PR with the numbers — the gate is a question, not a v
 * Say what you verified, not just what you changed.
 * If you found a real bug, add the test that fails without your fix.
 
-Optional: `uv run pre-commit install` runs the fast half of CI before each commit.
-
 ## Scope
 
 This is a read path, not an ORM. Relationships, lazy loading, an identity map and
