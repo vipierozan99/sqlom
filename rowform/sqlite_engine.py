@@ -29,13 +29,14 @@ from typing import Any
 from sqlalchemy.dialects.sqlite import aiosqlite as _aiosqlite
 
 from .engine import Engine
+from .errors import ConfigurationError, UnsupportedError
 from .transaction import Transaction
 
 
 def _reject_unsupported(kwargs: dict[str, Any]) -> None:
     unsupported = {k: v for k, v in kwargs.items() if v}
     if unsupported:
-        raise NotImplementedError(
+        raise UnsupportedError(
             f"sqlite has no session-level isolation levels and no read-only/"
             f"deferrable transactions — its model is WAL plus BEGIN DEFERRED/"
             f"IMMEDIATE/EXCLUSIVE. Accepting {sorted(unsupported)} as no-ops would "
@@ -88,7 +89,7 @@ class SqliteEngine(Engine):
 
     def __init__(self, path: str, *, min_size: int = 1, max_size: int = 5, **kwargs: Any):
         if kwargs:
-            raise TypeError(f"unexpected keyword arguments: {sorted(kwargs)}")
+            raise ConfigurationError(f"unexpected keyword arguments: {sorted(kwargs)}")
         super().__init__(path)
         self.path = path
         self._pool_size = max(min_size, max_size)

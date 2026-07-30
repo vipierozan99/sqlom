@@ -25,6 +25,7 @@ from typing import Any
 from sqlalchemy.dialects.postgresql import psycopg as _psycopg
 
 from .engine import Engine
+from .errors import ConfigurationError
 from .transaction import Transaction
 
 
@@ -90,7 +91,7 @@ class PsycopgEngine(Engine):
         readonly = kwargs.pop("readonly", None)
         deferrable = kwargs.pop("deferrable", None)
         if kwargs:
-            raise TypeError(f"unexpected keyword arguments: {sorted(kwargs)}")
+            raise ConfigurationError(f"unexpected keyword arguments: {sorted(kwargs)}")
 
         async with self._acquire() as conn:
             level = None
@@ -100,7 +101,7 @@ class PsycopgEngine(Engine):
                 try:
                     level = IsolationLevel[isolation.upper()]
                 except KeyError:
-                    raise ValueError(
+                    raise ConfigurationError(
                         f"unknown isolation level {isolation!r}; expected one of "
                         f"{', '.join(lvl.name.lower() for lvl in IsolationLevel)}"
                     ) from None

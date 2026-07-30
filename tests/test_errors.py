@@ -1,0 +1,181 @@
+"""Every deliberate raise site raises a `RowformError`, and still raises the
+builtin it used to.
+
+Two assertions per site, and the second is the load-bearing one: the taxonomy was
+added *underneath* the builtins (`rowform/errors.py`), so code written against
+`except ValueError` before it existed keeps working. A subclass that quietly
+dropped its builtin base would pass the first assertion and break every caller.
+
+The declaration errors are covered by `tests/test_model.py`, which already
+asserts `TypeError` at each of them; here they are re-asserted as
+`DeclarationError` so the mapping is pinned in one place.
+"""
+
+from __future__ import annotations
+
+import pytest
+import sqlalchemy as sa
+from conftest import Author
+from sqlalchemy.orm import Mapped
+
+import rowform
+from rowform import mapped_column
+
+
+def test_every_error_is_catchable_as_one_base():
+    """The point of the hierarchy: one `except` for anything rowform rejects."""
+    for cls in (
+        rowform.DeclarationError,
+        rowform.ConfigurationError,
+        rowform.UnsupportedError,
+        rowform.StatementError,
+        rowform.PlanError,
+        rowform.EngineStateError,
+    ):
+        assert issubclass(cls, rowform.RowformError)
+
+
+@pytest.mark.parametrize(
+    ("cls", "legacy"),
+    [
+        (rowform.DeclarationError, TypeError),
+        (rowform.ConfigurationError, TypeError),
+        (rowform.ConfigurationError, ValueError),
+        (rowform.UnsupportedError, NotImplementedError),
+        (rowform.StatementError, ValueError),
+        (rowform.PlanError, ValueError),
+        (rowform.EngineStateError, RuntimeError),
+    ],
+)
+def test_each_error_keeps_the_builtin_it_replaced(cls, legacy):
+    assert issubclass(cls, legacy)
+
+
+# --------------------------------------------------------------------------
+# Declaration
+# --------------------------------------------------------------------------
+
+
+class TestDeclarationError:
+    def test_unmappable_annotation(self):
+        class Base(rowform.Base):
+            metadata = sa.MetaData()
+
+        with pytest.raises(rowform.DeclarationError, match="no SQLAlchemy type registered"):
+
+            class Bad(Base):
+                __tablename__ = "err_unmappable"
+
+                id: Mapped[int] = mapped_column(primary_key=True)
+                nope: Mapped[complex]
+
+    def test_selecting_an_abstract_class(self):
+        class Base(rowform.Base):
+            metadata = sa.MetaData()
+
+        class Mixin(Base):
+            name: Mapped[str]
+
+        with pytest.raises(rowform.DeclarationError, match="abstract"):
+            sa.select(Mixin)
+
+
+# --------------------------------------------------------------------------
+# Configuration and unsupported options
+# --------------------------------------------------------------------------
+
+
+class TestConfigurationError:
+    def test_unknown_constructor_keyword(self, sqlite_path):
+        with pytest.raises(rowform.ConfigurationError, match="unexpected keyword"):
+            rowform.SqliteEngine(sqlite_path, conditional_reset=True)
+
+    async def test_sqlite_rejects_isolation_levels(self, sqlite_path):
+        """sqlite has no session-level isolation, and says so rather than
+        accepting the option as a no-op."""
+        async with rowform.SqliteEngine(sqlite_path) as db:
+            with pytest.raises(rowform.UnsupportedError, match="no session-level isolation"):
+                async with db.transaction(isolation="serializable"):
+                    pass
+
+
+# --------------------------------------------------------------------------
+# Statements
+# --------------------------------------------------------------------------
+
+
+class TestStatementError:
+    async def test_execute_refuses_a_statement_that_returns_rows(self, engine):
+        with pytest.raises(rowform.StatementError, match="produces rows"):
+            await engine.execute(sa.select(Author))
+
+    async def test_fetch_all_refuses_a_statement_that_returns_none(self, engine):
+        statement = sa.insert(Author.__table__).values(id=9001, name="ada", active=True)
+        with pytest.raises(rowform.StatementError, match="produces no rows"):
+            await engine.fetch_all(statement)
+
+    async def test_transaction_execute_refuses_rows_too(self, engine):
+        async with engine.transaction() as tx:
+            with pytest.raises(rowform.StatementError, match="produces rows"):
+                await tx.execute(sa.select(Author))
+
+
+# --------------------------------------------------------------------------
+# Plans
+# --------------------------------------------------------------------------
+
+
+class TestPlanError:
+    def test_a_statement_selecting_nothing(self):
+        with pytest.raises(rowform.PlanError, match="at least one column"):
+            rowform.plan(sa.select())
+
+    def test_a_result_whose_width_disagrees_with_the_plan(self):
+        """The mis-assignment guard: two planned columns, one described, so
+        hydrating would write the wrong field."""
+        statement = sa.select(Author.id, Author.name)
+        dialect = rowform.SqliteEngine(":memory:").dialect
+        with pytest.raises(rowform.PlanError, match="refusing to hydrate"):
+            rowform.compile_hydrator(rowform.plan(statement), dialect, [None])
+
+
+# --------------------------------------------------------------------------
+# Engine state
+# --------------------------------------------------------------------------
+
+
+class TestEngineStateError:
+    async def test_not_connected(self, sqlite_path):
+        db = rowform.SqliteEngine(sqlite_path)
+        with pytest.raises(rowform.EngineStateError, match="not connected"):
+            await db.fetch_all(sa.select(Author))
+
+    async def test_closed(self, sqlite_path):
+        db = rowform.SqliteEngine(sqlite_path)
+        await db.connect()
+        await db.close()
+        with pytest.raises(rowform.EngineStateError, match="not connected"):
+            await db.fetch_all(sa.select(Author))
+
+    async def test_engine_read_inside_a_transaction(self, engine):
+        async with engine.transaction():
+            with pytest.raises(rowform.EngineStateError, match="different pooled connection"):
+                await engine.fetch_all(sa.select(Author))
+
+
+# --------------------------------------------------------------------------
+# What is *not* wrapped
+# --------------------------------------------------------------------------
+
+
+async def test_driver_errors_are_not_rewritten(engine):
+    """A constraint violation is the driver's own exception, and stays that way:
+    wrapping it would hide which server refused what (`rowform/errors.py`)."""
+    await engine.execute(
+        sa.insert(Author.__table__).values(id=9100, name="ada", active=True)
+    )
+    with pytest.raises(Exception) as caught:
+        await engine.execute(
+            sa.insert(Author.__table__).values(id=9100, name="grace", active=True)
+        )
+    assert not isinstance(caught.value, rowform.RowformError)

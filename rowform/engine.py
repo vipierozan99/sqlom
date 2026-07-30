@@ -25,6 +25,7 @@ from typing import Any, TypeVar, overload
 import sqlalchemy as sa
 from sqlalchemy import Select
 
+from .errors import EngineStateError, StatementError
 from .query import CoreQuery
 from .transaction import _ACTIVE, Transaction
 
@@ -71,7 +72,7 @@ class Engine(ABC):
 
     def _require_pool(self) -> Any:
         if self.pool is None:
-            raise RuntimeError(
+            raise EngineStateError(
                 "engine is not connected — await engine.connect() first "
                 "(or it has been closed)"
             )
@@ -215,7 +216,7 @@ class Engine(ABC):
         """
         query, extracted = self._query_for(statement)
         if query.returns_rows:
-            raise ValueError(
+            raise StatementError(
                 "this statement produces rows — use fetch_all() to get them, "
                 "rather than execute(), which would discard them"
             )
@@ -316,7 +317,7 @@ class Engine(ABC):
         plausible wrong results."""
         active = _ACTIVE.get()
         if active is not None and active._engine is self:
-            raise RuntimeError(
+            raise EngineStateError(
                 f"engine.{method}() was called inside engine.transaction(); it would "
                 f"run on a different pooled connection and miss the transaction's "
                 f"uncommitted state. Use tx.{method}() instead."
@@ -327,7 +328,7 @@ class Engine(ABC):
     def _require_rows(self, statement: Any) -> tuple[CoreQuery[Any], Any]:
         query, extracted = self._query_for(statement)
         if not query.returns_rows:
-            raise ValueError(
+            raise StatementError(
                 "this statement produces no rows; hydrating it would return [] and "
                 "look like 'nothing matched'. Use execute() for it, or add "
                 "returning(...)."

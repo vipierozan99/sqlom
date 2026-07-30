@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .errors import PlanError
 from .planner import Plan
 
 
@@ -62,7 +63,7 @@ def compile_hydrator(plan: Plan, dialect: Any, coltypes: list[Any]) -> Any:
     `None` for every column, which is exactly what SQLAlchemy passes there too.
     """
     if len(coltypes) != len(plan.columns):
-        raise ValueError(
+        raise PlanError(
             f"the statement plans {len(plan.columns)} columns but the driver "
             f"described {len(coltypes)}; refusing to hydrate rather than "
             f"mis-assign fields"

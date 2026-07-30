@@ -33,6 +33,15 @@ See docs/PLAN_CORE_COMPILER.md for why, what it costs, and what it retires.
 
 from .compile import compile_hydrator, result_processor
 from .engine import Engine
+from .errors import (
+    ConfigurationError,
+    DeclarationError,
+    EngineStateError,
+    PlanError,
+    RowformError,
+    StatementError,
+    UnsupportedError,
+)
 from .model import DEFAULT_TYPE_MAP, Base, ModelMeta, alias, mapped_column, model_for
 from .planner import Plan, plan
 from .psycopg_engine import PsycopgEngine
@@ -47,13 +56,20 @@ __version__ = "0.1.0"
 __all__ = [
     "DEFAULT_TYPE_MAP",
     "Base",
+    "ConfigurationError",
     "CoreQuery",
+    "DeclarationError",
     "Engine",
+    "EngineStateError",
     "ModelMeta",
     "Plan",
+    "PlanError",
     "PsycopgEngine",
+    "RowformError",
     "SqliteEngine",
+    "StatementError",
     "Transaction",
+    "UnsupportedError",
     "__version__",
     "active_transaction",
     "alias",

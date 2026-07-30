@@ -42,6 +42,8 @@ from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, TypeVar
 
+from .errors import StatementError
+
 R = TypeVar("R")
 
 # Holds the innermost active Transaction for the current task. contextvars, not
@@ -116,7 +118,7 @@ class Transaction:
             return await self._engine._execute(self.connection, statement, None)
         query, extracted = self._engine._query_for(statement)
         if query.returns_rows:
-            raise ValueError(
+            raise StatementError(
                 "this statement produces rows — use fetch_all() to get them, "
                 "rather than execute(), which would discard them"
             )
