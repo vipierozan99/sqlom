@@ -311,8 +311,49 @@ harness is a hypothesis about the others, not a verdict — go and measure.
 **Group ties instead of ranking them.** The three fastest sqlite variants span
 1.028–1.060 ms while each varies 5–7% across trials, and their order changes between
 runs. Publishing them as a ranked list would invent a result; they are reported as a
-single tier. Report spread alongside every central value so a reader
-can see when a gap is not a gap.
+single tier. Report a dispersion figure alongside every central value so a reader
+can see when a gap is not a gap — but the *right* figure, per the next entry.
+
+**Never report a range as dispersion.** `bench micro run` used to print
+`(max - min) / median` over its 1000 per-iteration samples. That is an
+extreme-value statistic: for a Gaussian, E[max - min] ≈ 6.5σ at n=1000 and
+≈7.7σ at n=10000, so it grows with the sample count and reports the single
+worst interruption in the run. Consequences, all measured on this suite:
+
+- It cannot be small. Printing ≤20% would have required a CV under 3.1%; the
+  contenders run at 5–12%, so 50–90% was the *expected* output all along.
+- It is not reproducible. `SQLAlchemy ORM (mock)` printed 787%, 698% and 74%
+  across three consecutive identical runs while its median moved 1.4%.
+- It is degenerate at small work sizes. Timing an `await` on a no-op coroutine
+  through the same harness prints 17,477%; a fixed 1 ms CPU spin prints 1.3%.
+  The statistic is `interruption_size / work_size`.
+- It corrupted the tie test. `ratio_with_spread()` summed two of these and tied
+  whenever the sum exceeded `|ratio - 1| × 100`, comparing a dispersion against
+  a ratio magnitude. Given 1000 clean Gaussian samples per side with a true
+  1.85x separation, it returned `tie: True`; nothing under ~2.5x could resolve.
+
+`stats.sample_shape()` now reports IQR-as-%-of-median (dispersion), p95/p50
+(tail) and Tukey mild/severe outlier counts, keeping max/p50 as an explicitly
+labelled *interference detector*. Injecting one 40 ms spike into a clean 1000
+sample run moves IQR by 0.0004pp and p95/p50 not at all, while max/p50 goes to
+40x and the severe count goes 0→1 — dispersion and interference now read as the
+separate things they are. `ratio_with_spread()` brackets the ratio by the
+worst-case interval the observed *trials* allow and ties when that interval
+contains 1.0. Fed raw samples by mistake it fails safe, declaring a tie rather
+than resolving an order it cannot support.
+
+This follows the tools that have already learned it: pyperf warns at stdev ≥10%
+of the mean and falls back to median+MAD when results won't stabilize;
+pytest-benchmark reports IQR and Tukey outlier counts, and its FAQ notes that
+`Max` "has the nasty tendency to be way higher and making everything else small
+and undiscerning"; Google Benchmark registers mean/median/stddev/CV; criterion.rs
+reports bootstrapped CIs on median and MAD with mild/severe outlier counts. None
+of them reports a range.
+
+> **Generalizes to:** a dispersion statistic whose expected value depends on how
+> many samples you took is not measuring the code. Before trusting one, feed the
+> harness a load whose variance you already know — a fixed-duration spin and a
+> no-op both, since the pathology only shows at one end.
 
 **Never categorize profiler frames by substring on a project name.** The first
 version of `profile_pg.py` bucketed frames with `r"/rowform/"` — which also matches

@@ -7,8 +7,8 @@ output equivalence before any timing starts.
 from __future__ import annotations
 
 import asyncio
-import statistics
 import sys
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,12 +20,33 @@ from benchmarks.harness import affinity, equivalence, registry, result
 from benchmarks.harness import env as env_module
 from benchmarks.harness import seed as seed_module
 from benchmarks.harness.registry import ContenderInit
-from benchmarks.harness.stats import median, spread_pct
+from benchmarks.harness.stats import sample_shape
 from benchmarks.harness.timing import gc_control, per_iteration
 
 app = typer.Typer(help="Pure in-process micro benchmarks.")
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+
+# One spec drives both the header and the value rows so they cannot drift apart.
+# `outliers m/s` is Tukey mild/severe (see stats.SampleShape); `max/p50` is an
+# interference detector, not a dispersion figure.
+_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("contender", "<38"),
+    ("median ms", ">10"),
+    ("IQR%", ">8"),
+    ("p95/p50", ">9"),
+    ("outliers m/s", ">14"),
+    ("max/p50", ">9"),
+)
+
+
+def _row(*cells: str) -> str:
+    return "    " + "".join(
+        f"{cell:{spec}}" for cell, (_, spec) in zip(cells, _COLUMNS, strict=True)
+    )
+
+
+_HEADER = _row(*(label for label, _ in _COLUMNS))
 
 
 @app.command()
@@ -40,7 +61,7 @@ def run(
         "off", help="'on', 'off', or 'both' (PLAN.md §4: GC is a first-order effect)"
     ),
     pin: str | None = typer.Option(
-        "0,2", "--pin", help="comma-separated logical CPUs to pin this process to (PLAN.md D13)"
+        "6,7,8,9", "--pin", help="comma-separated logical CPUs to pin this process to (PLAN.md D13)"
     ),
     record: bool = typer.Option(
         False, "--record", help="write a run.json under results/runs/ (PLAN.md §6)"
@@ -159,16 +180,23 @@ async def _run(
 
                     for mode in gc_modes:
                         typer.echo(f"  -- gc={mode} --")
+                        typer.echo(_HEADER)
                         for name, (request, _) in instances.items():
                             with gc_control(mode):
                                 samples = [
                                     s * 1000
                                     for s in await per_iteration(request, iterations, warmup)
                                 ]
-                            stdev = statistics.pstdev(samples)
+                            shape_stats = sample_shape(samples)
                             typer.echo(
-                                f"    {name:<38} median {median(samples):>9.4f} ms  "
-                                f"stdev {stdev:>8.4f}  spread {spread_pct(samples):>6.1f}%"
+                                _row(
+                                    name,
+                                    f"{shape_stats.median_ms:.4f}",
+                                    f"{shape_stats.iqr_pct:.1f}",
+                                    f"{shape_stats.p95_over_p50:.2f}",
+                                    f"{shape_stats.outliers_mild}/{shape_stats.outliers_severe}",
+                                    f"{shape_stats.max_over_p50:.2f}x",
+                                )
                             )
                             if record_this_group:
                                 spec = next(s for s in backend_specs if s.name == name)
@@ -181,9 +209,7 @@ async def _run(
                                             result.Trial(
                                                 trial=0,
                                                 metrics={
-                                                    "median_ms": median(samples),
-                                                    "stdev_ms": stdev,
-                                                    "spread_pct": spread_pct(samples),
+                                                    **asdict(shape_stats),
                                                     "iterations": iterations,
                                                 },
                                             )

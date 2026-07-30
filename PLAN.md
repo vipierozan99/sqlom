@@ -141,7 +141,8 @@ benchmarks/
   harness/
     env.py               capture(): machine + git + versions; static + start/end samples
     result.py            Run / Cell / Trial schema, writer, runs/index.jsonl
-    stats.py             median, p50/95/99, stdev, spread, tie_group, ratio_with_spread
+    stats.py             median, p50/95/99, sample_shape (IQR/tail/Tukey outliers),
+                         spread (across trials only), tie_group, ratio_with_spread
     timing.py            THREE modes, one impl each:
                            per_iteration()   micro latency samples
                            closed_loop()     rps + cpu_ms + utilization + percentiles
