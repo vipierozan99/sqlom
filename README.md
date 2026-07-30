@@ -121,7 +121,27 @@ extend per-base with `type_annotation_map`.
 
 Instances are ordinary dataclasses: `repr()`, `==`, `dataclasses.fields()` and
 bare `orjson.dumps(user)` all work. Class keywords reach `dataclasses.dataclass`,
-so `class User(Base, frozen=True)` and `kw_only=True` do what they look like.
+so `class User(Base, frozen=True)`, `kw_only=True` and `slots=True` do what they
+look like:
+
+```python
+class User(Base, slots=True):
+    __tablename__ = "users"
+
+    id: Mapped[int] = rowform.mapped_column(primary_key=True)
+    name: Mapped[str]
+```
+
+`dataclasses.dataclass(slots=True)` rebuilds the class, and the class-level
+Column access survives that rebuild — `User.id` is still the `sa.Column`,
+`user.id` is still the `int`, and the generated hydrator writes straight into the
+slots. Two things worth knowing: your `Base` is itself a plain, non-slotted class
+(so it can carry `metadata` and still allow `frozen=True` subclasses), which
+means instances inherit its `__dict__` — `slots=True` keeps the model's *fields*
+in slots, but does not remove the dict entirely. And a slotted instance drops
+`orjson` off its fast native-dict path, which is why the default is non-slotted
+(docs/FINDINGS.md,
+[the orjson dataclass trap](docs/FINDINGS.md#the-orjson-dataclass-trap)).
 
 ### Reading
 
@@ -302,7 +322,7 @@ Stated plainly, because most of it is not recoverable:
 ```bash
 git clone https://github.com/vipierozan99/rowform && cd rowform
 uv sync --all-extras
-just test          # 252 tests, sqlite + postgres, plus the type checker
+just test          # 259 tests, sqlite + postgres, plus the type checker
 just lint
 just typecheck
 just bench micro run --shape flat

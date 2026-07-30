@@ -194,6 +194,40 @@ class TestInstances:
         with pytest.raises(dataclasses.FrozenInstanceError):
             Frozen(id=1).id = 2
 
+    def test_slots_true_still_builds_a_usable_model(self):
+        """`slots=True` reaches `dataclasses.dataclass`, which rebuilds the class
+        through this same metaclass — so the class-level Column interception has
+        to survive that rebuild and compose with `__slots__`. docs/FINDINGS.md
+        ("The `@model` metaclass") is the mechanism; this is the guarantee.
+        """
+        Scratch = make_base()
+
+        class Slotted(Scratch, slots=True):
+            __tablename__ = "slotted"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            name: Mapped[str]
+            active: Mapped[bool]
+
+        assert Slotted.__slots__ == ("id", "name", "active")
+        # Class access is still the Column (metaclass wins over the slot
+        # descriptor); instance access is still the plain value.
+        assert Slotted.id is Slotted.__table__.c.id
+        instance = Slotted(id=1, name="ada", active=True)
+        assert (instance.id, instance.name, instance.active) == (1, "ada", True)
+        assert instance == Slotted(id=1, name="ada", active=True)
+        assert repr(instance).endswith("Slotted(id=1, name='ada', active=True)")
+
+    def test_slots_composes_with_other_class_keywords(self):
+        Scratch = make_base()
+
+        class FrozenSlotted(Scratch, frozen=True, slots=True):
+            __tablename__ = "frozen_slotted"
+            id: Mapped[int] = mapped_column(primary_key=True)
+
+        assert FrozenSlotted.__slots__ == ("id",)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            FrozenSlotted(id=1).id = 2
+
     def test_defaults_make_a_field_optional(self):
         Scratch = make_base()
 

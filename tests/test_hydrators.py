@@ -14,9 +14,10 @@ import datetime as dt
 import pytest
 import sqlalchemy as sa
 from conftest import Author, Book, Wide
+from sqlalchemy.orm import Mapped
 
 import rowform
-from rowform import compile_hydrator, plan
+from rowform import compile_hydrator, mapped_column, plan
 
 SQLITE = rowform.SqliteEngine(":memory:").dialect
 
@@ -140,6 +141,26 @@ class TestGeneratedSource:
         _, hydrate = build(sa.select(Author))
         assert "setattr" not in hydrate.__source__
         assert "o0.name = f1" in hydrate.__source__
+
+
+def test_a_slotted_model_hydrates():
+    """The hydrator fills instances with `object.__new__` plus plain attribute
+    stores; a slotted model has no `__dict__` slot for those, so this checks the
+    stores land in the slots rather than raising."""
+
+    class Base(rowform.Base):
+        metadata = sa.MetaData()
+
+    class Slotted(Base, slots=True):
+        __tablename__ = "slotted_hydrate"
+        id: Mapped[int] = mapped_column(primary_key=True)
+        name: Mapped[str]
+        active: Mapped[bool]
+
+    _, hydrate = build(sa.select(Slotted))
+    [row] = hydrate([(1, "ada", 1)])
+    assert isinstance(row, Slotted)
+    assert (row.id, row.name, row.active) == (1, "ada", True)
 
 
 def test_a_description_of_the_wrong_width_is_refused():
