@@ -85,5 +85,5 @@ Optional: `uv run pre-commit install` runs the fast half of CI before each commi
 
 This is a read path, not an ORM. Relationships, lazy loading, an identity map and
 a unit of work are all deliberately absent — see
-[What this costs](README.md#️-what-this-costs) — and a PR adding one of them is a
+[What this costs](README.md#-what-this-costs) — and a PR adding one of them is a
 much larger conversation than a PR. Open an issue first.

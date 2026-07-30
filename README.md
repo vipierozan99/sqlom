@@ -94,6 +94,17 @@ out to be wrong**, with how each was caught:
 
 ---
 
+## 📚 Documentation
+
+| | |
+|---|---|
+| [GUIDE.md](docs/GUIDE.md) | recipes — FastAPI, pagination, streaming, testing, pool sizing, migrating off the ORM |
+| [API.md](docs/API.md) | every public name, and what it returns |
+| [BENCHMARKS.md](docs/BENCHMARKS.md) · [METHODOLOGY.md](docs/METHODOLOGY.md) · [FINDINGS.md](docs/FINDINGS.md) | the numbers, how they were taken, and eleven published claims that turned out to be wrong |
+| [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) | how to work on it; what the codegen can and cannot reach |
+
+---
+
 ## 📖 Usage
 
 ### Declaring models

@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Worth reading first: [What this
-        costs](https://github.com/vipierozan99/sqlom#️-what-this-costs). Some
+        costs](https://github.com/vipierozan99/sqlom#-what-this-costs). Some
         absences are decisions rather than gaps — relationships, lazy loading, an
         identity map and a unit of work are all deliberately not here. Arguing
         that one of them should be is a fine thing to open an issue about; it is
