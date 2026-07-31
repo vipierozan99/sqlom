@@ -1,3 +1,21 @@
+# Goals
+
+## Speed, without leaving SQLAlchemy
+
+Two goals, and the second is not subordinate to the first.
+
+1. **A read path that is faster than SQLAlchemy's result layer** — the reason the
+   project exists, and what the benchmarks defend.
+2. **A SQLAlchemy application can adopt rowform one query at a time**, without
+   giving up its engine, its sessions, its transactions, or its migrations.
+
+Goal 2 is a design constraint, not a nicety. It rules out anything that makes
+rowform a parallel universe with its own vocabulary for what SQLAlchemy already
+names — and it is testable: rowform reads must work *inside* a stock
+`AsyncSession` transaction, seeing its uncommitted writes and rolling back with
+it. Where the two goals conflict, say so explicitly and measure the trade rather
+than picking silently (`docs/PLAN_SQLA_API.md`).
+
 # Principles
 
 ## 1. Think Before Coding
