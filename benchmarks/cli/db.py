@@ -2,7 +2,7 @@
 
 State (dsn/container id) persists to a small JSON file between invocations —
 each `bench db ...` is a fresh process, so `up` and a later `seed` can't share
-memory. The file lives under `results/runs/`, gitignored per D15.
+memory. The file lives under `results/runs/`, which is gitignored.
 """
 
 from __future__ import annotations

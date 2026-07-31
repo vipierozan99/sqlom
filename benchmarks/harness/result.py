@@ -70,8 +70,8 @@ class Run:
     def quotable(self) -> bool:
         """False if the tree was dirty, isolation wasn't one-contender-per-
         process for a multi-cell run, the equivalence gate was skipped or
-        failed, or any audit gate tripped — makes "the combined
-        suite is for a quick side-by-side, never for publication" mechanical."""
+        failed, or any audit gate tripped — makes "one contender per process for
+        any published number" a mechanical check rather than a convention."""
         if self.git.get("dirty"):
             return False
         if not self.equivalence.get("enforced", False):

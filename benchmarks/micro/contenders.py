@@ -18,7 +18,7 @@ and what this file is organised around:
   Registered twice, because stock declarative returns instrumented objects
   carrying loader state and `MappedAsDataclass` does not; comparing against only
   the first would overstate the win.
-* **against two floors, permanently** (§2f). A driver-to-dicts floor bounds the
+* **against two floors, permanently.** A driver-to-dicts floor bounds the
   whole stack, and a driver-plus-*the same hydrator* floor separates the engine's
   cost from the hydrator's. Keeping only the first is how an earlier run produced
   a "floor" slower than the thing it was bounding.
@@ -269,7 +269,7 @@ async def flat_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
     shape="flat",
     shipped=False,
     tags=("floor",),
-    description="The second floor (§2f): same driver, same hydrator, no engine — isolates engine cost.",
+    description="The second floor: same driver, same hydrator, no engine — isolates engine cost.",
 )
 async def flat_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Teardown]:
     """Why two floors, always.
@@ -486,7 +486,7 @@ async def join_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
     shape="join",
     shipped=False,
     tags=("floor",),
-    description="The second floor (§2f): same driver, same hydrator, no engine.",
+    description="The second floor: same driver, same hydrator, no engine.",
 )
 async def join_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Teardown]:
     import aiosqlite

@@ -46,7 +46,7 @@ async def launch(
 ) -> list[ServiceWorker]:
     """Start `workers` uvicorn subprocesses on consecutive ports from
     `base_port`, each pinned to one physical core from `cores` (round-robin if
-    `workers` exceeds `len(cores)` — best-effort per D13, same as `CorePlan`).
+    `workers` exceeds `len(cores)` — best-effort, same as `CorePlan`).
 
     `quiet=True` discards each worker's stdout/stderr instead of inheriting
     the caller's — for an automated run (`bench load`) that prints its own
@@ -122,6 +122,6 @@ async def _wait_ready(workers: list[ServiceWorker], timeout: float = 30.0) -> No
 
 def read_back_affinity(workers: list[ServiceWorker]) -> dict[int, list[int]]:
     """Actual kernel-reported masks per worker pid — never trust the requested
-    cpuset as evidence it took effect. `taskset` execs into the same pid, so `proc.pid` is still correct
-    to read back from."""
+    cpuset as evidence it took effect. `taskset` execs into the same pid, so
+    `proc.pid` is still correct to read back from."""
     return {worker.proc.pid: read_back(worker.proc.pid) for worker in workers}

@@ -1,15 +1,15 @@
 """`CorePlan`: physical-core aware CPU pinning.
 
-The finding this exists to prevent: on the reference
-machine, `cpu0`/`cpu1` are SMT siblings of *one* physical core, not two
-independent ones, and the old suite's shell scripts pinned server and
-generator to adjacent indices assuming otherwise. Reasoning in physical cores
+The finding this exists to prevent: on the reference machine, `cpu0`/`cpu1` are
+SMT siblings of *one* physical core, not two independent ones, and the old
+suite's shell scripts pinned server and generator to adjacent indices assuming
+otherwise. Reasoning in physical cores
 rather than raw indices is the fix; `cpu_topology()` is what makes that
 possible without hardcoding a machine's layout (the `bench_row_access.py`
 lesson — a number that came from one box must not be assumed on another).
 
-D13: best-effort on any core count. Prefers disjoint whole physical cores per
-role; degrades to sharing with a recorded warning; never refuses.
+Best-effort on any core count: prefers disjoint whole physical cores per role,
+degrades to sharing with a recorded warning, and never refuses.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ def cpu_topology() -> dict[str, list[int]]:
 
     Falls back to one logical CPU per "core" (i.e. no SMT-awareness) if
     `/sys/devices/system/cpu/*/topology` isn't readable — containers and some
-    kernels restrict it. Best-effort per D13, not a hard requirement.
+    kernels restrict it. Best-effort, not a hard requirement.
     """
     cores: dict[tuple[int, int], list[int]] = {}
     for cpu_dir in sorted(_SYS_CPU.glob("cpu[0-9]*"), key=lambda p: int(p.name[3:])):
@@ -105,8 +105,8 @@ def set_affinity(pid: int, cpus: list[int]) -> None:
 
 
 def read_back(pid: int) -> list[int]:
-    """The actual mask the kernel has for `pid`, read back rather than
-    trusted, since only the actual mask is evidence."""
+    """Read back the mask the kernel actually has for `pid`, rather than
+    trusting the one that was requested — only the former is evidence."""
     return sorted(os.sched_getaffinity(pid))
 
 
@@ -122,8 +122,8 @@ def pin_current_process(cpus: list[int]):
     requested to pin to).
 
     Yields the actual mask read back after setting it (`None` if `cpus` was
-    empty) rather than `cpus` itself — the actual mask, not the request, since the
-    kernel is free to reject or adjust it.
+    empty) rather than `cpus` itself, since the kernel is free to reject or
+    adjust the request.
     """
     if not cpus:
         yield None

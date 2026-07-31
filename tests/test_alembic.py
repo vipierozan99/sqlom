@@ -132,9 +132,10 @@ def test_a_model_added_later_joins_the_same_metadata(blank_db):
 
 
 def test_column_order_drift_is_invisible_to_alembic(blank_db):
-    """R11, asserted rather than asserted-away. Adding a mixin moves its columns
-    to the front of CREATE TABLE, and autogenerate reports *nothing* — which is
-    why `__column_order__` exists and is worth pinning on an existing table."""
+    """The column-order hazard, asserted rather than asserted-away. Adding a
+    mixin moves its columns to the front of CREATE TABLE, and autogenerate
+    reports *nothing* — which is why `__column_order__` exists and is worth
+    pinning on an existing table."""
     Base.metadata.create_all(blank_db)
 
     reordered = sa.MetaData()

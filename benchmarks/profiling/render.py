@@ -1,7 +1,8 @@
-"""Normalise cProfile/yappi output to speedscope JSON + folded stacks
-. pyinstrument, py-spy and austin all produce speedscope
-directly through their own tooling (see their adapter modules) — this module
-is the generic converter for the two that don't.
+"""Normalise cProfile/yappi output to speedscope JSON + folded stacks.
+
+pyinstrument and py-spy emit speedscope themselves, and austin's own tooling
+converts to it (`mojo2austin` then `austin2speedscope` — see `austin.py`), so
+this module is the generic converter for the two that have no such path.
 
 Both `pstats.Stats` and yappi's `YFuncStats` describe a *call graph*
 (caller/callee edges with aggregate times), not literal per-sample stacks, so

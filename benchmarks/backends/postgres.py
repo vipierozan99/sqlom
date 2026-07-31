@@ -46,7 +46,7 @@ class EphemeralPostgres:
         cls, *, port: int = 5432, cpuset: str | None = None, version: str = "16",
         ssl: bool = False, db: str = DEFAULT_DB,
     ) -> EphemeralPostgres:
-        # Host networking (D6) means this container binds the port directly —
+        # Host networking means this container binds the port directly —
         # no docker-proxy fallback to silently pick a different one, so a
         # collision must fail loudly rather than start a container nothing
         # can reach.
