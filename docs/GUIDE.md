@@ -108,18 +108,55 @@ serialization speed — a slotted instance drops off orjson's fast native-dict p
 What a row *is* comes from the statement, never from the model:
 
 ```python
-await engine.fetch_all(sa.select(User))                     # list[User]
-await engine.fetch_all(sa.select(User.name))                # list[str]
-await engine.fetch_all(sa.select(User.name, User.id))       # list[tuple[str, int]]
-await engine.fetch_all(sa.select(User, Post).join(Post))    # list[tuple[User, Post]]
+await db.fetch_all(sa.select(User))                     # list[User]
+await db.fetch_all(sa.select(User.name))                # list[str]
+await db.fetch_all(sa.select(User.name, User.id))       # list[tuple[str, int]]
+await db.fetch_all(sa.select(User, Post).join(Post))    # list[tuple[User, Post]]
 
-await engine.fetch_one(sa.select(User).where(User.id == 1))            # User | None
-await engine.fetch_value(sa.func.count().select().select_from(User.__table__))  # int
+await db.fetch_one(sa.select(User).where(User.id == 1))            # User | None
+await db.fetch_value(sa.func.count().select().select_from(User.__table__))  # int
 ```
 
 One selected entity yields that entity; two or more yield a tuple, in select
 order. An `outerjoin` with no match gives `None` for that slot rather than an
 object full of `None`s.
+
+### The other way to read
+
+`fetch_*` is rowform's. Beside it, `execute()` is SQLAlchemy's — and not an
+imitation of it: rowform hands its hydrated rows to SQLAlchemy's own result
+machinery, so what comes back is a real `sqlalchemy.Result`.
+
+```python
+async with db.connect() as conn:
+    users = await conn.fetch_all(sa.select(User))                     # list[User]
+    users = (await conn.execute(sa.select(User))).scalars().all()     # list[User]
+    rows  = (await conn.execute(sa.select(User))).all()               # list[Row]
+```
+
+Every accessor is the upstream implementation — `.scalars()`, `.mappings()`,
+`.tuples()`, `.unique()`, `.partitions()`, `row.name`, `row[0]`, `NoResultFound`,
+`ResourceClosedError` — which is what lets an existing codebase move a query at a
+time without rewriting how it reads rows.
+
+**They differ in exactly one place.** For a *single* selected entity,
+`execute().all()` gives `[Row(User,)]` and `fetch_all()` gives `[User]`. At two or
+more selected entities the two agree, because the hydrator already produces
+tuples there.
+
+**What each costs**, per 1000 rows: nothing is wrapped on the way in, so you pay
+for what you take.
+
+| | |
+|---|---|
+| `fetch_all()` | the hydrator's list, nothing further |
+| `execute(...).scalars().all()` | 0.0049 ms — no `Row` is built at all |
+| `execute(...).all()` | 0.168 ms — one `Row` per row, on demand |
+| `execute(...).mappings().all()` | 0.471 ms |
+
+So the idiomatic ORM-style read is within noise of the hot path, and only asking
+for actual `Row` objects builds any. Use `execute()` while porting and where the
+`Result` API earns its keep; use `fetch_all()` on the paths you care about.
 
 ## Aliases and self-joins
 
@@ -127,7 +164,7 @@ object full of `None`s.
 
 ```python
 mgr = rowform.alias(User, "mgr")
-rows = await engine.fetch_all(
+rows = await db.fetch_all(
     sa.select(User, mgr).join(mgr, User.manager_id == mgr.id)
 )   # list[tuple[User, User]]
 ```
@@ -144,7 +181,7 @@ columns belong to it rather than to any table:
 
 ```python
 active = rowform.alias(User, of=sa.select(User).where(User.active).cte("active"))
-await engine.fetch_all(sa.select(active).order_by(active.id))   # list[User]
+await db.fetch_all(sa.select(active).order_by(active.id))   # list[User]
 ```
 
 `of=` demands exactly that model's columns, in order — anything else is a
@@ -172,10 +209,10 @@ The mark lands on the from clause you passed, not on a wrapper of it, so
 **Hoist the compile** out of the request when you can:
 
 ```python
-recent = engine.prepare(
+recent = db.prepare(
     sa.select(User).where(User.id > sa.bindparam("floor")).limit(100)
 )
-await engine.fetch_all(recent, floor=1000)
+await db.fetch_all(recent, floor=1000)
 ```
 
 `fetch_all` caches compiled statements under SQLAlchemy's own structural cache
@@ -187,15 +224,15 @@ Prefer keyset pagination over `OFFSET`: it stays O(page) as the offset grows, an
 does not skip or repeat rows when the table is written to between pages.
 
 ```python
-page = engine.prepare(
+page = db.prepare(
     sa.select(User)
     .where(User.id > sa.bindparam("after"))
     .order_by(User.id)
     .limit(sa.bindparam("size"))
 )
 
-first = await engine.fetch_all(page, after=0, size=50)
-next_ = await engine.fetch_all(page, after=first[-1].id, size=50) if first else []
+first = await db.fetch_all(page, after=0, size=50)
+next_ = await db.fetch_all(page, after=first[-1].id, size=50) if first else []
 ```
 
 Order by something unique. If you page by a non-unique column, order by
@@ -208,7 +245,7 @@ be skipped.
 a backfill:
 
 ```python
-async for user in engine.fetch_iter(sa.select(User), chunk=500):
+async for user in db.fetch_iter(sa.select(User), chunk=500):
     await sink.write(user)
 ```
 
@@ -223,7 +260,7 @@ explicit:
 ```python
 from contextlib import aclosing
 
-async with aclosing(engine.fetch_iter(sa.select(User), chunk=500)) as stream:
+async with aclosing(db.fetch_iter(sa.select(User), chunk=500)) as stream:
     async for user in stream:
         if user.name == target:
             break        # the connection is released at the end of this block
@@ -240,13 +277,13 @@ sqlite streams anything.
 ## Writing and transactions
 
 ```python
-await engine.execute(sa.insert(User.__table__).values(name="ada"))
-await engine.execute_many(sa.insert(User.__table__), [{...}, {...}])
-await engine.execute(
+await db.execute(sa.insert(User.__table__).values(name="ada"))
+await db.execute_many(sa.insert(User.__table__), [{...}, {...}])
+await db.execute(
     sa.update(User.__table__).where(User.id == 1).values(hits=User.hits + 1)
 )
 
-created = await engine.fetch_all(
+created = await db.fetch_all(
     sa.insert(User.__table__).values(name="ada").returning(User.__table__)
 )   # RETURNING hydrates like any other read
 ```
@@ -254,7 +291,7 @@ created = await engine.fetch_all(
 **Bulk loading** goes through COPY rather than a statement per row:
 
 ```python
-await engine.copy_in(User.__table__, rows)     # rows: a list of dicts
+await db.copy_in(User.__table__, rows)     # rows: a list of dicts
 ```
 
 20 000 rows of a wide shape: 1.8x faster than `execute_many` on asyncpg, 13.6x on
@@ -263,12 +300,15 @@ is a load path rather than a write path: no RETURNING, no ON CONFLICT. Values go
 through the same bind processors as an INSERT, so what lands is what
 `execute_many` would have written.
 
-Writes take `User.__table__`, not `User`. `execute()` refuses a statement that
-returns rows and `fetch_all()` refuses one that does not, so a `returning()` you
-forgot fails loudly instead of returning `[]`.
+The model class stands in for its table in writes as in reads, so `sa.insert(User)`
+and `sa.insert(User.__table__)` are the same statement. `execute()` returns a
+`Result` either way — `.rowcount` for a plain write, rows for one with
+`returning()` — and a write with no result set gives a closed result, so reading
+it raises `ResourceClosedError` instead of returning `[]`. `fetch_all()` still
+refuses a statement that returns no rows.
 
 ```python
-async with engine.begin() as conn:
+async with db.begin() as conn:
     await conn.execute(sa.update(Account.__table__)...)
     await conn.execute(sa.update(Account.__table__)...)
     rows = await conn.fetch_all(sa.select(Account).where(...))
@@ -278,23 +318,23 @@ async with engine.begin() as conn:
 ```
 
 Commits on clean exit, rolls back on any exception, nests as savepoints on every
-driver. Call `conn.*` inside the block — `engine.*` raises there, because it would
+driver. Call `conn.*` inside the block — `db.*` raises there, because it would
 take a different pooled connection and miss the uncommitted writes.
 
 Options are SQLAlchemy's `execution_options`, so they are spelled once for every
 driver and what a backend honours is SQLAlchemy's answer:
 
 ```python
-async with engine.begin(isolation_level="SERIALIZABLE") as conn:
+async with db.begin(isolation_level="SERIALIZABLE") as conn:
     ...
-async with engine.begin(postgresql_readonly=True) as conn:
+async with db.begin(postgresql_readonly=True) as conn:
     ...
 ```
 
 **Pipelining** is worth reaching for when the database is a network hop away:
 
 ```python
-async with engine.begin() as conn, conn.pipeline():
+async with db.begin() as conn, conn.pipeline():
     for row in rows:
         await conn.execute(update, **row)
 ```
@@ -312,7 +352,7 @@ inherits the builtin it replaces, so existing `except ValueError` still works.
 
 ```python
 try:
-    rows = await engine.fetch_all(statement)
+    rows = await db.fetch_all(statement)
 except rowform.StatementError:
     ...     # right statement, wrong method
 except rowform.RowformError:
@@ -335,7 +375,7 @@ exception, because renaming it would hide which server refused what:
 import asyncpg
 
 try:
-    await engine.execute(sa.insert(User.__table__).values(email=email))
+    await db.execute(sa.insert(User.__table__).values(email=email))
 except asyncpg.UniqueViolationError:
     raise EmailTaken(email) from None
 ```
@@ -394,7 +434,7 @@ create_async_engine(dsn, pool_size=4, max_overflow=12, pool_timeout=5)
 `cache_size` (default 500) caps the compiled statements an engine keeps, evicting
 the least recently used. Statements built per request vary in *shape* and so mint
 a new cache entry each time; without the cap that dict grows for the life of the
-process. `engine.cached_statements` is the number to watch — a fixed statement set
+process. `db.cached_statements` is the number to watch — a fixed statement set
 sits at a constant, and one pinned to `cache_size` is recompiling forever, which
 is worth knowing since compiling is the cost `prepare()` exists to hoist. (An
 `IN` list of varying length is *not* one of these: it compiles to a single
@@ -437,7 +477,7 @@ SQLAlchemy's pool answers the other half — whether anything was *waiting* for 
 connection while that statement ran:
 
 ```python
-pool = engine.sa_engine.pool
+pool = db.sa_engine.pool
 log.info("pool %s", pool.status())
 ```
 
@@ -456,7 +496,7 @@ composes:
 
 ```python
 async with asyncio.timeout(2):
-    users = await engine.fetch_all(sa.select(User))
+    users = await db.fetch_all(sa.select(User))
 ```
 
 What matters is what happens to the connection afterwards, since a cancelled
@@ -485,12 +525,12 @@ import pytest, rowform
 @pytest.fixture
 async def db(tmp_path):
     sa_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.sqlite3'}")
-    engine = rowform.Engine(sa_engine)
+    db = rowform.Engine(sa_engine)
     try:
-        await engine.drop_all(Base.metadata)     # ignore_missing=True by default
-        await engine.create_all(Base.metadata)
-        await seed(engine)
-        yield engine
+        await db.drop_all(Base.metadata)     # ignore_missing=True by default
+        await db.create_all(Base.metadata)
+        await seed(db)
+        yield db
     finally:
         await sa_engine.dispose()
 ```
@@ -516,7 +556,7 @@ async def test_it_hits_the_index(db):
 
 ## Schema and migrations
 
-`await engine.create_all(Base.metadata)` bootstraps an empty database. For
+`await db.create_all(Base.metadata)` bootstraps an empty database. For
 anything that already exists, point Alembic at the same object:
 
 ```python
@@ -540,20 +580,25 @@ nothing is tracked.
 
 | ORM | rowform |
 |---|---|
-| `session.scalars(select(User))` | `engine.fetch_all(sa.select(User))`, or `engine.scalars(...)` for a `ScalarResult` |
-| `session.get(User, 1)` | `engine.fetch_one(sa.select(User).where(User.id == 1))` |
-| `session.add(user); await session.commit()` | `engine.execute(sa.insert(User.__table__).values(...))` |
-| `user.name = "x"; await session.commit()` | `engine.execute(sa.update(User.__table__).where(...).values(name="x"))` |
+| `session.scalars(select(User))` | `db.fetch_all(sa.select(User))`, or `db.scalars(...)` for the `ScalarResult` |
+| `session.execute(select(User))` | `db.execute(sa.select(User))` — the same `Result` |
+| `session.get(User, 1)` | `db.fetch_one(sa.select(User).where(User.id == 1))` |
+| `session.add(user); await session.commit()` | `db.execute(sa.insert(User).values(...))` |
+| `user.name = "x"; await session.commit()` | `db.execute(sa.update(User).where(...).values(name="x"))` |
 | `user.posts` (lazy load) | `sa.select(User, Post).join(Post)`, written out |
 | `selectinload(User.posts)` | two statements, or one join and group in Python |
-| `session.begin()` | `engine.begin()` |
-| `aliased(User)` | `rowform.alias(User, "x")` |
+| `async_sessionmaker(engine)` | `rf.Engine(engine)` — it wraps yours, it does not replace it |
+| `session.begin()` | `db.begin()` |
+| `async with db.connect()` | `async with db.connect()` — same scope, same rules |
+| `Session(bind=connection)` | `db.connect(bind=connection)` |
+| `aliased(User)` | `rf.alias(User, "x")` |
 
 Things that will bite in order of likelihood:
 
 1. **Mutating an instance does nothing.** There is no unit of work to flush it.
-2. **Writes take `User.__table__`**, since `sa.insert(User)` has no mapper to
-   consult.
+2. **`execute()` gives a `Result`, `fetch_all()` gives objects.** Both are here on
+   purpose: the first is SQLAlchemy's, so ported code keeps working; the second
+   skips the `Row` entirely. Reach for `fetch_all` once the port is done.
 3. **No relationships.** A missing join is a missing join, not a lazy load — which
    is the point, but it is a change in habit.
 4. **No identity map**, so two reads of row 1 give two distinct objects that

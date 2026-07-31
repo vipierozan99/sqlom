@@ -162,21 +162,36 @@ multi-entity statement.
 
 ### Writing
 
-#### `await engine.execute(statement, **params) -> Any`
+#### `await engine.execute(statement, parameters=None, **params) -> Result`
 
-Runs a statement that produces no rows; returns the driver's own report — a
-rowcount, or asyncpg's status tag. Raises `StatementError` if the statement
-returns rows. Writes take `User.__table__`, not `User`.
+The compatibility track's one-shot: opens a scope of its own, runs the statement,
+closes it. `parameters` is a dict, or a list of dicts for an executemany, exactly
+as `AsyncConnection.execute` takes it; `**params` is rowform's extension and
+merges into it. The model class stands in for its table, so `sa.insert(User)` and
+`sa.insert(User.__table__)` are the same statement.
 
-Runs inside its own transaction, committed on the way out. Not a nicety: a
-statement run on a connection from `AsyncEngine.connect()` sits inside whatever
-transaction the driver opened for it, and the pool's rollback-on-release then
-discards it — on two of the three drivers, silently.
+`.rowcount` for a plain write, rows for one with `returning()`. A statement with
+no result set gives a *closed* `Result`, so reading it raises
+`ResourceClosedError` rather than returning `[]`.
+
+A statement that returns rows runs without committing; one that does not is
+committed. Not a nicety: a write run on a connection from `AsyncEngine.connect()`
+sits inside whatever transaction the driver opened for it, and the pool's
+rollback-on-release then discards it — on two of the three drivers, silently.
+
+#### `await engine.scalar(statement, parameters=None, **params) -> Any`
+#### `await engine.scalars(statement, parameters=None, **params) -> ScalarResult`
+
+`execute(...).scalar()` and `execute(...).scalars()`, each in a scope of its own.
+The rows are buffered by the time `execute()` returns, so the result outlives the
+connection it used.
 
 #### `await engine.execute_many(statement, params: Sequence[dict]) -> Any`
 
-One compiled statement, many parameter sets, one round trip. An empty sequence
-returns `None` without touching the database.
+One compiled statement, many parameter sets, one round trip — rowform's own, so
+it returns the driver's report rather than a `Result`. The SQLAlchemy spelling of
+the same thing is `execute(stmt, [ ... ])`. An empty sequence returns `None`
+without touching the database.
 
 ### Schema
 

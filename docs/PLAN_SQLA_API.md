@@ -1,9 +1,12 @@
 # SQLAlchemy compatibility
 
-Status: **Option B implemented** — rowform no longer pools. `rf.Engine` wraps an
-`AsyncEngine`; §2 is the measurement it was decided on, §8 is what building it
-turned up. Option A (§6's renames — `Result`, `scalars()`, `stream()`) is **not**
-implemented and remains open.
+Status: **implemented**. rowform no longer pools — `rf.Engine` wraps an
+`AsyncEngine` (§2 is the measurement that decided it) — and the connection carries
+both a SQLAlchemy-shaped track and rowform's own (§6). §8 is what building it
+turned up, including two silent-wrongness bugs and one retracted claim.
+
+What is left: §5.1, the whole postgres arm, unrun for want of a server; and §5.3,
+the benchmark table, which predates the pool change and has not been re-measured.
 
 ## 0. The goal
 
@@ -93,8 +96,10 @@ awaited from a real coroutine, never through SQLAlchemy's `await_only` shim.
 
 Subtracting the hoisted arm from the per-request one: rowform's checkout ≈
 **0.094 ms**, SQLAlchemy's ≈ **0.403 ms**. That is the same finding
-`PLAN_CORE_COMPILER.md §2g` already recorded from the other direction (~0.18 ms
-against ~0.03–0.08 ms on a faster box), arrived at independently.
+the earlier core-compiler work recorded from the other direction (~0.18 ms
+against ~0.03–0.08 ms on a faster box), arrived at independently. That design note
+has since been removed from the tree; the figure is repeated here because this is
+now the only place it survives.
 
 A second run decomposed it, and checked the obvious misattribution first — a
 `NullPool` would have made "checkout" mean "open a new sqlite file", and every
@@ -205,7 +210,7 @@ produce a driver connection already.
 | `PsycopgEngine.transaction`'s isolation save/restore | SQLAlchemy's `execution_options` |
 
 That is most of `engine.py`, all of `transaction.py`, and the pool halves of the
-three driver modules — roughly the 935 lines `PLAN_CORE_COMPILER.md §1` counts as
+three driver modules — roughly the 935 lines the earlier design note counted as
 "kept for raw-driver execution and pooling", minus the execution part.
 
 ---
@@ -214,7 +219,8 @@ three driver modules — roughly the 935 lines `PLAN_CORE_COMPILER.md §1` count
 
 `AsyncpgEngine.conditional_reset` exists because **asyncpg's own pool** runs
 `RESET ALL` as a round trip on every release, worth 20–30% of throughput
-(`BENCHMARKS.md §6`). SQLAlchemy does not use asyncpg's pool — it pools raw
+(measured at the time, in a benchmark note since removed). SQLAlchemy does not
+use asyncpg's pool — it pools raw
 `asyncpg.connect()` connections in its own `AsyncAdaptedQueuePool` and resets
 them with a DBAPI-level `rollback()`, which for the asyncpg adapter is a local
 no-op when no transaction was started.
@@ -272,37 +278,54 @@ this box. It is §5.1's first item.
 
 ---
 
-## 6. The API surface, either way
+## 6. Two tracks, not one compromise
 
-Independent of A vs B, these names should be SQLAlchemy's:
+The row-shape question — does `.all()` hand back `[User]` or `[Row(User,)]`? — had
+no good answer while there was one method. Matching SQLAlchemy exactly cost a tuple
+per row on the hottest path; keeping rowform's unwrapping left a divergence that
+bit silently on `select(User.name)`, where `row[0]` returns the first *character* of
+a string rather than failing.
 
-| SQLAlchemy 2.0 async | rowform today | proposed |
+The answer was to stop choosing. `execute()` is SQLAlchemy's and pays for it;
+`fetch_all()` is rowform's and does not. The tracks are told apart by name, so no
+statement means one thing under one spelling and another under the other:
+
+| | compatibility track | hot track |
 |---|---|---|
-| `await conn.execute(stmt, params) -> Result` | `fetch_all` / `execute` split | `execute()` → `Result` (keep `fetch_all` as the shorthand) |
-| `result.all() / .first() / .one() / .one_or_none()` | `list`, `rows[0] if rows` | `Result` |
-| `result.scalars() / .scalar_one()` | `fetch_value()` | `Result`, `ScalarResult` |
-| `await conn.execute(stmt, [d1, d2])` | `execute_many(stmt, seq)` | a list of dicts |
-| `await conn.stream(stmt)` → `AsyncResult` | `fetch_iter(stmt, chunk=…)` | `stream()`, `AsyncResult.partitions(n)` |
-| `sa.exc.NoResultFound` / `MultipleResultsFound` | — | raise the real ones (free; sa is already a dependency) |
+| all rows | `(await conn.execute(s)).scalars().all()` | `await conn.fetch_all(s)` |
+| first row | `(await conn.execute(s)).scalar_one_or_none()` | `await conn.fetch_one(s)` |
+| one value | `await conn.scalar(s)` | `await conn.fetch_value(s)` |
+| stream | `await conn.stream(s)` → `AsyncResult` | `conn.fetch_iter(s, chunk=…)` |
+| executemany | `await conn.execute(s, [d1, d2])` | `await conn.execute_many(s, rows)` |
+| raw SQL | `await conn.exec_driver_sql(sql, params)` | — |
 
-One row-shape decision remains open regardless of A or B: for a *single* selected
-entity SQLAlchemy hands back a 1-tuple (`Row(User,)`) that `.scalars()` unwraps,
-where rowform yields the `User` directly. Multi-entity rows already match, since
-`Row` is a tuple. Options: match exactly and pay a tuple per row (~2–3% of the
-flat benchmark), or keep rowform's unwrapping and implement `.scalars()` /
-`.scalar_one()` faithfully so SQLAlchemy-shaped code still runs — the divergence
-then only bites code that indexes a 1-tuple.
+The compatibility track is not an imitation: rowform hydrates, then hands the rows
+to SQLAlchemy's own `IteratorResult`, so `.scalars()`, `.mappings()`, `.tuples()`,
+`.unique()`, `.partitions()`, `Row` attribute access, `NoResultFound` and
+`ResourceClosedError` are the upstream implementations and cannot drift from them.
+
+Lifecycle needed no compromise at all and is 1:1: `connect()`, `begin()`,
+`begin_nested()`, `commit()`, `rollback()`, `execution_options()`,
+`in_transaction()`, and `bind=` for a connection somebody else owns.
+
+Still open, and deliberately: **exception wrapping**. A driver error surfaces as
+the driver's, not as `sa.exc.IntegrityError`. Doing it properly means the dialect's
+`dbapi_exception_translation` and `is_disconnect` on every statement path, which is
+its own piece of work with its own cost to measure (§5.6).
 
 ---
 ## 7. Phasing
 
-1. ~~Port §2's ablation to postgres~~ — **not done**, no server available; §5.1
-   stands open and is the first thing to run where one exists.
+1. ~~Port §2's ablation to postgres~~ — **not done**, no server available. §5.1
+   stands open and is the first thing to run where one exists; every number in
+   this document is sqlite.
 2. **Done.** `rf.Engine(sa_engine)`, driver dispatched from the dialect,
-   `using()` for a caller's connection or session. Verified by `test_using.py`:
-   reads inside `conn.begin()` and inside an `AsyncSession` see uncommitted
-   writes and roll back with them.
-3. `Result` / `ScalarResult` / `AsyncResult` and the §6 renames — **open**.
+   `connect(bind=...)` for a caller's connection or session. `tests/test_bind.py`
+   asserts the point: reads inside `conn.begin()` and inside an `AsyncSession`
+   see uncommitted writes and roll back with them.
+3. **Done.** `execute()`/`scalar()`/`scalars()`/`stream()`/`stream_scalars()`/
+   `exec_driver_sql()` over real SQLAlchemy `Result` and `AsyncResult` objects,
+   plus the lifecycle renames. `tests/test_result.py` walks the shape matrix.
 4. **Done.** §3's deletion table is applied. §5.4's "keep the pool as an opt-in
    provider" was *not* taken, on the explicit call that the checkout cost is
    worth the deletion.

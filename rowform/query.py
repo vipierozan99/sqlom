@@ -5,8 +5,8 @@ SQLAlchemy Core is the compiler and the schema; it is not on the row path. A
 arguments into the driver's parameter shape, and (once the driver has described
 its result) the generated hydrator.
 
-    users = engine.prepare(sa.select(User).where(User.id > sa.bindparam("min")))
-    rows = await engine.fetch_all(users, min=100)
+    users = db.prepare(sa.select(User).where(User.id > sa.bindparam("min")))
+    rows = await db.fetch_all(users, min=100)
 
 Hoisting `prepare()` out of the request is the fast path, but it is an
 optimisation rather than a requirement: passing a bare statement to `fetch_all`
@@ -70,7 +70,7 @@ class CoreQuery(Generic[R]):
         self._metadata: Any = None
         #: A SELECT, as opposed to a write with RETURNING. Recorded because
         #: postgres will only `DECLARE` a cursor for the former, which decides
-        #: whether `PsycopgEngine` can stream this statement at all.
+        #: whether the psycopg driver can stream this statement at all.
         self.is_select: bool = bool(getattr(statement, "is_select", False))
         # Once per statement, not per execute: the compile is the cached thing, so
         # this is also the log line that shows whether caching is working.
@@ -85,9 +85,9 @@ class CoreQuery(Generic[R]):
         """Column labels for `conn.execute()`'s `Result`, built once.
 
         SQLAlchemy caches `CursorResultMetaData` on the compiled object for the
-        same reason (`docs/PLAN_CORE_COMPILER.md` §2a): it is a function of the
-        statement, not of the call, and constructing one per execute measured at
-        ~1.4 us where reusing one is free. Verified safe to share across results,
+        same reason — it caches `CursorResultMetaData` on the compiled object:
+        it is a function of the statement, not of the call, and constructing one
+        per execute measured at ~1.4 us where reusing one is free. Verified safe to share across results,
         including with a `.mappings()` in between.
         """
         metadata = self._metadata

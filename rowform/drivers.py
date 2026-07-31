@@ -16,8 +16,8 @@ not.
 
 Nothing here imports a driver. The pool code did (`asyncpg.create_pool`,
 `aiosqlite.connect`, `psycopg_pool`); these methods only call methods on a
-connection somebody else opened, which is why `AsyncpgEngine` no longer needs to
-be exported lazily.
+connection somebody else opened, which is why the asyncpg driver no longer needs
+to be exported lazily to keep `import rowform` free of it.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from .errors import ConfigurationError, UnsupportedError
 from .query import CoreQuery
 
 # Cursor names are per *session*, so two streams sharing one connection — which is
-# exactly what `tx.fetch_iter()` inside another `tx.fetch_iter()` does — must not
+# exactly what `conn.fetch_iter()` inside another `conn.fetch_iter()` does — must not
 # ask for the same name. A fixed one raises `DuplicateCursor: cursor
 # "rowform_stream" already exists` on the second.
 _STREAM_NAMES = itertools.count()
@@ -203,7 +203,8 @@ class AsyncpgDriver(Driver):
     dialect registers those in its own `on_connect`, and SQLAlchemy is what opens
     the connection now. Running on a raw pool, nothing had done it, and JSON
     columns came back as text while the processor declined to convert them
-    (`docs/PLAN_CORE_COMPILER.md`, sharp edge 3).
+    — a bug this cost once, when rowform pooled its own connections and JSON
+    columns came back as unparsed text.
     """
 
     async def fetch(self, conn, sql, params, describe):

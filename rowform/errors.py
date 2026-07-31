@@ -1,7 +1,7 @@
 """Every error rowform raises deliberately, under one catchable base.
 
     try:
-        rows = await engine.fetch_all(statement)
+        rows = await db.fetch_all(statement)
     except rowform.RowformError:
         ...
 
@@ -85,7 +85,6 @@ class PlanError(RowformError, ValueError):
 class EngineStateError(RowformError, RuntimeError):
     """The engine is in no state to run this.
 
-    Not connected (or closed), or `engine.fetch_all()` called inside
-    `engine.transaction()`, where it would take a different pooled connection
-    and miss the transaction's uncommitted writes.
+    `db.fetch_all()` called inside `db.connect()` or `db.begin()`, where it would
+    take a different pooled connection and miss the scope's uncommitted writes.
     """

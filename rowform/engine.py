@@ -67,8 +67,8 @@ def _one_row(statement: Any) -> Any:
     is still what the caller asked for.
 
     `_limit_clause` is SQLAlchemy-private, like the rest of the compiler surface
-    this library reads (`docs/PLAN_CORE_COMPILER.md`); there is no public way to
-    ask a Select whether it is limited.
+    this library reads; there is no public way to ask a Select whether it is
+    limited.
     """
     if isinstance(statement, Select) and statement._limit_clause is None:
         return statement.limit(1)
@@ -322,7 +322,7 @@ class Engine:
     async def _iterate(
         self, statement: Any, chunk: int, params: dict[str, Any], acquire: Any
     ) -> AsyncIterator[Any]:
-        """Shared by `Engine.fetch_iter` and `Transaction.fetch_iter`; the only
+        """Shared by `Engine.fetch_iter` and `Connection.fetch_iter`; the only
         difference is whether the connection comes from the pool or is the
         transaction's own."""
         if chunk < 1:
