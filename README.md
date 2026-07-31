@@ -357,10 +357,10 @@ the driver already returns the right object the processor is `None` and the fiel
 compiles to a bare store — most columns on asyncpg, and why bypassing `Row` costs
 nothing there. Binds go through the same machinery in reverse.
 
-That is not a detail. An earlier design hand-maintained a `{bool: bool}` converter
-table; against a widened row it covered **1 of 8** columns needing conversion, and the
-other 7 came back as plausible-looking values of the wrong type
-([METHODOLOGY.md](docs/METHODOLOGY.md) correction 11).
+That is not a detail: a per-column lookup is the only one that can be right. A table
+keyed by Python type cannot express nullability, since `bool | None` never matches
+`bool`, and `type.python_type` is not total — it raises for some types and collapses
+`Enum` to bare `str`. Asking the column means the dialect supplies the answer.
 
 **5. The hydrator is built on first execute**, because it needs each column's DBAPI type
 code — postgres `Numeric.result_processor` *raises* without one. Once per statement,
@@ -376,7 +376,7 @@ Stated plainly, because most of it is not recoverable:
 * **Every model carries a metaclass**, so `class User(Base, ABC)` and combining with
   `Protocol` raise `TypeError: metaclass conflict`. A decorator would compose freely,
   but a decorator *factory* — which is what taking `metadata` requires — erases every
-  field type to `Any`. Precise types were judged worth more; see
+  field type to `Any`, and precise types are worth more here. See
   [GUIDE.md](docs/GUIDE.md) for the workarounds.
 * **No relationships, no lazy loading, no identity map, no unit of work.** You write
   every join, and insert ordering and write batching are yours. Deliberate —
@@ -406,14 +406,7 @@ PostgreSQL tests skip with a reason when no server is reachable; `--pg-required`
 that into a failure.
 
 Types are tested rather than just declared, and the row path is checked against
-SQLAlchemy Core as an oracle over *generated* statements — because a fixed schema only
-catches what someone thought to put in it, which is how the converter table in
-correction 11 passed its tests while being wrong.
+SQLAlchemy Core as an oracle over *generated* statements, because a fixed schema only
+catches the types someone thought to put in it.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the rest.
-
----
-
-## 📜 License
-
-MIT License. Free for open-source and commercial use.
