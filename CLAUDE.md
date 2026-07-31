@@ -78,6 +78,23 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 # Conventions
 - Reach the library through `import rowform as rf` — in docs, tests, benchmarks and examples alike. Not `import rowform`, not `from rowform import x`. One name for the package everywhere, so `rf` is free to mean nothing else.
 
+# Workflow
+
+## Docs are written once, at the end
+
+**Do not update docs as you go.** Code and tests land per commit; prose lands in
+one pass when the PR is opened. Half the doc edits made mid-stream get rewritten
+by the next change anyway, and each one costs a review of text that is about to
+move.
+
+While working, keep a running list of what the changes have made stale — file,
+section, and what is now wrong — and write it all at PR time. Docs in scope:
+`README.md`, `docs/*.md`, `SECURITY.md`, and module docstrings that describe the
+public surface rather than the code beneath them.
+
+Docstrings *inside* code you are already editing are part of that edit, not a doc
+update — keep them true as you write.
+
 # Commands
 - Run linting with: `just lint --fix` (`--fix` will already fix fixable errors)
 - Run typechecking with: `just typecheck`
