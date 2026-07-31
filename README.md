@@ -53,6 +53,76 @@ One class does three jobs, and there is only one of it:
 
 ---
 
+## 🚫 No implicit queries
+
+The absent ORM features are the point, and the argument for dropping them is not
+performance.
+
+`user.posts` reads like a field access and is a `SELECT`. The query therefore
+leaves the place you wrote it and reappears wherever the attribute is touched — a
+serializer, a template, the second iteration of a loop. SQLAlchemy names the
+result in its own documentation: "the N plus one problem, which states that for any
+N objects loaded, accessing their lazy-loaded attributes means there will be N+1
+SELECT statements emitted". That is round trips, not CPU, and no row layer is fast
+enough to fix a latency multiplier. SQLAlchemy also ships `raiseload()` and
+`lazy="raise"` to switch the behaviour off — a strategy that "replaces the behavior
+of lazy loading with an informative error being raised" — which is the ORM
+conceding that its own default is worth a flag to disable.
+
+Lazy loading is the famous one, not the only one. Three more defaults where an
+attribute access is I/O:
+
+| | |
+|---|---|
+| **expire on commit** | on by default: after `commit()`, "all objects associated with the Session are expired, meaning their contents are erased to be re-loaded within the next transaction" — so a plain `user.name` is a `SELECT` too |
+| **autoflush** | "the flush occurs before any individual SQL statement is issued as a result of a … `Session.execute()` call", so a *read* can emit the writes you had pending, in an order the unit of work chose |
+| **identity map** | it "doesn't do any kind of query caching" — the `SELECT` runs, and a row whose primary key is already in the map then yields the object that was already there — the fetched values dropped, unless you remembered `populate_existing` |
+
+**Under asyncio the first of those does not work at all.** A lazy load "will fail
+under asyncio as no implicit IO is allowed", and the documented ways to live with
+that are a list of ways to turn implicitness back off: `AsyncAttrs.awaitable_attrs`,
+write-only collections that "never emit IO implicitly", `lazy="raise"` "so that by
+default they will not attempt to emit SQL", and `expire_on_commit=False`. One
+relationship and one flag at a time, by whoever remembers. rowform is async-only,
+so every model here would be configured into that shape anyway — it starts there
+instead. There is no instrumented attribute to raise from, so there is nothing to
+switch off and nobody left checking in review whether someone did.
+
+What replaces that discipline is a property: **a request's round trips are a static
+property of its source.** No attribute access can add one, the plan comes from the
+statement rather than the model, and the `observer` fires once per statement — so
+the query count is something a test asserts rather than something production
+reveals:
+
+```python
+seen: list[str] = []
+db.observer = lambda sql, *_: seen.append(sql)
+
+await load_dashboard(db)
+assert len(seen) == 2          # not N+1, and it stays that way
+```
+
+Absence on its own would only be a convention, so the edges refuse rather than
+improvise: `sa.orm.aliased()` raises `NoInspectionAvailable` (there is no `Mapper`
+to hang a loader option on), `engine.fetch_all()` inside a `transaction()` block
+raises rather than reading on a different pooled connection, `execute()` refuses a
+statement that returns rows, and `fetch_all()` refuses one that does not.
+
+**What this does not do.** It does not prevent N+1 — a loop of `fetch_one`s is N+1
+just the same. It relocates it onto the page, into a `for` loop visible in review,
+instead of behind a field access. And the unit of work solved real problems that
+become yours: foreign-key insert ordering, write batching, knowing what changed.
+Against a local database at low N, lazy loading is genuinely fine. This is a read
+path for the services where it is not.
+
+[naked-sqla](https://github.com/ManiMozaffar/naked-sqla) forecloses the same list
+— relationships, lazy loading, identity map — from the other direction:
+correctness rather than latency, having hit "ORM in-memory data not matching the
+actual database state due to complexities like identity mapping and dirty
+tracking". Different execution, same conclusion, and worth reading.
+
+---
+
 ## 📊 Performance
 
 sqlite, 200k-row table, 1000 rows per read, 300 iterations, GC off, pinned cores.
@@ -437,7 +507,8 @@ Stated plainly, because most of it is not recoverable:
   freely, but a decorator *factory* — which is what taking `metadata` requires —
   erases every field type to `Any`, and precise types were judged worth more.
 * **No relationships, no lazy loading, no identity map, no unit of work.** You
-  write every join. This is a read path, not an ORM.
+  write every join, and insert ordering and write batching are yours. Deliberate —
+  [no implicit queries](#-no-implicit-queries) — but still a cost.
 * **Column order is inherited-first**, so adding a mixin moves its columns to the
   front of `CREATE TABLE` — and Alembic does not diff column order. Pin it with
   `__column_order__` on a table that already exists.
