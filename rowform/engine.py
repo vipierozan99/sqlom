@@ -38,6 +38,8 @@ import sqlalchemy as sa
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from . import result as _result
+from .connection import _ACTIVE, Connection
 from .drivers import Driver, driver_for
 from .errors import (
     ConfigurationError,
@@ -45,7 +47,6 @@ from .errors import (
     StatementError,
 )
 from .query import CoreQuery
-from .transaction import _ACTIVE, Transaction
 
 _LOG = logging.getLogger("rowform")
 
@@ -254,8 +255,9 @@ class Engine:
         `Select[Tuple[str]]`. Past four selected entities the row degrades to
         `list[Any]`.
 
-        Takes a connection from the pool for this one statement. To run it inside
-        a transaction — anyone's — use `transaction()` or `using()`.
+        Takes a connection from the pool for this one statement and does not open
+        a transaction. To run several statements together — or inside anyone
+        else's transaction — use `connect()` or `begin()`.
         """
         self._reject_if_in_transaction("fetch_all")
         query, extracted = self._require_rows(statement)
@@ -375,49 +377,39 @@ class Engine:
 
     # --- writes -------------------------------------------------------------
 
-    async def execute(self, statement: Any, **params: Any) -> Any:
-        """Run a statement that produces no rows, and return the driver's own
-        report of what happened — a rowcount, or asyncpg's status tag.
+    async def execute(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
+        """Run a statement in a scope of its own and return a SQLAlchemy `Result`.
 
-        A statement *with* RETURNING raises here rather than silently discarding
-        its rows; use `fetch_all()` for those.
+        The compatibility track's one-shot: equivalent to opening `connect()`,
+        executing, and closing. `parameters` is a dict, or a list of dicts for an
+        executemany, exactly as `AsyncConnection.execute` takes it; `**params` is
+        rowform's extension and merges into it.
 
-        This runs on its own pooled connection, outside any transaction
-        SQLAlchemy would have opened. Whether that commits is the driver's
-        business: asyncpg is autocommit, psycopg's connection is transactional
-        and the pool rolls it back on release. **Use `transaction()` for writes**
-        — the difference is not something to rely on.
+        A statement that returns rows runs without committing; one that does not
+        is committed, because a write on a connection the pool resets would
+        otherwise be discarded on two of the three drivers.
         """
-        query, extracted = self._query_for(statement)
-        if query.returns_rows:
-            raise StatementError(
-                "this statement produces rows — use fetch_all() to get them, "
-                "rather than execute(), which would discard them"
-            )
-        sql, bound = query.bind(params, extracted)
-        start = perf_counter() if self.observer is not None else 0.0
-        async with self._write_connection() as conn:
-            result = await self.driver.execute(conn, sql, bound)
-        self._observe(sql, start, None)
-        return result
+        query, _ = self._query_for(statement)
+        async with self._scope(commit=not query.returns_rows) as conn:
+            return await conn.execute(statement, parameters, **params)
+
+    async def scalar(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
+        """`execute(...).scalar()`, in a scope of its own."""
+        return (await self.execute(statement, parameters, **params)).scalar()
+
+    async def scalars(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
+        """`execute(...).scalars()`, in a scope of its own. The rows are already
+        buffered, so the `ScalarResult` outlives the connection."""
+        return (await self.execute(statement, parameters, **params)).scalars()
 
     async def execute_many(self, statement: Any, params: Sequence[dict[str, Any]]) -> Any:
         """One compiled statement, many parameter sets, one driver round trip.
 
-        Same transaction caveat as `execute()`.
+        rowform's own: returns the driver's report rather than a `Result`. The
+        SQLAlchemy spelling of the same thing is `execute(stmt, [ ... ])`.
         """
-        query, extracted = self._query_for(statement)
-        shaped = [query.bind(each, extracted) for each in params]
-        if not shaped:
-            return None
-        # One compiled statement, so every row shares its SQL; an expanding
-        # statement would not, and executemany cannot express that anyway.
-        sql = shaped[0][0]
-        start = perf_counter() if self.observer is not None else 0.0
-        async with self._write_connection() as conn:
-            result = await self.driver.execute_many(conn, sql, [bound for _, bound in shaped])
-        self._observe(sql, start, None)
-        return result
+        async with self._scope(commit=True) as conn:
+            return await conn.execute_many(statement, params)
 
     async def copy_in(
         self,
@@ -451,6 +443,16 @@ class Engine:
         surrounding block would leave the loaded rows behind.
         """
         self._reject_if_in_transaction("copy_in")
+        async with self._checkout(commit=True) as (_, conn):
+            return await self._copy_in(conn, table, rows, columns)
+
+    async def _copy_in(
+        self,
+        conn: Any,
+        table: sa.Table,
+        rows: Sequence[dict[str, Any]],
+        columns: Sequence[str] | None,
+    ) -> int:
         if not rows:
             return 0
         names = list(columns) if columns is not None else [c.key for c in table.columns]
@@ -467,8 +469,7 @@ class Engine:
         ]
         start = perf_counter() if self.observer is not None else 0.0
         label = f"COPY {table.name} ({', '.join(names)})"
-        async with self._write_connection() as conn:
-            copied = await self.driver.copy_in(conn, table, [c.name for c in selected], records)
+        copied = await self.driver.copy_in(conn, table, [c.name for c in selected], records)
         self._observe(label, start, copied)
         return copied
 
@@ -562,60 +563,91 @@ class Engine:
             yield conn
 
     @asynccontextmanager
-    async def transaction(self, **execution_options: Any) -> AsyncIterator[Transaction]:
-        """Several statements on one connection, committed together.
+    async def _scope(self, *, commit: bool) -> AsyncIterator[Connection]:
+        """One checkout as a `Connection`, for the engine's own one-shots.
 
-        Commits on clean exit, rolls back on any exception — SQLAlchemy's
-        `conn.begin()` does both, on every driver, which is why the three
-        hand-rolled BEGIN/SAVEPOINT implementations this file used to dispatch to
-        are gone.
-
-        `execution_options` reach `AsyncConnection.execution_options()`, so
-        isolation is spelled the way SQLAlchemy spells it and applies to every
-        driver alike:
-
-            async with db.transaction(isolation_level="SERIALIZABLE") as tx: ...
-            async with db.transaction(postgresql_readonly=True) as tx: ...
-
-        That also retires `PsycopgEngine.transaction`'s save-and-restore dance:
-        SQLAlchemy resets connection-level state on release itself.
+        Not `connect()`: these do not autobegin for a read, which is what keeps
+        the shorthand a shorthand rather than a transaction (a `begin`/`commit`
+        pair measured at +31% on a single 1000-row read).
         """
-        async with self._checkout() as (conn, driver_conn):
-            if execution_options:
-                await conn.execution_options(**execution_options)
-            async with conn.begin():
-                tx = Transaction(self, conn, driver_conn, 0)
-                tx._enter()
-                try:
-                    yield tx
-                finally:
-                    tx._exit()
+        async with self._checkout(commit=commit) as (sa_conn, driver_conn):
+            yield Connection(self, sa_conn, driver_conn, owns=False)
 
-    async def using(self, target: Any) -> Transaction:
-        """rowform's API, on a connection somebody else owns.
+    @asynccontextmanager
+    async def connect(self, bind: Any = None, **execution_options: Any) -> AsyncIterator[Connection]:
+        """A connection scope — `AsyncEngine.connect()`, with rowform's two tracks
+        on it.
+
+            async with db.connect() as conn:
+                users = (await conn.execute(sa.select(User))).scalars().all()
+                await conn.execute(sa.insert(User.__table__).values(name="ada"))
+                await conn.commit()
+
+        Commit-as-you-go, as SQLAlchemy has it: the first statement begins a
+        transaction and leaving the block without `commit()` rolls it back. Use
+        `begin()` for the begin-once form.
+
+        `bind=` runs on a connection somebody else owns — an `AsyncConnection` or
+        an `AsyncSession`. Statements then see that transaction's uncommitted
+        writes and roll back with it, and rowform neither begins nor ends
+        anything: the caller's block is the scope.
 
             async with Session() as session, session.begin():
-                session.add(AuditRow(...))                     # their ORM write
-                db = await db_engine.using(session)
-                hot = await db.fetch_all(sa.select(User))      # our rows, their transaction
+                session.add(AuditRow(...))
+                async with db.connect(bind=session) as conn:
+                    hot = await conn.fetch_all(sa.select(User))
 
-        `target` is an `AsyncConnection` or an `AsyncSession`. Statements run on
-        the same physical connection, so they see that transaction's uncommitted
-        writes and roll back with it — which an engine owning its own pool cannot
-        do at all, and is the reason this one does not (`CLAUDE.md`, goal 2).
-
-        The returned object is a `Transaction` in the sense of "the same API,
-        pinned to one connection". It does not commit or roll anything back:
-        the caller opened the transaction and the caller ends it. Nothing is
-        registered in `active_transaction()` for the same reason.
+        `execution_options` reach `AsyncConnection.execution_options()`, so
+        isolation is spelled the way SQLAlchemy spells it —
+        `isolation_level="SERIALIZABLE"`, `postgresql_readonly=True`.
         """
+        if bind is not None:
+            if execution_options:
+                raise ConfigurationError(
+                    "execution_options cannot be set on a connection rowform did not "
+                    "open; configure them where the connection was opened"
+                )
+            sa_conn = await self._resolve(bind)
+            yield Connection(self, sa_conn, await self._driver_connection(sa_conn), owns=False)
+            return
+        async with self._checkout() as (sa_conn, driver_conn):
+            if execution_options:
+                await sa_conn.execution_options(**execution_options)
+            conn = Connection(self, sa_conn, driver_conn)
+            conn._enter()
+            try:
+                yield conn
+            finally:
+                conn._exit()
+
+    @asynccontextmanager
+    async def begin(self, **execution_options: Any) -> AsyncIterator[Connection]:
+        """A connection scope with a transaction already open — `AsyncEngine.begin()`.
+
+        Commits on clean exit, rolls back on any exception, and nests as
+        savepoints through `conn.begin_nested()`. All three are SQLAlchemy's, on
+        every driver.
+        """
+        async with self._checkout() as (sa_conn, driver_conn):
+            if execution_options:
+                await sa_conn.execution_options(**execution_options)
+            async with sa_conn.begin():
+                conn = Connection(self, sa_conn, driver_conn)
+                conn._enter()
+                try:
+                    yield conn
+                finally:
+                    conn._exit()
+
+    async def _resolve(self, target: Any) -> AsyncConnection:
+        """The `AsyncConnection` behind an `AsyncConnection` or an `AsyncSession`."""
         if isinstance(target, AsyncConnection):
             conn = target
         else:
             connection = getattr(target, "connection", None)
             if connection is None:
                 raise ConfigurationError(
-                    f"using() takes an AsyncConnection or an AsyncSession, got "
+                    f"bind= takes an AsyncConnection or an AsyncSession, got "
                     f"{type(target).__name__}"
                 )
             conn = await connection()
@@ -626,22 +658,23 @@ class Engine:
                 f"is {driver}; the compiled SQL would use the wrong paramstyle. Use "
                 f"an rf.Engine wrapping that connection's own engine."
             )
-        return await self._bind(conn)
+        return conn
 
-    async def _bind(self, conn: AsyncConnection, depth: int = 0) -> Transaction:
-        return Transaction(self, conn, (await conn.get_raw_connection()).driver_connection, depth)
+    @staticmethod
+    async def _driver_connection(conn: AsyncConnection) -> Any:
+        return (await conn.get_raw_connection()).driver_connection
 
     def _reject_if_in_transaction(self, method: str) -> None:
-        """Inside `transaction()` this method would take a *different* pooled
-        connection, so it would not see the transaction's uncommitted writes and
+        """Inside `connect()` or `begin()` this method would take a *different*
+        pooled connection, so it would not see the scope's uncommitted writes and
         would not roll back with it. Fail loudly rather than return plausible
         wrong results."""
         active = _ACTIVE.get()
         if active is not None and active._engine is self:
             raise EngineStateError(
-                f"engine.{method}() was called inside transaction(); it would run on "
-                f"a different pooled connection and miss the transaction's "
-                f"uncommitted state. Use tx.{method}() instead."
+                f"engine.{method}() was called inside connect()/begin(); it would run "
+                f"on a different pooled connection and miss the scope's uncommitted "
+                f"state. Use conn.{method}() instead."
             )
 
     # --- shared plumbing ----------------------------------------------------
@@ -675,6 +708,36 @@ class Engine:
             hydrate = query.hydrator(self.dialect, description)
         self._observe(sql, start, len(rows))
         return rows, hydrate
+
+    def _chunks(self, query: CoreQuery[Any], params: dict[str, Any], extracted: Any,
+                default_chunk: int, acquire: Any) -> Any:
+        """A factory of async chunk iterators for `Connection.stream()`.
+
+        Called with the size SQLAlchemy asks for — `result.partitions(50)` fetches
+        fifty at a time — falling back to the `chunk=` the caller set.
+        """
+
+        async def chunks(size: int | None) -> AsyncIterator[list[Any]]:
+            wanted = size or default_chunk
+            if wanted < 1:
+                raise ConfigurationError(f"chunk must be at least 1, got {wanted}")
+            sql, bound = query.bind(params, extracted)
+            plan = query.entities
+            assert plan is not None  # _require_rows guarantees it
+            start = perf_counter() if self.observer is not None else 0.0
+            total = 0
+            async with acquire() as conn:
+                async for rows, description in self.driver.stream(
+                    conn, sql, bound, wanted, query
+                ):
+                    hydrate = query._hydrate
+                    if hydrate is None:
+                        hydrate = query.hydrator(self.dialect, description)
+                    total += len(rows)
+                    yield list(_result.rows_for(plan, hydrate(rows)))
+            self._observe(sql, start, total)
+
+        return chunks
 
     def _observe(self, sql: str, start: float, rows: int | None) -> None:
         """Hand one completed statement to the `observer`, if there is one.

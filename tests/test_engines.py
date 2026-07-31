@@ -290,9 +290,16 @@ class TestWrites:
         assert isinstance(rows[0], Author)
         assert (rows[0].name, rows[0].active) == ("frank", False)
 
-    async def test_execute_refuses_a_statement_that_returns_rows(self, engine):
-        with pytest.raises(ValueError, match="produces rows"):
-            await engine.execute(sa.select(Author))
+    async def test_execute_returns_a_sqlalchemy_result(self, engine):
+        result = await engine.execute(sa.select(Author).order_by(Author.id))
+        assert [a.name for a in result.scalars().all()] == ["ada", "brian", "carol", "dan"]
+
+    async def test_execute_reports_a_rowcount_for_a_write(self, engine):
+        result = await engine.execute(
+            sa.insert(Author.__table__).values(id=70, name="p", active=True)
+        )
+        assert result.rowcount == 1
+        assert result.returns_rows is False
 
     async def test_execute_many_with_no_rows_is_a_no_op(self, engine):
         assert await engine.execute_many(sa.insert(Tag.__table__), []) is None

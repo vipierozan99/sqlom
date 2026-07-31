@@ -40,8 +40,8 @@ class TestItLimits:
         assert "LIMIT" in seen[0].upper()
 
     async def test_inside_a_transaction_too(self, engine, rows_returned):
-        async with engine.transaction() as tx:
-            await tx.fetch_one(sa.select(Author))
+        async with engine.begin() as conn:
+            await conn.fetch_one(sa.select(Author))
         assert rows_returned == [1]
 
     async def test_an_offset_is_still_narrowed(self, engine, rows_returned):

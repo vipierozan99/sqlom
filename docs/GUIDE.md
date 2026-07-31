@@ -229,7 +229,7 @@ async with aclosing(engine.fetch_iter(sa.select(User), chunk=500)) as stream:
             break        # the connection is released at the end of this block
 ```
 
-Inside a transaction use `tx.fetch_iter`; on the engine it raises, for the same
+Inside a scope use `conn.fetch_iter`; on the engine it raises, for the same
 reason `fetch_all` does.
 
 One driver difference is visible: psycopg streams through a server-side
@@ -268,34 +268,35 @@ returns rows and `fetch_all()` refuses one that does not, so a `returning()` you
 forgot fails loudly instead of returning `[]`.
 
 ```python
-async with engine.transaction() as tx:
-    await tx.execute(sa.update(Account.__table__)...)
-    await tx.execute(sa.update(Account.__table__)...)
-    rows = await tx.fetch_all(sa.select(Account).where(...))
+async with engine.begin() as conn:
+    await conn.execute(sa.update(Account.__table__)...)
+    await conn.execute(sa.update(Account.__table__)...)
+    rows = await conn.fetch_all(sa.select(Account).where(...))
 
-    async with tx.transaction() as sp:      # a savepoint
-        await sp.execute(...)
+    async with conn.begin_nested():            # a savepoint
+        await conn.execute(...)
 ```
 
 Commits on clean exit, rolls back on any exception, nests as savepoints on every
-driver. Call `tx.*` inside the block — `engine.*` raises there, because it would
+driver. Call `conn.*` inside the block — `engine.*` raises there, because it would
 take a different pooled connection and miss the uncommitted writes.
 
-Postgres transaction options ride on the `BEGIN`:
+Options are SQLAlchemy's `execution_options`, so they are spelled once for every
+driver and what a backend honours is SQLAlchemy's answer:
 
 ```python
-async with engine.transaction(isolation="serializable", readonly=True) as tx:
+async with engine.begin(isolation_level="SERIALIZABLE") as conn:
+    ...
+async with engine.begin(postgresql_readonly=True) as conn:
     ...
 ```
-
-sqlite raises `UnsupportedError` for those rather than accepting them as no-ops.
 
 **Pipelining** is worth reaching for when the database is a network hop away:
 
 ```python
-async with engine.transaction() as tx, tx.pipeline():
+async with engine.begin() as conn, conn.pipeline():
     for row in rows:
-        await tx.execute(update, **row)
+        await conn.execute(update, **row)
 ```
 
 200 updates took 564 ms one at a time and 42 ms pipelined at 1 ms of latency —
@@ -539,13 +540,13 @@ nothing is tracked.
 
 | ORM | rowform |
 |---|---|
-| `session.scalars(select(User))` | `engine.fetch_all(sa.select(User))` |
+| `session.scalars(select(User))` | `engine.fetch_all(sa.select(User))`, or `engine.scalars(...)` for a `ScalarResult` |
 | `session.get(User, 1)` | `engine.fetch_one(sa.select(User).where(User.id == 1))` |
 | `session.add(user); await session.commit()` | `engine.execute(sa.insert(User.__table__).values(...))` |
 | `user.name = "x"; await session.commit()` | `engine.execute(sa.update(User.__table__).where(...).values(name="x"))` |
 | `user.posts` (lazy load) | `sa.select(User, Post).join(Post)`, written out |
 | `selectinload(User.posts)` | two statements, or one join and group in Python |
-| `session.begin()` | `engine.transaction()` |
+| `session.begin()` | `engine.begin()` |
 | `aliased(User)` | `rowform.alias(User, "x")` |
 
 Things that will bite in order of likelihood:

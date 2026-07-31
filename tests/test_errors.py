@@ -130,19 +130,28 @@ class TestConfigurationError:
 
 
 class TestStatementError:
-    async def test_execute_refuses_a_statement_that_returns_rows(self, engine):
-        with pytest.raises(rowform.StatementError, match="produces rows"):
-            await engine.execute(sa.select(Author))
+    async def test_execute_now_accepts_a_statement_that_returns_rows(self, engine):
+        """It used to refuse them, because it could only report a rowcount. On
+        the compatibility track it returns a `Result` like SQLAlchemy's, so the
+        rows are there to be taken."""
+        result = await engine.execute(sa.select(Author))
+        assert len(result.scalars().all()) == 4
 
     async def test_fetch_all_refuses_a_statement_that_returns_none(self, engine):
         statement = sa.insert(Author.__table__).values(id=9001, name="ada", active=True)
         with pytest.raises(rowform.StatementError, match="produces no rows"):
             await engine.fetch_all(statement)
 
-    async def test_transaction_execute_refuses_rows_too(self, engine):
-        async with engine.transaction() as tx:
-            with pytest.raises(rowform.StatementError, match="produces rows"):
-                await tx.execute(sa.select(Author))
+    async def test_a_write_result_refuses_to_be_read(self, engine):
+        """The inverse guard, and now SQLAlchemy's own error: a statement with no
+        result set gives a closed `Result`, so asking for its rows raises rather
+        than returning [] and reading as "nothing matched"."""
+        result = await engine.execute(
+            sa.insert(Author.__table__).values(id=9002, name="z", active=True)
+        )
+        assert result.rowcount == 1
+        with pytest.raises(sa.exc.ResourceClosedError):
+            result.all()
 
 
 # --------------------------------------------------------------------------
@@ -171,7 +180,7 @@ class TestPlanError:
 
 class TestEngineStateError:
     async def test_engine_read_inside_a_transaction(self, engine):
-        async with engine.transaction():
+        async with engine.begin():
             with pytest.raises(rowform.EngineStateError, match="different pooled connection"):
                 await engine.fetch_all(sa.select(Author))
 

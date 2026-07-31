@@ -94,8 +94,8 @@ class TestThePoolSurvives:
 
     async def test_a_cancellation_inside_a_transaction(self, engine, names):
         async def in_transaction():
-            async with engine.transaction() as tx:
-                await tx.fetch_value(slow_for(engine))
+            async with engine.begin() as conn:
+                await conn.fetch_value(slow_for(engine))
 
         await cancel_after(in_transaction)
         await assert_usable(engine, names)

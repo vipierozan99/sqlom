@@ -18,7 +18,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Generic, TypeVar
 
+from sqlalchemy.engine.result import SimpleResultMetaData
+
 from .compile import compile_hydrator
+from .errors import PlanError
 from .planner import Plan, plan
 
 _LOG = logging.getLogger("rowform")
@@ -34,6 +37,7 @@ class CoreQuery(Generic[R]):
         "_expanding",
         "_hydrate",
         "_keys",
+        "_metadata",
         "_plan",
         "_positional",
         "is_select",
@@ -63,6 +67,7 @@ class CoreQuery(Generic[R]):
         )
         self._plan: Plan | None = plan(statement) if _returns_rows(statement) else None
         self._hydrate: Any = None
+        self._metadata: Any = None
         #: A SELECT, as opposed to a write with RETURNING. Recorded because
         #: postgres will only `DECLARE` a cursor for the former, which decides
         #: whether `PsycopgEngine` can stream this statement at all.
@@ -74,6 +79,25 @@ class CoreQuery(Generic[R]):
     @property
     def returns_rows(self) -> bool:
         return self._plan is not None
+
+    @property
+    def result_metadata(self) -> Any:
+        """Column labels for `conn.execute()`'s `Result`, built once.
+
+        SQLAlchemy caches `CursorResultMetaData` on the compiled object for the
+        same reason (`docs/PLAN_CORE_COMPILER.md` §2a): it is a function of the
+        statement, not of the call, and constructing one per execute measured at
+        ~1.4 us where reusing one is free. Verified safe to share across results,
+        including with a `.mappings()` in between.
+        """
+        metadata = self._metadata
+        if metadata is None:
+            from .result import keys_for
+
+            if self._plan is None:
+                raise PlanError("this statement returns no rows; it has no result metadata")
+            metadata = self._metadata = SimpleResultMetaData(keys_for(self._plan))
+        return metadata
 
     @property
     def entities(self) -> Plan | None:

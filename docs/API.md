@@ -147,8 +147,8 @@ Raises `StatementError` if the statement returns no rows.
 
 The same rows, `chunk` at a time, through a cursor — see
 [Streaming](GUIDE.md#streaming-a-large-result). Not a coroutine: iterate it, do not
-await it. Same arity overloads. Raises `EngineStateError` inside a transaction (use
-`tx.fetch_iter`), `ConfigurationError` for `chunk < 1`, and on psycopg
+await it. Same arity overloads. Raises `EngineStateError` inside a scope (use
+`conn.fetch_iter`), `ConfigurationError` for `chunk < 1`, and on psycopg
 `UnsupportedError` for a statement postgres cannot `DECLARE` a cursor for.
 
 #### `await engine.fetch_one(statement, **params) -> T | None`
@@ -194,34 +194,37 @@ at the same `MetaData`.
 
 A raw driver connection, for anything the engine does not model — the same
 `driver_connection` every read and write runs on. Nothing is committed; use
-`transaction()` if the work needs to be.
+`begin()` if the work needs to be.
 
-#### `async with engine.transaction(**execution_options) as tx:`
+#### `async with engine.connect(bind=None, **execution_options) as conn:`
 
-One connection for the block: commits on clean exit, rolls back on any exception.
-Both are SQLAlchemy's `conn.begin()`, so every driver behaves alike.
+A connection scope — `AsyncEngine.connect()`. Commit-as-you-go: the first
+statement autobegins, and leaving without `commit()` rolls back.
 
-`execution_options` reach `AsyncConnection.execution_options()`, which is where
-isolation is spelled — `isolation_level="SERIALIZABLE"`,
-`postgresql_readonly=True`, `postgresql_deferrable=True`. What a backend will and
-will not honour is SQLAlchemy's answer, not a table maintained here.
-
-#### `tx = await engine.using(connection_or_session)`
-
-rowform's API on a connection somebody else owns — an `AsyncConnection` or an
-`AsyncSession`. Statements run on the same physical connection, so they see that
-transaction's uncommitted writes and roll back with it.
+`bind=` runs on a connection somebody else owns — an `AsyncConnection` or an
+`AsyncSession`. Statements then run on the same physical connection, so they see
+that transaction's uncommitted writes and roll back with it. rowform neither
+begins nor ends anything in that case, and for the same reason a bound scope does
+not register in `active_connection()`. A connection from a different driver is
+refused: the compiled SQL carries one paramstyle.
 
 ```python
 async with Session() as session, session.begin():
     session.add(AuditRow(...))                            # their ORM write
-    hot = await (await db.using(session)).fetch_all(sa.select(User))
+    async with db.connect(bind=session) as conn:
+        hot = await conn.fetch_all(sa.select(User))
 ```
 
-It commits nothing and rolls back nothing — the caller opened the transaction and
-ends it — and for the same reason it does not register in `active_transaction()`.
-A connection from a different driver is refused: the compiled SQL carries one
-paramstyle.
+#### `async with engine.begin(**execution_options) as conn:`
+
+The same, with a transaction already open: commits on clean exit, rolls back on
+any exception — `AsyncEngine.begin()`.
+
+`execution_options` reach `AsyncConnection.execution_options()`, which is where
+isolation is spelled: `isolation_level="SERIALIZABLE"`,
+`postgresql_readonly=True`, `postgresql_deferrable=True`. What a backend will and
+will not honour is SQLAlchemy's answer, not a table maintained here. They are
+refused alongside `bind=`, since that transaction is not rowform's to configure.
 
 ### `engine.prepare(statement) -> CoreQuery`
 
@@ -230,22 +233,49 @@ compile nor the cache-key lookup. Keeps the statement's row type.
 
 ---
 
-## `rowform.Transaction`
+## `rowform.Connection`
 
-Yielded by `engine.transaction()`. Runs `fetch_all`, `fetch_iter`, `fetch_one`,
-`fetch_value`, `execute` and `execute_many` with the same signatures as `Engine`,
-against this block's pinned connection.
+Yielded by `engine.connect()` and `engine.begin()`. Carries **two tracks**, told
+apart by name rather than by semantics.
+
+**The compatibility track** is SQLAlchemy's, to the letter — `execute()` returns a
+real `sqlalchemy.Result` built over rowform's hydrated rows, so `.scalars()`,
+`.mappings()`, `.tuples()`, `.unique()`, `Row` attribute access and
+`NoResultFound` are the upstream implementations rather than imitations:
 
 | | |
 |---|---|
-| `tx.transaction()` | a nested block, `begin_nested()`, i.e. a savepoint; takes no options |
-| `tx.depth` | 0 for the outermost, 1+ for savepoints |
-| `tx.connection` | the pinned driver connection |
-| `tx.sa_connection` | the `AsyncConnection` that owns the transaction |
-| `tx.execute("SQL string")` | also accepts raw SQL, for DDL and session state — no parameters, no escaping |
-| `tx.pipeline()` | psycopg only — see below |
+| `await conn.execute(stmt, parameters=None, **params)` | `Result`; a list of dicts is an executemany |
+| `await conn.scalar(stmt, ...)` / `await conn.scalars(stmt, ...)` | as `AsyncConnection` |
+| `await conn.stream(stmt, *, chunk=1000, ...)` | `AsyncResult` over a server cursor |
+| `await conn.stream_scalars(stmt, ...)` | `AsyncScalarResult` |
+| `await conn.exec_driver_sql(sql, parameters=None)` | a literal string on the driver |
+| `conn.begin()` / `conn.begin_nested()` | SQLAlchemy's `AsyncTransaction`, unwrapped |
+| `await conn.commit()` / `await conn.rollback()` / `await conn.close()` | |
+| `await conn.execution_options(**opts)` | |
+| `conn.in_transaction()` / `conn.in_nested_transaction()` / `conn.closed` | |
 
-### `async with tx.pipeline():`
+**The hot track** is rowform's: hydrated objects, no `Result`, no `Row`, no wrap.
+
+| | |
+|---|---|
+| `await conn.fetch_all(stmt, **params)` | `list[T]`, arity-overloaded as on `Engine` |
+| `await conn.fetch_one(stmt, **params)` | plus the `LIMIT 1` |
+| `await conn.fetch_value(stmt, **params)` | |
+| `conn.fetch_iter(stmt, *, chunk=1000, **params)` | `AsyncIterator[T]` |
+| `await conn.execute_many(stmt, params)` | the driver's report, not a `Result` |
+| `await conn.copy_in(table, rows, columns=None)` | postgres only |
+| `conn.pipeline()` | psycopg only — see below |
+| `conn.connection` / `conn.sa_connection` | the driver connection, and SQLAlchemy's |
+
+**What differs between them, and only this:** for a *single* selected entity
+`execute().all()` gives `[Row(User,)]` and `fetch_all()` gives `[User]`. At two or
+more the hydrator already produces tuples and the two agree. `execute()` costs one
+tuple per row at arity 1 (0.042 ms/1000) plus `Row` construction (0.09–0.15 ms/1000);
+`.scalars()` costs *more* than `.all()`, not less, because `ScalarResult` builds
+the rows and then extracts.
+
+### `async with conn.pipeline():`
 
 Statements go out without waiting for each result; the replies are collected when
 the block exits. Worth it only where the round trip is the cost: over 200 updates
@@ -261,10 +291,11 @@ and still rolls the transaction back.
 asyncpg and sqlite raise `UnsupportedError`: asyncpg exposes no such API, and
 sqlite is a local file with no round trip to hide.
 
-### `rowform.active_transaction() -> Transaction | None`
+### `rowform.active_connection() -> Connection | None`
 
-The innermost `Transaction` running in this task, from a `ContextVar`. This is what
-`engine.fetch_all()` consults in order to refuse to run inside a block.
+The innermost `Connection` scope open in this task, from a `ContextVar`. This is
+what `engine.fetch_all()` consults in order to refuse to run inside one. A scope
+opened with `bind=` does not register: its transaction belongs to the caller.
 
 ---
 
@@ -305,7 +336,7 @@ All inherit `RowformError`, and each also inherits the builtin it replaced.
 | `UnsupportedError` | `NotImplementedError` | the backend cannot express it at all |
 | `StatementError` | `ValueError` | right statement, wrong method |
 | `PlanError` | `ValueError` | the result's shape and the plan disagree |
-| `EngineStateError` | `RuntimeError` | an engine read inside `transaction()` |
+| `EngineStateError` | `RuntimeError` | an engine read inside `connect()`/`begin()` |
 
 Driver exceptions are **not** wrapped.
 

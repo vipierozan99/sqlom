@@ -66,11 +66,11 @@ class TestObserver:
         seen: list[tuple[str, float, int | None]] = []
         engine.observer = lambda *call: seen.append(call)
 
-        async with engine.transaction() as tx:
-            await tx.execute(
+        async with engine.begin() as conn:
+            await conn.execute(
                 sa.insert(Author.__table__).values(id=7201, name="ken", active=True)
             )
-            await tx.fetch_all(sa.select(Author))
+            await conn.fetch_all(sa.select(Author))
 
         assert len(seen) == 2
 

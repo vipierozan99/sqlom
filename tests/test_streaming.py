@@ -169,21 +169,21 @@ class TestConnectionHandling:
     async def test_it_is_refused_on_the_engine_inside_a_transaction(self, engine):
         """Same reason `fetch_all` is: it would take a different pooled connection
         and miss the transaction's uncommitted writes."""
-        async with engine.transaction():
+        async with engine.begin():
             with pytest.raises(rowform.EngineStateError, match="fetch_iter"):
                 await collect(engine.fetch_iter(sa.select(Author)))
 
     async def test_streaming_inside_a_transaction_sees_its_writes(self, engine):
-        async with engine.transaction() as tx:
-            await tx.execute(
+        async with engine.begin() as conn:
+            await conn.execute(
                 sa.insert(Author.__table__).values(id=8001, name="uncommitted", active=True)
             )
-            names = [a.name async for a in tx.fetch_iter(sa.select(Author), chunk=2)]
+            names = [a.name async for a in conn.fetch_iter(sa.select(Author), chunk=2)]
         assert "uncommitted" in names
 
     async def test_a_savepoint_can_stream_too(self, engine):
-        async with engine.transaction() as tx, tx.transaction() as sp:
-            rows = await collect(sp.fetch_iter(sa.select(Author), chunk=2))
+        async with engine.begin() as conn, conn.begin_nested():
+            rows = await collect(conn.fetch_iter(sa.select(Author), chunk=2))
         assert rows
 
 
@@ -227,11 +227,11 @@ class TestStatementsItRefuses:
         """
         async with rowform.PsycopgEngine(pg_dsn) as db:
             await seed(db)
-            async with db.transaction() as tx:
-                outer = tx.fetch_iter(sa.select(Author).order_by(Author.id), chunk=1)
+            async with db.begin() as conn:
+                outer = conn.fetch_iter(sa.select(Author).order_by(Author.id), chunk=1)
                 try:
                     async for _first in outer:
-                        inner = await collect(tx.fetch_iter(sa.select(Author), chunk=1))
+                        inner = await collect(conn.fetch_iter(sa.select(Author), chunk=1))
                         assert inner
                         break
                 finally:

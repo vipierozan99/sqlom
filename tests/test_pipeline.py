@@ -1,4 +1,4 @@
-"""`tx.pipeline()`: statements go out without waiting for each result.
+"""`conn.pipeline()`: statements go out without waiting for each result.
 
 Worth having only where the round trip is the cost, and the measurement says so
 plainly. Over 200 updates: on loopback, pipelining is *slower* than issuing them
@@ -34,9 +34,9 @@ class TestItWorks:
         update = sa.update(Author.__table__).where(Author.id == sa.bindparam("i")).values(
             name=sa.bindparam("n")
         )
-        async with psycopg_engine.transaction() as tx, tx.pipeline():
+        async with psycopg_engine.begin() as conn, conn.pipeline():
             for i in (1, 2, 3):
-                await tx.execute(update, i=i, n=f"piped-{i}")
+                await conn.execute(update, i=i, n=f"piped-{i}")
 
         rows = await psycopg_engine.fetch_all(
             sa.select(Author).where(Author.id.in_([1, 2, 3])).order_by(Author.id)
@@ -53,8 +53,8 @@ class TestItWorks:
             pass
 
         with pytest.raises(Boom):
-            async with psycopg_engine.transaction() as tx, tx.pipeline():
-                await tx.execute(
+            async with psycopg_engine.begin() as conn, conn.pipeline():
+                await conn.execute(
                     sa.update(Author.__table__).values(name="clobbered")
                 )
                 raise Boom
@@ -69,25 +69,25 @@ class TestItWorks:
         """The error surfaces when the pipeline synchronises rather than at the
         statement — but it does surface."""
         with pytest.raises(Exception) as caught:
-            async with psycopg_engine.transaction() as tx, tx.pipeline():
-                await tx.execute(
+            async with psycopg_engine.begin() as conn, conn.pipeline():
+                await conn.execute(
                     sa.insert(Author.__table__).values(id=1, name="dupe", active=True)
                 )
         assert not isinstance(caught.value, rowform.RowformError)  # the driver's own
 
     async def test_reads_still_work_inside_one(self, psycopg_engine):
-        async with psycopg_engine.transaction() as tx, tx.pipeline():
-            rows = await tx.fetch_all(sa.select(Author).order_by(Author.id))
+        async with psycopg_engine.begin() as conn, conn.pipeline():
+            rows = await conn.fetch_all(sa.select(Author).order_by(Author.id))
         assert rows
 
 
 class TestWhereThereIsNone:
     async def test_sqlite_refuses(self, sqlite_engine):
-        async with sqlite_engine.transaction() as tx:
+        async with sqlite_engine.begin() as conn:
             with pytest.raises(rowform.UnsupportedError, match="no pipeline mode"):
-                tx.pipeline()
+                conn.pipeline()
 
     async def test_asyncpg_refuses(self, pg_engine):
-        async with pg_engine.transaction() as tx:
+        async with pg_engine.begin() as conn:
             with pytest.raises(rowform.UnsupportedError, match="no pipeline mode"):
-                tx.pipeline()
+                conn.pipeline()

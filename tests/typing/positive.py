@@ -148,10 +148,11 @@ async def streams() -> None:
         assert_type(hoisted_author, Author)
 
 
-async def transactions() -> None:
-    async with engine.transaction() as tx:
-        assert_type(tx.depth, int)
-        assert_type(rf.active_transaction(), "rf.Transaction | None")
+async def scopes() -> None:
+    async with engine.begin() as conn:
+        assert_type(conn.in_transaction(), bool)
+        assert_type(rf.active_connection(), "rf.Connection | None")
+        assert_type(await conn.fetch_all(sa.select(Author)), list[Author])
 
 
 # --- schema surface --------------------------------------------------------
