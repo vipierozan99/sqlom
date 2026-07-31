@@ -1,8 +1,8 @@
-"""Contenders for `bench micro` (PLAN.md §7 tiers 2-3), one function each.
+"""Contenders for `bench micro`, one function each.
 
 Every function has the same shape: `async def f(init: ContenderInit) ->
 tuple[Target, Teardown]`. `target()` runs one unit of work and returns
-response-ready JSON bytes (for the equivalence gate — PLAN.md §4); `teardown()`
+response-ready JSON bytes (for the equivalence gate); `teardown()`
 releases whatever the factory opened. `@contender(...)` is typed against exactly
 that shape, so a factory that takes the wrong argument or returns the wrong thing
 is a type error at the decorator rather than a runtime surprise.
@@ -10,7 +10,7 @@ is a type error at the decorator rather than a runtime surprise.
 **What is being compared changed with the rewrite.** "rowform vs SQLAlchemy Core"
 is incoherent now that Core *is* the SQL generator on both sides — the same
 `select()` compiles to the same string for every contender here. What remains,
-and what this file is organised around (docs/PLAN_CORE_COMPILER.md §8 P4c):
+and what this file is organised around:
 
 * **vs the stock Core result layer** — `Row`/`CursorResult` against a compiled
   hydrator over the same driver. This is the headline claim now, not a footnote.
@@ -135,8 +135,8 @@ def wide_stmt(limit: int, model: Any = Event) -> Any:
 # This is not a style choice. A generic `{f: v for f, v in zip(fields, row)}`
 # builder costs a zip, a per-field lookup and a membership test per column, and
 # the first version of this file used one everywhere — which made the "true
-# floor" *slower than rowform*, tripping PLAN.md §4's own tripwire ("when
-# rowform appeared to beat the floor, that was the tripwire"). A floor must do
+# floor" *slower than rowform*, tripping the suite's own tripwire: rowform
+# appearing to beat the floor is always a bug in the floor. A floor must do
 # strictly less work than every contender, and shared helper code that quietly
 # does more is exactly how it stops doing so.
 #
@@ -280,7 +280,7 @@ async def flat_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Tear
     it was bounding. Measuring both a dicts-only floor and a floor running the
     *same* hydrator separates "what does the engine cost" from "what does row
     construction cost", which is the only way either number means anything
-    (docs/PLAN_CORE_COMPILER.md §2f, METHODOLOGY correction 10).
+.
     """
     import aiosqlite
 
@@ -324,8 +324,8 @@ async def flat_sa_core_positional(init: ContenderInit) -> tuple[Target, Teardown
 async def flat_sa_core_mappings(init: ContenderInit) -> tuple[Target, Teardown]:
     """`.mappings()` yields `RowMapping`s keyed by `quoted_name` (a `str` subclass
     orjson refuses), so every row pays a `str()` cast per key — kept registered
-    alongside the positional variant rather than "corrected away" (PLAN.md §4:
-    "price any workaround one contender needs")."""
+    alongside the positional variant rather than "corrected away", because a
+    workaround one contender needs has to be priced, not hidden."""
     engine = create_async_engine(_sa_dsn(init.handle))
     stmt = flat_stmt(init.limit)
 
@@ -346,7 +346,7 @@ async def flat_sa_core_mappings(init: ContenderInit) -> tuple[Target, Teardown]:
 async def flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     """Fresh `Session` per request, bound to a per-request connection: hoisting
     the `Session` would let its identity map skip hydration on every request
-    after the first (PLAN.md §4: "audit what is inside each timed region")."""
+    after the first — what is inside each timed region gets audited."""
     engine = create_async_engine(_sa_dsn(init.handle))
     stmt = flat_stmt(init.limit, UserORM)
 

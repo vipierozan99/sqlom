@@ -414,7 +414,7 @@ class TestGuards:
     def test_metaclass_conflict_is_real_and_documented(self):
         """R10: every model carries ModelMeta, so combining with ABC or Protocol
         raises. Accepted rather than worked around — a decorator would compose
-        freely, but the decorator route erases field types (§5b)."""
+        freely, but the decorator route erases field types."""
         Scratch = make_base()
 
         with pytest.raises(TypeError, match="metaclass conflict"):

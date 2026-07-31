@@ -1,4 +1,4 @@
-"""Ephemeral Postgres via docker (PLAN.md D6): `--network host` avoids the
+"""Ephemeral Postgres via docker: `--network host` avoids the
 unpinned docker-proxy userspace hop that would confound loopback latency
 measurements; `--cpuset-cpus` covers every backend from birth, structurally
 removing the "pin before the pool opens" hazard `docs/METHODOLOGY.md` warns

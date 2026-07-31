@@ -1,4 +1,4 @@
-"""`MockEngine`: the row layer's floor, with zero driver cost (PLAN.md D8/D9, §7).
+"""`MockEngine`: the row layer's floor, with zero driver cost.
 
 Every rowform engine touches its driver through exactly one hook:
 

@@ -1,5 +1,5 @@
 """uvicorn launcher: one single-worker uvicorn subprocess per worker, each
-pinned via `taskset` before the process image is even loaded (PLAN.md §5/§9).
+pinned via `taskset` before the process image is even loaded.
 
 Deliberately not uvicorn's own `--workers`: that forks worker processes from
 one supervisor, which means affinity would have to be set *after* the fork —
@@ -121,8 +121,7 @@ async def _wait_ready(workers: list[ServiceWorker], timeout: float = 30.0) -> No
 
 
 def read_back_affinity(workers: list[ServiceWorker]) -> dict[int, list[int]]:
-    """Actual kernel-reported masks per worker pid (PLAN.md §4: "records
-    actual masks" — never trust the requested cpuset as evidence it took
-    effect). `taskset` execs into the same pid, so `proc.pid` is still correct
+    """Actual kernel-reported masks per worker pid — never trust the requested
+    cpuset as evidence it took effect. `taskset` execs into the same pid, so `proc.pid` is still correct
     to read back from."""
     return {worker.proc.pid: read_back(worker.proc.pid) for worker in workers}

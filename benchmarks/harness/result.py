@@ -1,10 +1,10 @@
-"""Run/Cell/Trial result schema + writer (PLAN.md §6).
+"""Run/Cell/Trial result schema + writer.
 
 One JSON per run at `results/runs/<run_id>/run.json`, plus an append-only
 `results/runs/index.jsonl`. `schema_version`/`invocation`/`git.sha` exist so a
 run can be trusted or challenged later — `results/README.md` records three
 older JSON sweeps deleted precisely because the then-current code could no
-longer reproduce them (PLAN.md §6).
+longer reproduce them.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ class Cell:
 
     def summarize(self, keys: list[str]) -> None:
         """Fill `summary` with median/min/max/spread_pct per metric key
-        (PLAN.md §4: "medians + spread"). Call after all trials are in."""
+        — medians and spread, never one alone. Call after all trials are in."""
         summary = {}
         for key in keys:
             values = [t.metrics[key] for t in self.trials if key in t.metrics]
@@ -70,7 +70,7 @@ class Run:
     def quotable(self) -> bool:
         """False if the tree was dirty, isolation wasn't one-contender-per-
         process for a multi-cell run, the equivalence gate was skipped or
-        failed, or any audit gate tripped (PLAN.md §6) — makes "the combined
+        failed, or any audit gate tripped — makes "the combined
         suite is for a quick side-by-side, never for publication" mechanical."""
         if self.git.get("dirty"):
             return False
@@ -91,7 +91,7 @@ class Run:
 
 def make_run_id(suite: str, git_sha: str | None, timestamp: str) -> str:
     """`<timestamp>_<suite>_<short-sha>` — sortable, greppable, matches the
-    PLAN.md §6 example (`2026-07-29T11-40-00Z_pg-load_a1b2c3d`)."""
+    e.g. `2026-07-29T11-40-00Z_pg-load_a1b2c3d`."""
     short = (git_sha or "nogit")[:7]
     return f"{timestamp}_{suite}_{short}"
 

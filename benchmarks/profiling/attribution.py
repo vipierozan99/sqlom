@@ -1,6 +1,6 @@
 """Ported from the old `benchmarks/profkit.py`, plus the impossible-row
-tripwire (PLAN.md §4: "an impossible-by-construction row must read zero —
-asserted, not eyeballed").
+tripwire: an impossible-by-construction row must read zero, asserted rather than
+eyeballed.
 
 Extracted so the sqlite and Postgres profilers cannot drift apart on how they
 attribute frames — one of them already did, silently: `profkit.py:1-7`
@@ -89,7 +89,7 @@ def top_functions(stats, n: int) -> list[tuple[int, float, float, str]]:
     return rows[:n]
 
 
-# --- the impossible-row tripwire (PLAN.md §4) --------------------------------
+# --- the impossible-row tripwire --------------------------------
 
 # Contenders that never import rowform at all — profiling one of them must
 # show exactly 0.0% in the rowform categories, or frame attribution has a bug

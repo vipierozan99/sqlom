@@ -1,4 +1,4 @@
-"""`bench env [check]` (PLAN.md §9, phase-1 gate)."""
+"""`bench env [check]`."""
 
 from __future__ import annotations
 

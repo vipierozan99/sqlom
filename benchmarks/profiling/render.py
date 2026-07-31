@@ -1,5 +1,5 @@
 """Normalise cProfile/yappi output to speedscope JSON + folded stacks
-(PLAN.md §10). pyinstrument, py-spy and austin all produce speedscope
+. pyinstrument, py-spy and austin all produce speedscope
 directly through their own tooling (see their adapter modules) — this module
 is the generic converter for the two that don't.
 

@@ -11,7 +11,7 @@ what genuinely differs between drivers:
 
 **Why rowform's pool rather than SQLAlchemy's.** Hoisting the connection out of
 the timed region and then putting it back costs SQLAlchemy's pool ~0.18 ms per
-request against ~0.03–0.08 ms here (docs/PLAN_CORE_COMPILER.md §2g). Core
+request against ~0.03–0.08 ms here. Core
 compiles; this runs it.
 """
 

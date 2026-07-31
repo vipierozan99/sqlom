@@ -1,10 +1,10 @@
-"""cProfile adapter (PLAN.md §10): instrumented, CPU clock
+"""cProfile adapter: instrumented, CPU clock
 (`process_time_ns`), whole-loop — no native per-coroutine breakdown, that is
 yappi's job. Keeps its CPU timer deliberately: a wall profile of an asyncio
 loop is dominated by `epoll_wait`.
 
 Known bias to preserve, never resolve by picking the flattering number:
-cProfile's per-call overhead inflates call-heavy Python (PLAN.md §10).
+cProfile's per-call overhead inflates call-heavy Python.
 """
 
 from __future__ import annotations

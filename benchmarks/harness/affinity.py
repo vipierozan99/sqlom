@@ -1,6 +1,6 @@
-"""`CorePlan`: physical-core aware CPU pinning (PLAN.md §4, §13 D13).
+"""`CorePlan`: physical-core aware CPU pinning.
 
-PLAN.md §3 records the finding this exists to prevent: on the reference
+The finding this exists to prevent: on the reference
 machine, `cpu0`/`cpu1` are SMT siblings of *one* physical core, not two
 independent ones, and the old suite's shell scripts pinned server and
 generator to adjacent indices assuming otherwise. Reasoning in physical cores
@@ -106,7 +106,7 @@ def set_affinity(pid: int, cpus: list[int]) -> None:
 
 def read_back(pid: int) -> list[int]:
     """The actual mask the kernel has for `pid`, read back rather than
-    trusted — PLAN.md §4: "records actual masks.\""""
+    trusted, since only the actual mask is evidence."""
     return sorted(os.sched_getaffinity(pid))
 
 
@@ -122,8 +122,8 @@ def pin_current_process(cpus: list[int]):
     requested to pin to).
 
     Yields the actual mask read back after setting it (`None` if `cpus` was
-    empty) rather than `cpus` itself — PLAN.md §4: "records actual masks,"
-    not the request, since the kernel is free to reject/adjust it.
+    empty) rather than `cpus` itself — the actual mask, not the request, since the
+    kernel is free to reject or adjust it.
     """
     if not cpus:
         yield None

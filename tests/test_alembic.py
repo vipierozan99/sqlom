@@ -1,6 +1,6 @@
 """Alembic works off `Base.metadata`, with no DeclarativeBase involved.
 
-This is the motivation for the whole design (docs/PLAN_CORE_COMPILER.md §1, R3):
+This is the motivation for the whole design:
 DDL, reflection and migrations are large, mature, and already written. If
 autogenerate did not work against a metaclass-built `MetaData`, there would be no
 reason to depend on SQLAlchemy at all.

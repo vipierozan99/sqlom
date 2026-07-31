@@ -1,4 +1,4 @@
-"""`bench micro run` (PLAN.md §9, phase-3 gate).
+"""`bench micro run`.
 
 Pure in-process micro benchmarks: one contender per shape/backend, gated by
 output equivalence before any timing starts.
@@ -59,13 +59,13 @@ def run(
     warmup: int = typer.Option(100, help="untimed iterations before measurement"),
     only: str | None = typer.Option(None, help=registry.ONLY_HELP),
     gc: str = typer.Option(
-        "off", help="'on', 'off', or 'both' (PLAN.md §4: GC is a first-order effect)"
+        "off", help="'on', 'off', or 'both'"
     ),
     pin: str | None = typer.Option(
-        "6,7,8,9", "--pin", help="comma-separated logical CPUs to pin this process to (PLAN.md D13)"
+        "6,7,8,9", "--pin", help="comma-separated logical CPUs to pin this process to"
     ),
     record: bool = typer.Option(
-        False, "--record", help="write a run.json under results/runs/ (PLAN.md §6)"
+        False, "--record", help="write a run.json under results/runs/"
     ),
     pg_dsn: str | None = typer.Option(
         None,
@@ -90,7 +90,7 @@ def run(
 async def _mock_handle(shape: str, limit: int) -> list[tuple]:
     """Real rows sourced from a throwaway sqlite db, once, at setup — the
     driver term is paid only here, never inside a MockEngine contender's
-    timed `request()` (PLAN.md D8/D9)."""
+    timed `request()`."""
     import aiosqlite
 
     db = EphemeralSqlite.create(shape, max(limit * 2, 200))
@@ -197,7 +197,7 @@ async def _run(
                     # Recorded run.json covers the first backend group with
                     # passing equivalence (typically "sqlite") — mock/other
                     # groups still print above but aren't persisted, keeping the
-                    # recorded schema to one equivalence block (PLAN.md §6).
+                    # recorded schema to one equivalence block.
                     record_this_group = record and recorded_backend is None
                     if record_this_group:
                         recorded_backend = backend

@@ -3,8 +3,7 @@
 `shapes/flat.py` is `int/str/str/bool`, and every published figure came from it.
 That is the one layout where bypassing SQLAlchemy's `Row` looks free on sqlite:
 the only column needing conversion is a boolean, which a single `bool()` call
-covers. docs/PLAN_CORE_COMPILER.md §7 R1 flagged this as the plan's most likely
-disqualifier, and measuring a widened shape showed 8 of 13 columns coming back
+covers. Measuring a widened shape showed 8 of 13 columns coming back
 wrong without the right per-column processor — temporal types as strings,
 `Numeric` as float, `Enum` as its member name, `Uuid` as hex, `JSON` as text.
 

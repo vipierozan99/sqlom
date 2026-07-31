@@ -3,8 +3,8 @@ accumulates a time series a caller can dump to JSON or summarise — silently;
 nothing is printed per sample, only `print_averages()` at the end of a run
 prints anything, so a `bench load` run's own progress output isn't
 interleaved with a line every second. This is the finer-grained, continuously
-*recorded* version of the same `/proc/<pid>/stat` read PLAN.md §4 asks for
-("record utilization, not just throughput") — `load/audit.py` still computes
+*recorded* version of the same `/proc/<pid>/stat` read that makes utilization a
+recorded metric rather than throughput alone — `load/audit.py` still computes
 its own once-per-level utilization for the Little's Law gate; this is the
 whole-run companion to that.
 """

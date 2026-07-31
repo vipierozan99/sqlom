@@ -1,4 +1,4 @@
-"""Contender registry — the single most valuable consolidation in PLAN.md §5.
+"""Contender registry — every contender defined exactly once.
 
 The old suite defined `Query(User).where(...)` ~10 times and the SA Core
 `.mappings()` idiom ~7 times, one of which carried a verbatim-duplicated 8-line

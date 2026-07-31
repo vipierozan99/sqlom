@@ -1,1 +1,1 @@
-"""Load generators and the concurrency/headroom audit (PLAN.md §5/§11)."""
+"""Load generators and the concurrency/headroom audit."""

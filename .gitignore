@@ -8,6 +8,6 @@ dist/
 .mypy_cache/
 .serena
 
-# PLAN.md D15: bench results/runs/ are ephemeral, gitignored on main; `bench
-# record` commits chosen artifacts to a dated branch instead.
+# bench results/runs/ are ephemeral; `bench record` commits chosen artifacts to a
+# dated branch instead.
 benchmarks/results/runs/

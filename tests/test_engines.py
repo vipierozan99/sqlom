@@ -138,7 +138,7 @@ class TestFetchAll:
 
 
 class TestStatementMatrix:
-    """§8 P3's matrix, end to end against real rows."""
+    """The planner matrix, end to end against real rows."""
 
     async def test_select_model(self, engine):
         rows = await engine.fetch_all(sa.select(Author).order_by(Author.id))

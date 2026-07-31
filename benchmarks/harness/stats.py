@@ -1,5 +1,5 @@
-"""Medians, spread, and tie-grouping — PLAN.md §4: "medians + spread; group
-ties instead of ranking." Consolidates two duplicate percentile implementations
+"""Medians, spread, and tie-grouping: report both, and group ties instead of
+ranking them. Consolidates two duplicate percentile implementations
 and the `summarize()`/`print_table()` pair that only differed in column widths.
 """
 
@@ -37,8 +37,7 @@ def percentiles(values: Sequence[float], ps: Sequence[float] = (50, 95, 99)) -> 
 
 def spread_pct(values: Sequence[float]) -> float:
     """`(max - min) / median * 100` over **one value per trial** — the
-    trial-to-trial reproducibility figure carried on every result (PLAN.md §6
-    `spread_pct`, `docs/BENCHMARKS.md`'s "±14% between runs").
+    trial-to-trial reproducibility figure carried on every result.
 
     Not for raw within-run samples: as a full range it grows with sample count
     (E[max-min] ~= 6.5σ at n=1000 for a Gaussian, ~7.7σ at n=10000), so on a
@@ -138,7 +137,7 @@ def ratio_with_spread(numerator_trials: Sequence[float], denominator_trials: Seq
                        threshold_pct: float = DEFAULT_TIE_THRESHOLD_PCT) -> dict[str, float | bool]:
     """`numerator / denominator` on medians, bracketed by the worst-case
     interval the observed trials allow (`low`/`high`), with a `tie` flag — the
-    shape recorded in every `ratios[]` entry (PLAN.md §6).
+    shape recorded in every `ratios[]` entry.
 
     `tie` is true when that interval contains 1.0, i.e. when the trials do not
     order the two contenders at all, or when the medians are within
