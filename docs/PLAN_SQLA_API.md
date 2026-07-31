@@ -1,7 +1,9 @@
 # SQLAlchemy compatibility
 
-Status: **proposal**. Nothing here is implemented. §2 is measured; everything
-after it is analysis.
+Status: **Option B implemented** — rowform no longer pools. `rf.Engine` wraps an
+`AsyncEngine`; §2 is the measurement it was decided on, §8 is what building it
+turned up. Option A (§6's renames — `Result`, `scalars()`, `stream()`) is **not**
+implemented and remains open.
 
 ## 0. The goal
 
@@ -32,10 +34,10 @@ cannot share a transaction with one, and every knob (pre-ping, recycle, events,
 layer over a connection somebody else owns:
 
 ```python
-engine = create_async_engine("postgresql+asyncpg://localhost/app")   # theirs
+sa_engine = create_async_engine("postgresql+asyncpg://localhost/app")   # theirs
+db = rf.Engine(sa_engine)                                               # ours
 
-async with engine.connect() as conn:
-    users = await rf.fetch_all(conn, sa.select(User).where(User.id > 100))
+users = await db.fetch_all(sa.select(User).where(User.id > 100))
 ```
 
 Option B satisfies §0 by construction, and the API question mostly dissolves: the
@@ -137,8 +139,8 @@ server on this box) and it is the arm that matters most — see §5.1.
 
 ### 2e. A correctness bonus, also verified
 
-`rf.SqliteEngine.dialect` is a freshly constructed dialect that has never seen a
-server: `server_version_info=None`, `default_schema_name=None`. The dialect on a
+`rf.SqliteEngine.dialect` (as it was) is a freshly constructed dialect that has
+never seen a server: `server_version_info=None`, `default_schema_name=None`. The dialect on a
 live `AsyncEngine` has been through `initialize()`: `server_version_info=(3, 45,
 1)`, `default_schema_name='main'`. Compiling against the engine's dialect is
 therefore strictly more faithful than what rowform does today, and on postgres —
@@ -160,28 +162,26 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 import rowform as rf
 
-engine = create_async_engine("postgresql+asyncpg://localhost/app", pool_size=10)
-Session = async_sessionmaker(engine)
+sa_engine = create_async_engine("postgresql+asyncpg://localhost/app", pool_size=10)
+db = rf.Engine(sa_engine)
+Session = async_sessionmaker(sa_engine)
 
 # a plain read
-async with engine.connect() as conn:
-    users = await rf.fetch_all(conn, sa.select(User).where(User.name.like("a%")))
+users = await db.fetch_all(sa.select(User).where(User.name.like("a%")))
 
 # inside somebody else's transaction — the point of the whole exercise
 async with Session() as session, session.begin():
     session.add(OrmAuditRow(...))                       # their ORM, their write
-    hot = await rf.fetch_all(session, sa.select(User))  # our rows, their transaction
+    hot = await (await db.using(session)).fetch_all(sa.select(User))
 
 # streaming, still a real server-side cursor
-async with engine.connect() as conn:
-    async for user in rf.fetch_iter(conn, sa.select(User), chunk=500):
-        ...
+async for user in db.fetch_iter(sa.select(User), chunk=500):
+    ...
 ```
 
-`fetch_all` accepts an `AsyncConnection`, an `AsyncSession` (via
-`await session.connection()`), or a raw driver connection. Which driver it is
-comes from `conn.engine.dialect.driver` — a dict lookup replacing today's
-three engine classes.
+`using()` accepts an `AsyncConnection` or an `AsyncSession` (via
+`await session.connection()`). Which driver is in play comes from
+`dialect.driver` — a dict lookup replacing the three engine classes.
 
 ### What survives, unchanged
 
@@ -294,17 +294,59 @@ flat benchmark), or keep rowform's unwrapping and implement `.scalars()` /
 then only bites code that indexes a 1-tuple.
 
 ---
-
 ## 7. Phasing
 
-1. **Port §2's ablation to postgres, both drivers.** → verify: §5.1 and §5.2
-   answered with numbers, `conditional_reset`'s fate decided.
-2. **`rf.fetch_all(conn, stmt)` over an `AsyncConnection`**, driver dispatched
-   from the dialect, statement cache keyed per engine. Additive; the existing
-   engines keep working. → verify: a new suite arm running every existing read
-   test inside a stock `AsyncSession` transaction.
-3. **`Result` / `ScalarResult` / `AsyncResult`** and the §6 renames.
-4. **Retire the engine's pool half** (§3's deletion table), or demote it to an
-   opt-in provider per §5.4.
-5. **Benchmarks and docs**: report both connection sources; restate the headline
-   claim honestly (§5.3).
+1. ~~Port §2's ablation to postgres~~ — **not done**, no server available; §5.1
+   stands open and is the first thing to run where one exists.
+2. **Done.** `rf.Engine(sa_engine)`, driver dispatched from the dialect,
+   `using()` for a caller's connection or session. Verified by `test_using.py`:
+   reads inside `conn.begin()` and inside an `AsyncSession` see uncommitted
+   writes and roll back with them.
+3. `Result` / `ScalarResult` / `AsyncResult` and the §6 renames — **open**.
+4. **Done.** §3's deletion table is applied. §5.4's "keep the pool as an opt-in
+   provider" was *not* taken, on the explicit call that the checkout cost is
+   worth the deletion.
+5. Docs done. **Benchmarks re-run but not re-published**: the README table
+   predates this, and its rowform arms now pay SQLAlchemy's checkout. §5.3 stands.
+
+---
+
+## 8. What building it turned up
+
+Two silent-wrongness bugs, both caught by the existing suite, both inherent to
+executing on a connection SQLAlchemy pooled rather than one rowform opened.
+
+**8a. A one-shot write was discarded on two drivers of three.** `execute()` ran on
+a connection from `AsyncEngine.connect()`, and a statement run straight on the
+driver connection sits inside whatever transaction *that driver* opened for it —
+pysqlite's implicit BEGIN, psycopg's transactional connection. The pool resets with
+a rollback on release, so the write vanished. Only asyncpg, being autocommit, would
+have committed. rowform's own sqlite pool used `isolation_level=None`, which is why
+this could not happen before.
+
+Fixed by running writes through `sa_engine.begin()`
+(`Engine._checkout(commit=True)`), so all three agree, on the safe answer.
+
+**8b. Savepoints were silently wrong on sqlite.** pysqlite opens a transaction
+before DML but not before a `SAVEPOINT`, so the savepoint SQLAlchemy issues for
+`begin_nested()` landed outside the transaction the following INSERT opened, and
+rolling the outer block back left the inner block's rows behind — measured, 5 rows
+where 4 were expected. This is SQLAlchemy's own documented pysqlite caveat, and its
+documented recipe (`isolation_level=None` on connect plus an explicit `BEGIN` on
+the `begin` event) fixes it. `SqliteDriver.configure()` registers it when an
+aiosqlite engine is wrapped — the failure is silent, so opting in was the wrong
+default.
+
+Both are the concrete form of §5.2, which predicted the *direction* — "autocommit
+semantics diverge across drivers" — and named psycopg. It did not predict that
+sqlite was affected too, or that savepoints were a second, separate case.
+
+One thing had to be kept rather than inherited: **cancellation**. A cancelled
+aiosqlite read leaves its statement running in a worker thread, and SQLAlchemy's
+pool hands the connection straight to the next borrower. `Driver.on_cancelled`
+survives from the old pool for exactly that; asyncpg and psycopg need nothing.
+
+And one removal worth naming: **`pool_stats()` is gone**, with `PoolStats`. It
+described rowform's pool. SQLAlchemy's is `engine.sa_engine.pool.status()` — which
+costs the one number psycopg's pool reported and SQLAlchemy's does not, the count
+of callers *waiting* for a connection.

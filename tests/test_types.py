@@ -138,7 +138,7 @@ async def test_the_ddl_and_the_data_agree(sqlite_engine):
     """Reflection reads back the table `create_all` wrote, which is the same
     declaration the hydrator was planned from."""
     reflected = sa.MetaData()
-    engine = sa.create_engine(f"sqlite:///{sqlite_engine.path}")
+    engine = sa.create_engine(sqlite_engine.sa_engine.url.set(drivername="sqlite"))
     try:
         with engine.connect() as conn:
             reflected.reflect(bind=conn)

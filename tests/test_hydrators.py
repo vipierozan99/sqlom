@@ -14,11 +14,12 @@ import datetime as dt
 import pytest
 import sqlalchemy as sa
 from conftest import Author, Book, Wide
+from sqlalchemy.dialects.sqlite import aiosqlite
 from sqlalchemy.orm import Mapped
 
 import rowform as rf
 
-SQLITE = rf.SqliteEngine(":memory:").dialect
+SQLITE = aiosqlite.dialect()
 
 
 def build(statement, dialect=SQLITE):

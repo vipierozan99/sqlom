@@ -14,10 +14,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import rowform as rf
+from sqlalchemy.dialects.sqlite import aiosqlite
+
 from benchmarks.harness import seed as seed_module
 
-_DIALECT = rf.SqliteEngine.dialect
+_DIALECT = aiosqlite.dialect()
 
 
 @dataclass(slots=True)

@@ -28,13 +28,16 @@ import datetime as dt
 import decimal
 import enum
 import os
+import re
 import socket
 import sys
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import Mapped
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -208,47 +211,72 @@ def pg_dsn(request):
 # --------------------------------------------------------------------------
 
 
+def sqlite_url(path: str) -> str:
+    return f"sqlite+aiosqlite:///{path}"
+
+
+def pg_url(dsn: str, driver: str = "asyncpg") -> str:
+    """`postgresql://...?sslmode=disable` -> the URL a SQLAlchemy dialect wants.
+
+    The query string goes too: `sslmode` is libpq's spelling, which asyncpg's
+    dialect does not accept as a URL parameter.
+    """
+    return re.sub(r"^postgresql://", f"postgresql+{driver}://", dsn).split("?")[0]
+
+
+@asynccontextmanager
+async def engine_at(url: str, **kwargs):
+    """An `rf.Engine` over a SQLAlchemy engine built for one test, disposed after.
+
+    rowform does not own the `AsyncEngine`, so whatever made one is what disposes
+    it — the ownership rule, written as a context manager. `kwargs` split: pool
+    and connection options go to `create_async_engine`, rowform's own
+    (`observer`, `cache_size`) to `rf.Engine`.
+    """
+    ours = {k: kwargs.pop(k) for k in ("observer", "cache_size") if k in kwargs}
+    sa_engine = create_async_engine(url, **kwargs)
+    try:
+        yield rf.Engine(sa_engine, **ours)
+    finally:
+        await sa_engine.dispose()
+
+
+def sqlite_db(path: str, **kwargs):
+    """`engine_at` for a sqlite file — the shape most tests want."""
+    return engine_at(sqlite_url(path), **kwargs)
+
+
+@asynccontextmanager
+async def seeded(url: str):
+    async with engine_at(url) as db:
+        await seed(db)
+        yield db
+
+
 @pytest.fixture(params=["sqlite", "postgres"])
 async def engine(request):
-    """A connected, seeded engine — once per backend.
+    """A seeded engine — once per backend.
 
     Parametrised rather than duplicated so a behaviour asserted here is asserted
     on a driver that decodes types natively *and* on one that does not.
     """
     if request.param == "sqlite":
-        path = request.getfixturevalue("sqlite_path")
-        db = rf.SqliteEngine(path)
+        url = sqlite_url(request.getfixturevalue("sqlite_path"))
     else:
-        dsn = request.getfixturevalue("pg_dsn")
-        db = rf.AsyncpgEngine(dsn)
-
-    await db.connect()
-    try:
-        await seed(db)
+        url = pg_url(request.getfixturevalue("pg_dsn"))
+    async with seeded(url) as db:
         yield db
-    finally:
-        await db.close()
 
 
 @pytest.fixture
 async def sqlite_engine(sqlite_path):
-    db = rf.SqliteEngine(sqlite_path)
-    await db.connect()
-    try:
-        await seed(db)
+    async with seeded(sqlite_url(sqlite_path)) as db:
         yield db
-    finally:
-        await db.close()
 
 
 @pytest.fixture
 async def pg_engine(pg_dsn):
     """A seeded PostgreSQL engine, for the postgres-only surface — COPY, server
     cursors, pipelining. Skips with the rest when no server is reachable."""
-    db = rf.AsyncpgEngine(pg_dsn)
-    await db.connect()
-    try:
-        await seed(db)
+    async with seeded(pg_url(pg_dsn)) as db:
         yield db
-    finally:
-        await db.close()

@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 import sqlalchemy as sa
 from conftest import Author
+from sqlalchemy.dialects.sqlite import aiosqlite
 
 import rowform
 
@@ -104,7 +105,7 @@ class TestUnit:
         assert "LIMIT" not in str(statement).upper()
 
     def test_a_core_query_passes_through(self):
-        query = rowform.SqliteEngine(":memory:").prepare(sa.select(Author))
+        query = rowform.CoreQuery(sa.select(Author), aiosqlite.dialect())
         from rowform.engine import _one_row
 
         assert _one_row(query) is query

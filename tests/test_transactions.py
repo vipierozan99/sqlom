@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author, Book, Tag
+from conftest import Author, Book, Tag, sqlite_db
 
 import rowform as rf
 
@@ -49,7 +49,7 @@ class TestVisibility:
         async with engine.transaction() as tx:
             await tx.execute(sa.insert(Author.__table__).values(id=50, name="x", active=True))
             async with engine.acquire() as conn:
-                rows, _ = await engine._fetch(
+                rows, _ = await engine.driver.fetch(
                     conn, "SELECT count(*) FROM t_authors", (), False
                 )
                 assert rows[0][0] == 4
@@ -152,13 +152,8 @@ class TestTheFootgunGuard:
         assert len(await engine.fetch_all(sa.select(Author))) == 4
 
     async def test_the_guard_is_scoped_to_the_same_engine(self, engine, sqlite_path):
-        other = rf.SqliteEngine(sqlite_path)
-        await other.connect()
-        try:
-            async with engine.transaction():
-                assert await other.fetch_all(sa.select(Author)) is not None
-        finally:
-            await other.close()
+        async with sqlite_db(sqlite_path) as other, engine.transaction():
+            assert await other.fetch_all(sa.select(Author)) is not None
 
     async def test_active_transaction_tracks_the_innermost_block(self, engine):
         assert rf.active_transaction() is None
@@ -170,17 +165,25 @@ class TestTheFootgunGuard:
         assert rf.active_transaction() is None
 
 
-class TestSqliteRefusesWhatItCannotDo:
-    async def test_isolation_levels_raise_rather_than_no_op(self, sqlite_engine):
-        with pytest.raises(NotImplementedError, match="no session-level isolation"):
-            async with sqlite_engine.transaction(isolation="serializable"):
+class TestTransactionOptions:
+    """Options are SQLAlchemy's `execution_options`, so what a backend will and
+    will not honour is SQLAlchemy's answer rather than a table maintained here."""
+
+    async def test_an_unknown_isolation_level_is_refused(self, sqlite_engine):
+        with pytest.raises(sa.exc.ArgumentError, match="[Ii]nvalid value"):
+            async with sqlite_engine.transaction(isolation_level="NONSENSE"):
                 pass
 
-    async def test_readonly_raises(self, sqlite_engine):
-        with pytest.raises(NotImplementedError):
-            async with sqlite_engine.transaction(readonly=True):
-                pass
-
-    async def test_an_unset_option_is_not_treated_as_a_request(self, sqlite_engine):
-        async with sqlite_engine.transaction(isolation=None, readonly=False) as tx:
+    async def test_a_level_sqlite_has_is_accepted(self, sqlite_engine):
+        async with sqlite_engine.transaction(isolation_level="SERIALIZABLE") as tx:
             assert tx.depth == 0
+
+    async def test_no_options_is_a_plain_block(self, sqlite_engine):
+        async with sqlite_engine.transaction() as tx:
+            assert tx.depth == 0
+
+    async def test_a_savepoint_takes_no_options(self, sqlite_engine):
+        async with sqlite_engine.transaction() as tx:
+            with pytest.raises(ValueError, match="savepoint takes no options"):
+                async with tx.transaction(isolation_level="SERIALIZABLE"):
+                    pass

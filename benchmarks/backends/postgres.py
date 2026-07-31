@@ -17,10 +17,11 @@ import time
 import uuid
 from dataclasses import dataclass
 
-import rowform as rf
+from sqlalchemy.dialects.postgresql import asyncpg
+
 from benchmarks.harness import seed as seed_module
 
-_DIALECT = rf.AsyncpgEngine.dialect
+_DIALECT = asyncpg.dialect()
 
 DEFAULT_DB = "rowform_bench"
 DEFAULT_USER = "postgres"

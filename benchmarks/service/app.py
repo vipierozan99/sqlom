@@ -61,12 +61,12 @@ def _sa_dsn(path: str) -> str:
     return f"sqlite+aiosqlite:///{path}"
 
 
-def _sa_dsn_pg(dsn: str) -> str:
-    """psycopg-style DSN (`postgresql://...?sslmode=disable`) -> the URL the
-    asyncpg SQLAlchemy dialect wants: swap the driver prefix and drop the
-    query string (that dialect forwards query params verbatim to
-    `asyncpg.connect()`, which has no `sslmode` kwarg)."""
-    return dsn.replace("postgresql://", "postgresql+asyncpg://", 1).split("?", 1)[0]
+def _sa_dsn_pg(dsn: str, driver: str = "asyncpg") -> str:
+    """psycopg-style DSN (`postgresql://...?sslmode=disable`) -> the URL a
+    SQLAlchemy dialect wants: swap the driver prefix and drop the query string
+    (the asyncpg dialect forwards query params verbatim to `asyncpg.connect()`,
+    which has no `sslmode` kwarg)."""
+    return dsn.replace("postgresql://", f"postgresql+{driver}://", 1).split("?", 1)[0]
 
 
 @asynccontextmanager
@@ -75,8 +75,8 @@ async def lifespan(app: FastAPI):
     Postgres pools are only opened if `BENCH_PG_DSN` is set — `bench service
     run` doesn't provision postgres, so its worker leaves `app.state.pg_*` as
     `None` and never serves a `/postgres-*` route."""
-    app.state.rowform = rf.SqliteEngine(DB_PATH, min_size=1, max_size=4)
-    await app.state.rowform.connect()
+    app.state.rf_sa_engine = create_async_engine(_sa_dsn(DB_PATH), pool_size=1, max_overflow=3)
+    app.state.rowform = rf.Engine(app.state.rf_sa_engine)
     app.state.aiosqlite = await aiosqlite.connect(DB_PATH)
     app.state.sa_engine = create_async_engine(_sa_dsn(DB_PATH))
 
@@ -84,18 +84,20 @@ async def lifespan(app: FastAPI):
     app.state.pg_asyncpg = None
     app.state.pg_sa_engine = None
     if PG_DSN:
-        app.state.pg_rowform = rf.PsycopgEngine(PG_DSN, min_size=1, max_size=4)
-        await app.state.pg_rowform.connect()
+        app.state.pg_rf_sa_engine = create_async_engine(
+            _sa_dsn_pg(PG_DSN, "psycopg"), pool_size=1, max_overflow=3
+        )
+        app.state.pg_rowform = rf.Engine(app.state.pg_rf_sa_engine)
         app.state.pg_asyncpg = await asyncpg.create_pool(PG_DSN, min_size=1, max_size=4)
         app.state.pg_sa_engine = create_async_engine(_sa_dsn_pg(PG_DSN))
     try:
         yield
     finally:
-        await app.state.rowform.close()
+        await app.state.rf_sa_engine.dispose()
         await app.state.aiosqlite.close()
         await app.state.sa_engine.dispose()
         if app.state.pg_rowform is not None:
-            await app.state.pg_rowform.close()
+            await app.state.pg_rf_sa_engine.dispose()
         if app.state.pg_asyncpg is not None:
             await app.state.pg_asyncpg.close()
         if app.state.pg_sa_engine is not None:

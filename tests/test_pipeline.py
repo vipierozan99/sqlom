@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author
+from conftest import Author, engine_at, pg_url
 
 import rowform
 
@@ -24,7 +24,7 @@ import rowform
 async def psycopg_engine(pg_dsn):
     from conftest import seed
 
-    async with rowform.PsycopgEngine(pg_dsn) as db:
+    async with engine_at(pg_url(pg_dsn, "psycopg")) as db:
         await seed(db)
         yield db
 

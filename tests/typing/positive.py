@@ -17,6 +17,7 @@ import uuid
 from typing import Any, assert_type
 
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import InstrumentedAttribute, Mapped
 
 import rowform as rf
@@ -91,7 +92,7 @@ assert_type(sa.select(recent), sa.Select[tuple[Author]])
 
 
 # --- prepare() and fetch_all() preserve them -------------------------------
-engine = rf.SqliteEngine("app.db")
+engine = rf.Engine(create_async_engine("sqlite+aiosqlite:///app.db"))
 
 assert_type(engine.prepare(sa.select(Author)), rf.CoreQuery[Author])
 assert_type(engine.prepare(sa.select(Author.name)), rf.CoreQuery[str])

@@ -93,39 +93,46 @@ how the planner resolves an aliased self-join back to a model.
 
 ---
 
-## Engines
-
-`SqliteEngine`, `AsyncpgEngine` and `PsycopgEngine` share `Engine`'s API and differ
-only in how they open a pool, run a statement, and open a transaction block.
+## `rowform.Engine`
 
 ```python
-rowform.SqliteEngine(path, *, min_size=1, max_size=5, observer=None, cache_size=500)
-rowform.AsyncpgEngine(dsn, *, conditional_reset=True, observer=None, cache_size=500, **pool_kwargs)
-rowform.PsycopgEngine(dsn, *, observer=None, cache_size=500, **pool_kwargs)
+rowform.Engine(engine: AsyncEngine, *, observer=None, cache_size=500)
 ```
 
-`pool_kwargs` reach `asyncpg.create_pool` and `psycopg_pool.AsyncConnectionPool`
-respectively, including their own `min_size`/`max_size`. `SqliteEngine` accepts no
-others and raises `ConfigurationError` for one it does not know.
+Wraps a SQLAlchemy `AsyncEngine`. rowform does not open one, does not pool, and
+does not dispose one — pool sizing, URLs, `pool_pre_ping`, `pool_recycle`, events
+and `echo` are all SQLAlchemy's and reach it the usual way, through
+`create_async_engine`.
 
-`AsyncpgEngine.conditional_reset` keeps asyncpg's `RESET ALL` on release only for
-connections that could have been dirtied — anything reached through `acquire()` or
-`transaction()`. `reset_count` counts the resets actually issued.
+```python
+sa_engine = create_async_engine("postgresql+asyncpg://localhost/app", pool_size=10)
+db = rowform.Engine(sa_engine)
+...
+await sa_engine.dispose()
+```
 
-`AsyncpgEngine` is imported lazily: `import rowform` does not import the driver.
+Which driver is in play comes from the URL: `aiosqlite`, `asyncpg` and `psycopg`
+are supported, and anything else is a `ConfigurationError` naming what it got.
+So is anything that is not an `AsyncEngine` — a sync `Engine` has no awaitable
+connection, and rowform runs statements on the driver connection itself.
 
-### Lifecycle
+Wrapping a `sqlite+aiosqlite` engine registers two event listeners on it, which
+is SQLAlchemy's own documented recipe for pysqlite: without them `begin_nested()`
+savepoints are **silently** wrong, because pysqlite does not open a transaction
+for a `SAVEPOINT` but does for the DML after it.
+
+### Attributes
 
 | | |
 |---|---|
-| `await engine.connect()` | opens the pool; idempotent, returns it |
-| `await engine.close()` | closes it and drops the reference; repeatable |
-| `async with engine:` | both |
-| `engine.pool` | the driver's pool, or `None` |
-| `engine.dialect` | the SQLAlchemy dialect statements compile for |
+| `engine.sa_engine` | the `AsyncEngine` it wraps |
+| `engine.dialect` | its dialect — `initialize()`d, so it knows the server version |
+| `engine.driver` | the `Driver` chosen from the URL |
 | `engine.observer` | see [Observer](#rowformobserver); reassignable at any time |
 | `engine.cached_statements` | how many compiled statements are held, of at most `cache_size` |
-| `engine.pool_stats()` | a `PoolStats` snapshot — see below |
+
+There is no `connect()`, `close()` or `pool_stats()`: the pool is SQLAlchemy's, so
+`engine.sa_engine.pool.status()` is where its counters live.
 
 ### Reading
 
@@ -141,7 +148,7 @@ Raises `StatementError` if the statement returns no rows.
 The same rows, `chunk` at a time, through a cursor — see
 [Streaming](GUIDE.md#streaming-a-large-result). Not a coroutine: iterate it, do not
 await it. Same arity overloads. Raises `EngineStateError` inside a transaction (use
-`tx.fetch_iter`), `ConfigurationError` for `chunk < 1`, and on `PsycopgEngine`
+`tx.fetch_iter`), `ConfigurationError` for `chunk < 1`, and on psycopg
 `UnsupportedError` for a statement postgres cannot `DECLARE` a cursor for.
 
 #### `await engine.fetch_one(statement, **params) -> T | None`
@@ -161,6 +168,11 @@ Runs a statement that produces no rows; returns the driver's own report — a
 rowcount, or asyncpg's status tag. Raises `StatementError` if the statement
 returns rows. Writes take `User.__table__`, not `User`.
 
+Runs inside its own transaction, committed on the way out. Not a nicety: a
+statement run on a connection from `AsyncEngine.connect()` sits inside whatever
+transaction the driver opened for it, and the pool's rollback-on-release then
+discards it — on two of the three drivers, silently.
+
 #### `await engine.execute_many(statement, params: Sequence[dict]) -> Any`
 
 One compiled statement, many parameter sets, one round trip. An empty sequence
@@ -170,23 +182,46 @@ returns `None` without touching the database.
 
 #### `await engine.create_all(metadata)` / `await engine.drop_all(metadata, *, ignore_missing=True)`
 
-The DDL SQLAlchemy itself would emit, in dependency order, including the
-`CREATE TYPE` a postgres enum needs. `create_all` is bootstrap — it has no
-`checkfirst`. For an existing database, point Alembic at the same `MetaData`.
+SQLAlchemy's own `SchemaGenerator` through `run_sync`, in dependency order,
+including the `CREATE TYPE` a postgres enum needs. `create_all` is bootstrap —
+`checkfirst=False`. `drop_all`'s `ignore_missing` *is* `checkfirst`, so it asks
+the catalogue rather than dropping blind. For an existing database, point Alembic
+at the same `MetaData`.
 
 ### Connections and transactions
 
 #### `async with engine.acquire() as conn:`
 
-A raw driver connection, for anything the engine does not model. On
-`AsyncpgEngine` this marks the connection dirty, so it gets the full session reset
-on release.
+A raw driver connection, for anything the engine does not model — the same
+`driver_connection` every read and write runs on. Nothing is committed; use
+`transaction()` if the work needs to be.
 
-#### `async with engine.transaction(**kwargs) as tx:`
+#### `async with engine.transaction(**execution_options) as tx:`
 
 One connection for the block: commits on clean exit, rolls back on any exception.
-`kwargs` reach the driver's `BEGIN` (`isolation`, `readonly`, `deferrable` on
-postgres); sqlite raises `UnsupportedError` rather than accepting them as no-ops.
+Both are SQLAlchemy's `conn.begin()`, so every driver behaves alike.
+
+`execution_options` reach `AsyncConnection.execution_options()`, which is where
+isolation is spelled — `isolation_level="SERIALIZABLE"`,
+`postgresql_readonly=True`, `postgresql_deferrable=True`. What a backend will and
+will not honour is SQLAlchemy's answer, not a table maintained here.
+
+#### `tx = await engine.using(connection_or_session)`
+
+rowform's API on a connection somebody else owns — an `AsyncConnection` or an
+`AsyncSession`. Statements run on the same physical connection, so they see that
+transaction's uncommitted writes and roll back with it.
+
+```python
+async with Session() as session, session.begin():
+    session.add(AuditRow(...))                            # their ORM write
+    hot = await (await db.using(session)).fetch_all(sa.select(User))
+```
+
+It commits nothing and rolls back nothing — the caller opened the transaction and
+ends it — and for the same reason it does not register in `active_transaction()`.
+A connection from a different driver is refused: the compiled SQL carries one
+paramstyle.
 
 ### `engine.prepare(statement) -> CoreQuery`
 
@@ -203,9 +238,10 @@ against this block's pinned connection.
 
 | | |
 |---|---|
-| `tx.transaction(**kwargs)` | a nested block, implemented as a savepoint |
+| `tx.transaction()` | a nested block, `begin_nested()`, i.e. a savepoint; takes no options |
 | `tx.depth` | 0 for the outermost, 1+ for savepoints |
 | `tx.connection` | the pinned driver connection |
+| `tx.sa_connection` | the `AsyncConnection` that owns the transaction |
 | `tx.execute("SQL string")` | also accepts raw SQL, for DDL and session state — no parameters, no escaping |
 | `tx.pipeline()` | psycopg only — see below |
 
@@ -222,8 +258,8 @@ open (psycopg reports a rowcount of -1), and an error raises when the pipeline
 synchronises rather than at the statement that caused it — it does still raise,
 and still rolls the transaction back.
 
-`AsyncpgEngine` and `SqliteEngine` raise `UnsupportedError`: asyncpg exposes no
-such API, and sqlite is a local file with no round trip to hide.
+asyncpg and sqlite raise `UnsupportedError`: asyncpg exposes no such API, and
+sqlite is a local file with no round trip to hide.
 
 ### `rowform.active_transaction() -> Transaction | None`
 
@@ -232,16 +268,12 @@ The innermost `Transaction` running in this task, from a `ContextVar`. This is w
 
 ---
 
-## `rowform.PoolStats`
+## `rowform.Driver`
 
-What `engine.pool_stats()` returns: a frozen snapshot with `size` (connections
-that exist), `idle` (available right now), `max_size`, `waiting` (callers blocked
-on the pool) and an `in_use` property.
-
-`waiting` is `None` on `SqliteEngine` and `AsyncpgEngine`, because neither pool
-counts its waiters — a zero would be a claim rather than a measurement.
-`PsycopgEngine` reports it, and it is the number that separates "the database is
-slow" from "the pool is too small".
+The execution primitives one driver needs — `fetch`, `stream`, `execute`,
+`execute_many`, and optionally `copy_in` and `pipeline`. `rowform.driver_for(dialect)`
+picks the one a dialect names. Public because it is the seam a mock engine
+replaces, not because an application calls it.
 
 ---
 
@@ -256,8 +288,8 @@ row count — `None` for a statement returning no rows. For `fetch_iter` it is c
 once for the whole stream, with the total. Exceptions propagate; it runs on the
 caller's path.
 
-`logging.getLogger("rowform")` logs at DEBUG only: statement compiled, hydrator
-built (with its source), pool opened and closed.
+`logging.getLogger("rowform")` logs at DEBUG only: statement compiled, and
+hydrator built (with its source).
 
 ---
 
@@ -273,7 +305,7 @@ All inherit `RowformError`, and each also inherits the builtin it replaced.
 | `UnsupportedError` | `NotImplementedError` | the backend cannot express it at all |
 | `StatementError` | `ValueError` | right statement, wrong method |
 | `PlanError` | `ValueError` | the result's shape and the plan disagree |
-| `EngineStateError` | `RuntimeError` | not connected, or an engine read inside a transaction |
+| `EngineStateError` | `RuntimeError` | an engine read inside `transaction()` |
 
 Driver exceptions are **not** wrapped.
 

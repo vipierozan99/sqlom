@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author
+from conftest import Author, sqlite_url
+from sqlalchemy.dialects.sqlite import aiosqlite
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import Mapped
 
 import rowform
@@ -105,17 +107,21 @@ class TestDeclarationError:
 
 
 class TestConfigurationError:
-    def test_unknown_constructor_keyword(self, sqlite_path):
-        with pytest.raises(rowform.ConfigurationError, match="unexpected keyword"):
-            rowform.SqliteEngine(sqlite_path, conditional_reset=True)
+    def test_something_that_is_not_an_async_engine(self, sqlite_path):
+        with pytest.raises(rowform.ConfigurationError, match="AsyncEngine"):
+            rowform.Engine(sqlite_path)  # pyright: ignore[reportArgumentType]
 
-    async def test_sqlite_rejects_isolation_levels(self, sqlite_path):
-        """sqlite has no session-level isolation, and says so rather than
-        accepting the option as a no-op."""
-        async with rowform.SqliteEngine(sqlite_path) as db:
-            with pytest.raises(rowform.UnsupportedError, match="no session-level isolation"):
-                async with db.transaction(isolation="serializable"):
-                    pass
+    def test_an_unsupported_driver(self):
+        """A dialect rowform has no execution primitives for. Named rather than
+        failing later on a connection whose methods are not the expected ones."""
+        engine = create_async_engine("sqlite+aiosqlite://")
+        engine.dialect.driver = "pysqlite-but-imaginary"
+        with pytest.raises(rowform.ConfigurationError, match="no rowform driver"):
+            rowform.Engine(engine)
+
+    def test_an_impossible_cache_size(self, sqlite_path):
+        with pytest.raises(rowform.ConfigurationError, match="cache_size"):
+            rowform.Engine(create_async_engine(sqlite_url(sqlite_path)), cache_size=0)
 
 
 # --------------------------------------------------------------------------
@@ -153,7 +159,7 @@ class TestPlanError:
         """The mis-assignment guard: two planned columns, one described, so
         hydrating would write the wrong field."""
         statement = sa.select(Author.id, Author.name)
-        dialect = rowform.SqliteEngine(":memory:").dialect
+        dialect = aiosqlite.dialect()
         with pytest.raises(rowform.PlanError, match="refusing to hydrate"):
             rowform.compile_hydrator(rowform.plan(statement), dialect, [None])
 
@@ -164,18 +170,6 @@ class TestPlanError:
 
 
 class TestEngineStateError:
-    async def test_not_connected(self, sqlite_path):
-        db = rowform.SqliteEngine(sqlite_path)
-        with pytest.raises(rowform.EngineStateError, match="not connected"):
-            await db.fetch_all(sa.select(Author))
-
-    async def test_closed(self, sqlite_path):
-        db = rowform.SqliteEngine(sqlite_path)
-        await db.connect()
-        await db.close()
-        with pytest.raises(rowform.EngineStateError, match="not connected"):
-            await db.fetch_all(sa.select(Author))
-
     async def test_engine_read_inside_a_transaction(self, engine):
         async with engine.transaction():
             with pytest.raises(rowform.EngineStateError, match="different pooled connection"):

@@ -17,7 +17,7 @@ private until there is something to release. Please do not open a public issue
 for anything exploitable.
 
 Include what you'd want to receive: the statement or declaration involved, the
-engine (`SqliteEngine`, `AsyncpgEngine`, `PsycopgEngine`), and the versions of
+driver (`aiosqlite`, `asyncpg`, `psycopg`), and the versions of
 Python, SQLAlchemy and the driver.
 
 ## Two things worth knowing about this library

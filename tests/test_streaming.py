@@ -5,7 +5,7 @@ different primitives — `fetchmany` on a sqlite cursor, a portal on asyncpg, a
 `DECLARE`d cursor on psycopg — and the interesting failures are per-driver:
 asyncpg refuses to open a portal outside a transaction (so the engine opens one),
 and postgres refuses to `DECLARE` a cursor for a write with RETURNING (so
-`PsycopgEngine` says so rather than passing on a syntax error).
+psycopg says so rather than passing on a syntax error).
 
 `fetch_all` is the oracle throughout: a stream that does not agree with it,
 row for row and type for type, is broken however elegantly it chunks.
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author, Book, Wide, seed
+from conftest import Author, Book, Wide, seed, sqlite_db
 
 import rowform
 
@@ -27,7 +27,7 @@ async def collect(iterator):
 @pytest.fixture
 async def seeded_sqlite(sqlite_path):
     """Schema and rows at `sqlite_path`, for tests opening their own engine."""
-    async with rowform.SqliteEngine(sqlite_path) as db:
+    async with sqlite_db(sqlite_path) as db:
         await seed(db)
 
 
@@ -127,7 +127,7 @@ class TestChunking:
     async def test_it_really_arrives_in_chunks(self, engine, monkeypatch):
         """Otherwise this is `fetch_all` with extra steps. One yield of the driver
         hook is one server fetch, so N rows at chunk=1 must be N yields."""
-        original = type(engine)._stream
+        original = type(engine.driver).stream
         yields = 0
 
         async def counting(self, conn, sql, params, chunk, query):
@@ -136,7 +136,7 @@ class TestChunking:
                 yields += 1
                 yield item
 
-        monkeypatch.setattr(type(engine), "_stream", counting)
+        monkeypatch.setattr(type(engine.driver), "stream", counting)
         rows = await collect(engine.fetch_iter(sa.select(Author.id), chunk=1))
         assert len(rows) > 1
         assert yields == len(rows)
@@ -160,7 +160,7 @@ class TestConnectionHandling:
         assert await engine.fetch_all(sa.select(Author))
 
     async def test_repeated_streams_do_not_exhaust_the_pool(self, sqlite_path, seeded_sqlite):
-        async with rowform.SqliteEngine(sqlite_path, min_size=1, max_size=2) as db:
+        async with sqlite_db(sqlite_path, pool_size=1, max_overflow=1) as db:
             for _ in range(6):
                 async for _row in db.fetch_iter(sa.select(Author), chunk=1):
                     break

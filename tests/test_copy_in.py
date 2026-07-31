@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import WIDE_ROW, Author, Wide, seed
+from conftest import WIDE_ROW, Author, Wide, engine_at, pg_url, seed
 
 import rowform
 
@@ -107,7 +107,7 @@ class TestSchemaQualification:
         Which one a copy lands in is then a question with a wrong answer, which is
         what makes the search_path behaviour testable at all.
         """
-        async with rowform.AsyncpgEngine(pg_dsn) as db, db.acquire() as conn:
+        async with engine_at(pg_url(pg_dsn)) as db, db.acquire() as conn:
             await conn.execute("CREATE SCHEMA IF NOT EXISTS tenant_a")
             for schema in ("tenant_a", "public"):
                 await conn.execute(f"DROP TABLE IF EXISTS {schema}.copy_target")
@@ -115,7 +115,7 @@ class TestSchemaQualification:
                     f"CREATE TABLE {schema}.copy_target (id int primary key, name text)"
                 )
         yield
-        async with rowform.AsyncpgEngine(pg_dsn) as db, db.acquire() as conn:
+        async with engine_at(pg_url(pg_dsn)) as db, db.acquire() as conn:
             for schema in ("tenant_a", "public"):
                 await conn.execute(f"DROP TABLE IF EXISTS {schema}.copy_target")
 
@@ -131,13 +131,12 @@ class TestSchemaQualification:
     @staticmethod
     def _tenant_scoped(pg_dsn: str, driver: str):
         """An engine whose connections resolve unqualified names to `tenant_a`."""
-        if driver == "asyncpg":
-            return rowform.AsyncpgEngine(
-                pg_dsn, server_settings={"search_path": "tenant_a"}
-            )
-        return rowform.PsycopgEngine(
-            pg_dsn, kwargs={"options": "-c search_path=tenant_a"}
+        connect_args = (
+            {"server_settings": {"search_path": "tenant_a"}}
+            if driver == "asyncpg"
+            else {"options": "-c search_path=tenant_a"}
         )
+        return engine_at(pg_url(pg_dsn, driver), connect_args=connect_args)
 
     @pytest.mark.parametrize("driver", ["asyncpg", "psycopg"])
     async def test_an_unqualified_table_follows_search_path(
@@ -150,7 +149,7 @@ class TestSchemaQualification:
         async with self._tenant_scoped(pg_dsn, driver) as db:
             await db.copy_in(table, [{"id": 1, "name": driver}])
 
-        async with rowform.AsyncpgEngine(pg_dsn) as check, check.acquire() as conn:
+        async with engine_at(pg_url(pg_dsn)) as check, check.acquire() as conn:
             tenant = await conn.fetch("SELECT name FROM tenant_a.copy_target")
             public = await conn.fetch("SELECT name FROM public.copy_target")
         assert [r["name"] for r in tenant] == [driver], "did not follow search_path"
@@ -165,8 +164,7 @@ class TestSchemaQualification:
             sa.Column("name", sa.String),
             schema="tenant_a",
         )
-        maker = rowform.AsyncpgEngine if driver == "asyncpg" else rowform.PsycopgEngine
-        async with maker(pg_dsn) as db:
+        async with engine_at(pg_url(pg_dsn, driver)) as db:
             await db.copy_in(table, [{"id": 2, "name": driver}])
             landed = await db.fetch_all(sa.select(table.c.name))
             assert landed == [driver]
@@ -178,8 +176,7 @@ class TestBothPostgresDrivers:
 
     @pytest.mark.parametrize("engine_factory", ["asyncpg", "psycopg"])
     async def test_each_driver_loads_the_same_values(self, pg_dsn, engine_factory):
-        maker = rowform.AsyncpgEngine if engine_factory == "asyncpg" else rowform.PsycopgEngine
-        async with maker(pg_dsn) as db:
+        async with engine_at(pg_url(pg_dsn, engine_factory)) as db:
             await seed(db)
             await db.execute(sa.delete(Wide.__table__))
             await db.execute_many(sa.insert(Wide.__table__), wide_rows(2, 500))

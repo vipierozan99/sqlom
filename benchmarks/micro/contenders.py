@@ -38,9 +38,14 @@ from typing import Any
 
 import orjson
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import asyncpg
+from sqlalchemy.dialects.sqlite import aiosqlite
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 import rowform as rf
+
+_SQLITE_DIALECT = aiosqlite.dialect()
+_PG_DIALECT = asyncpg.dialect()
 from benchmarks.harness.registry import ContenderInit, Target, Teardown, contender
 from benchmarks.shapes.flat import User, UserDC, UserORM, users_table
 from benchmarks.shapes.join import (
@@ -213,14 +218,14 @@ def _wide(rows):
     description="Core compiles, rowform hydrates: compiled hydrator into plain dataclasses.",
 )
 async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = rf.SqliteEngine(init.handle, min_size=1, max_size=4)
-    await engine.connect()
+    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
     query = engine.prepare(flat_stmt(init.limit))
 
     async def target() -> bytes:
         return dumps(await engine.fetch_all(query))
 
-    return target, engine.close
+    return target, sa_engine.dispose
 
 
 @contender(
@@ -239,7 +244,7 @@ async def flat_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         return dumps(await engine.fetch_all(query))
 
-    return target, engine.close
+    return target, engine.sa_engine.dispose
 
 
 @contender(
@@ -254,7 +259,7 @@ async def flat_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
     import aiosqlite
 
     conn = await aiosqlite.connect(init.handle)
-    sql, params = _compiled(flat_stmt(init.limit), rf.SqliteEngine.dialect)
+    sql, params = _compiled(flat_stmt(init.limit), _SQLITE_DIALECT)
 
     async def target() -> bytes:
         cur = await conn.execute(sql, params)
@@ -285,7 +290,7 @@ async def flat_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Tear
     import aiosqlite
 
     conn = await aiosqlite.connect(init.handle)
-    dialect = rf.SqliteEngine.dialect
+    dialect = _SQLITE_DIALECT
     statement = flat_stmt(init.limit)
     sql, params = _compiled(statement, dialect)
     hydrate = _hydrator(statement, dialect, FLAT_FIELDS)
@@ -430,14 +435,14 @@ async def flat_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     description="Two entities per row through one compiled hydrator, no per-entity call.",
 )
 async def join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = rf.SqliteEngine(init.handle, min_size=1, max_size=4)
-    await engine.connect()
+    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
     query = engine.prepare(join_stmt(init.limit))
 
     async def target() -> bytes:
         return dumps(await engine.fetch_all(query))
 
-    return target, engine.close
+    return target, sa_engine.dispose
 
 
 @contender(
@@ -456,7 +461,7 @@ async def join_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         return dumps(await engine.fetch_all(query))
 
-    return target, engine.close
+    return target, engine.sa_engine.dispose
 
 
 @contender(
@@ -471,7 +476,7 @@ async def join_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
     import aiosqlite
 
     conn = await aiosqlite.connect(init.handle)
-    sql, params = _compiled(join_stmt(init.limit), rf.SqliteEngine.dialect)
+    sql, params = _compiled(join_stmt(init.limit), _SQLITE_DIALECT)
 
     async def target() -> bytes:
         cur = await conn.execute(sql, params)
@@ -492,7 +497,7 @@ async def join_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Tear
     import aiosqlite
 
     conn = await aiosqlite.connect(init.handle)
-    dialect = rf.SqliteEngine.dialect
+    dialect = _SQLITE_DIALECT
     statement = join_stmt(init.limit)
     sql, params = _compiled(statement, dialect)
     hydrate = _hydrator(statement, dialect, AUTHOR_FIELDS + POST_FIELDS)
@@ -610,14 +615,14 @@ async def join_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     description="Per-column processors from SQLAlchemy, inlined into generated code.",
 )
 async def wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = rf.SqliteEngine(init.handle, min_size=1, max_size=4)
-    await engine.connect()
+    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
     query = engine.prepare(wide_stmt(init.limit))
 
     async def target() -> bytes:
         return dumps(await engine.fetch_all(query))
 
-    return target, engine.close
+    return target, sa_engine.dispose
 
 
 @contender(
@@ -686,14 +691,14 @@ async def wide_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
     description="Core compiles, rowform's asyncpg pool executes, compiled hydrator shapes.",
 )
 async def pg_flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = rf.AsyncpgEngine(init.handle, min_size=1, max_size=4)
-    await engine.connect()
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
     query = engine.prepare(flat_stmt(init.limit))
 
     async def target() -> bytes:
         return dumps(await engine.fetch_all(query))
 
-    return target, engine.close
+    return target, sa_engine.dispose
 
 
 @contender(
@@ -709,7 +714,7 @@ async def pg_flat_raw_asyncpg(init: ContenderInit) -> tuple[Target, Teardown]:
 
     pool = await asyncpg.create_pool(init.handle, min_size=1, max_size=4)
     assert pool is not None
-    sql, params = _compiled(flat_stmt(init.limit), rf.AsyncpgEngine.dialect)
+    sql, params = _compiled(flat_stmt(init.limit), _PG_DIALECT)
 
     async def target() -> bytes:
         async with pool.acquire() as conn:
@@ -780,14 +785,14 @@ async def pg_flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     description="Two entities per row through one compiled hydrator, on asyncpg.",
 )
 async def pg_join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = rf.AsyncpgEngine(init.handle, min_size=1, max_size=4)
-    await engine.connect()
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
     query = engine.prepare(join_stmt(init.limit))
 
     async def target() -> bytes:
         return dumps(await engine.fetch_all(query))
 
-    return target, engine.close
+    return target, sa_engine.dispose
 
 
 @contender(
@@ -841,14 +846,14 @@ async def pg_join_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     description="The widened shape where asyncpg decodes natively and most processors are None.",
 )
 async def pg_wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = rf.AsyncpgEngine(init.handle, min_size=1, max_size=4)
-    await engine.connect()
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
     query = engine.prepare(wide_stmt(init.limit))
 
     async def target() -> bytes:
         return dumps(await engine.fetch_all(query))
 
-    return target, engine.close
+    return target, sa_engine.dispose
 
 
 @contender(

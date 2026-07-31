@@ -25,9 +25,7 @@ from typing import Any
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author, seed
-
-import rowform
+from conftest import Author, seed, sqlite_db
 
 # A statement that is still running a quarter of a second in. sqlite has no
 # sleep, so a recursive CTE counts instead; `.columns()` makes it something the
@@ -40,7 +38,7 @@ SLOW_PG = sa.select(sa.func.pg_sleep(30))
 
 
 def slow_for(engine) -> Any:
-    return SLOW_SQLITE if isinstance(engine, rowform.SqliteEngine) else SLOW_PG
+    return SLOW_SQLITE if engine.dialect.name == "sqlite" else SLOW_PG
 
 
 async def cancel_after(coro_factory, delay: float = 0.25) -> None:
@@ -66,7 +64,7 @@ async def assert_usable(engine, expected: list[str]) -> None:
         # Only reached when the fix under test is absent. The abandoned CTE is
         # still running, so fixture teardown would queue `close()` behind it and
         # the failure would arrive slowly; interrupt first so it arrives now.
-        if isinstance(engine, rowform.SqliteEngine):
+        if engine.dialect.name == "sqlite":
             for conn in engine._require_pool()._all:
                 await conn.interrupt()
         raise
@@ -105,7 +103,7 @@ class TestThePoolSurvives:
     async def test_repeated_cancellations_do_not_drain_a_small_pool(self, sqlite_path):
         """The failing shape: with two connections, three abandoned statements
         used to be enough to stall everything that came after."""
-        async with rowform.SqliteEngine(sqlite_path, min_size=1, max_size=2) as db:
+        async with sqlite_db(sqlite_path, pool_size=1, max_overflow=1) as db:
             await seed(db)
             expected = [a.name for a in await db.fetch_all(sa.select(Author).order_by(Author.id))]
             for _ in range(3):

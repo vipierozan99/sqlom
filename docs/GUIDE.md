@@ -50,16 +50,16 @@ class User(Base):
     name: Mapped[str]
     email: Mapped[str | None]
 
-engine = rowform.AsyncpgEngine("postgresql://localhost/app")
-await engine.connect()
+sa_engine = create_async_engine("postgresql+asyncpg://localhost/app")
+db = rowform.Engine(sa_engine)
 try:
-    users = await engine.fetch_all(sa.select(User).limit(100))
+    users = await db.fetch_all(sa.select(User).limit(100))
 finally:
-    await engine.close()
+    await sa_engine.dispose()
 ```
 
-`connect()` is idempotent and `close()` is repeatable, so `async with engine:`
-does both if you'd rather.
+The engine is SQLAlchemy's. rowform wraps one; it never opens or disposes one, so
+its lifetime is whatever your application already does with it.
 
 ## Declaring models
 
@@ -232,7 +232,7 @@ async with aclosing(engine.fetch_iter(sa.select(User), chunk=500)) as stream:
 Inside a transaction use `tx.fetch_iter`; on the engine it raises, for the same
 reason `fetch_all` does.
 
-One driver difference is visible: `PsycopgEngine` streams through a server-side
+One driver difference is visible: psycopg streams through a server-side
 cursor, and postgres will not `DECLARE` one for `INSERT ... RETURNING`, so that
 combination raises `UnsupportedError`. asyncpg streams it through a portal, and
 sqlite streams anything.
@@ -258,7 +258,7 @@ await engine.copy_in(User.__table__, rows)     # rows: a list of dicts
 ```
 
 20 000 rows of a wide shape: 1.8x faster than `execute_many` on asyncpg, 13.6x on
-psycopg. Postgres only — `SqliteEngine` says so and points at `execute_many`. It
+psycopg. Postgres only — sqlite says so and points at `execute_many`. It
 is a load path rather than a write path: no RETURNING, no ON CONFLICT. Values go
 through the same bind processors as an INSERT, so what lands is what
 `execute_many` would have written.
@@ -351,12 +351,12 @@ from fastapi import Depends, FastAPI, Request
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.db = rowform.AsyncpgEngine(DSN, min_size=4, max_size=16)
-    await app.state.db.connect()
+    app.state.sa_engine = create_async_engine(DSN, pool_size=4, max_overflow=12)
+    app.state.db = rowform.Engine(app.state.sa_engine)
     try:
         yield
     finally:
-        await app.state.db.close()
+        await app.state.sa_engine.dispose()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -382,13 +382,12 @@ the handler rather than calling `db.*` repeatedly.
 
 ## Sizing the pool
 
-All three engines take the same two knobs — `min_size` opened at `connect()`,
-growing to `max_size` on demand and never past it:
+The pool is SQLAlchemy's, so sizing it is too — `pool_size`, `max_overflow`,
+`pool_timeout`, `pool_recycle`, `pool_pre_ping`, all on `create_async_engine`:
 
 ```python
-rowform.SqliteEngine("app.db", min_size=1, max_size=5)
-rowform.AsyncpgEngine(dsn, min_size=4, max_size=16, command_timeout=5)
-rowform.PsycopgEngine(dsn, min_size=4, max_size=16, timeout=5)
+create_async_engine("sqlite+aiosqlite:///app.db", pool_size=1, max_overflow=4)
+create_async_engine(dsn, pool_size=4, max_overflow=12, pool_timeout=5)
 ```
 
 `cache_size` (default 500) caps the compiled statements an engine keeps, evicting
@@ -400,15 +399,15 @@ is worth knowing since compiling is the cost `prepare()` exists to hoist. (An
 `IN` list of varying length is *not* one of these: it compiles to a single
 expanding placeholder and shares one entry.)
 
-Anything else you pass reaches the driver's own pool
-(`asyncpg.create_pool`, `psycopg_pool.AsyncConnectionPool`), where timeouts,
-connection lifetimes and health checks live. `SqliteEngine` has no third-party
-pool behind it, so it accepts nothing else and says so rather than ignoring it.
+Driver-specific settings go through `connect_args`, as they do for any SQLAlchemy
+application.
 
-Rules of thumb: `max_size` at or below what the server will accept divided by the
-number of processes; count a long `fetch_iter` as a connection held for its whole
-duration; and remember that `acquire()` and `transaction()` mark an asyncpg
-connection dirty, so it pays the session reset on release.
+Rules of thumb: `pool_size + max_overflow` at or below what the server will accept
+divided by the number of processes; count a long `fetch_iter` as a connection held
+for its whole duration; and remember that a checkout costs ~0.3–0.4 ms more than
+rowform's own pool used to, paid per checkout rather than per row — so a handler
+that holds one connection for the request pays it once
+([PLAN_SQLA_API.md](PLAN_SQLA_API.md) §2).
 
 ## Seeing what runs
 
@@ -417,7 +416,7 @@ def slow_queries(sql: str, seconds: float, rows: int | None) -> None:
     if seconds > 0.05:
         log.warning("slow query %.1fms rows=%s: %s", seconds * 1000, rows, sql)
 
-engine = rowform.AsyncpgEngine(dsn, observer=slow_queries)
+engine = rowform.Engine(sa_engine, observer=slow_queries)
 ```
 
 The observer is called after every statement — engine or transaction, read or
@@ -433,17 +432,16 @@ def to_tracer(sql: str, seconds: float, rows: int | None) -> None:
     tracer.record("db.query", duration=seconds, attributes={"db.statement": sql, "db.rows": rows})
 ```
 
-`engine.pool_stats()` answers the other half — whether anything was *waiting*
-for a connection while that statement ran:
+SQLAlchemy's pool answers the other half — whether anything was *waiting* for a
+connection while that statement ran:
 
 ```python
-stats = engine.pool_stats()
-log.info("pool %d/%d in use, %s waiting", stats.in_use, stats.max_size, stats.waiting)
+pool = engine.sa_engine.pool
+log.info("pool %s", pool.status())
 ```
 
 Saturation and a slow database look the same from outside and are fixed
-differently, so it is worth exporting both. `waiting` is `None` on sqlite and
-asyncpg, whose pools do not count waiters; psycopg reports it.
+differently, so it is worth exporting both.
 
 `logging.getLogger("rowform")` emits at DEBUG and nowhere else: one line per
 statement compiled — per compile, not per execute, so it also tells you whether
@@ -469,8 +467,8 @@ disconnects, and that handler is often awaiting a query.
 * **sqlite** needs help. aiosqlite runs each statement in a worker thread, and
   cancelling the awaiting task does not stop that thread, so a connection handed
   straight back would make the next borrower queue behind work nobody is waiting
-  for. `SqliteEngine` interrupts the abandoned statement before returning the
-  connection.
+  for. rowform interrupts the abandoned statement before the connection goes back
+  to the pool — SQLAlchemy's pool does not do this for you.
 
 A cancelled `fetch_iter` closes its cursor and releases its connection the same
 way. Inside a transaction, cancellation unwinds the block and rolls back, as any
@@ -485,15 +483,15 @@ import pytest, rowform
 
 @pytest.fixture
 async def db(tmp_path):
-    engine = rowform.SqliteEngine(str(tmp_path / "test.sqlite3"))
-    await engine.connect()
+    sa_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.sqlite3'}")
+    engine = rowform.Engine(sa_engine)
     try:
         await engine.drop_all(Base.metadata)     # ignore_missing=True by default
         await engine.create_all(Base.metadata)
         await seed(engine)
         yield engine
     finally:
-        await engine.close()
+        await sa_engine.dispose()
 ```
 
 Drop-then-create rather than delete-the-rows keeps tests independent of each
