@@ -58,41 +58,48 @@ One class does three jobs, and there is only one of it:
 The absent ORM features are the point, and the argument for dropping them is not
 performance.
 
-`user.posts` reads like a field access and is a `SELECT`. The query therefore
-leaves the place you wrote it and reappears wherever the attribute is touched — a
-serializer, a template, the second iteration of a loop. SQLAlchemy names the
-result in its own documentation: "the N plus one problem, which states that for any
-N objects loaded, accessing their lazy-loaded attributes means there will be N+1
-SELECT statements emitted". That is round trips, not CPU, and no row layer is fast
-enough to fix a latency multiplier. SQLAlchemy also ships `raiseload()` and
-`lazy="raise"` to switch the behaviour off — a strategy that "replaces the behavior
-of lazy loading with an informative error being raised" — which is the ORM
-conceding that its own default is worth a flag to disable.
+`user.posts` reads like a field access. Whether it *is* one depends on whether that
+relationship was eager-loaded, loaded already, or neither — and the call site looks
+identical in all three cases. Where it is not loaded, reading the attribute is a
+`SELECT`, so the query leaves the place you wrote it and reappears wherever the
+attribute happens to be touched — a serializer, a template, the second iteration of
+a loop. SQLAlchemy names the result in its own documentation: "the N plus one
+problem, which states that for any N objects loaded, accessing their lazy-loaded
+attributes means there will be N+1 SELECT statements emitted". That is round trips,
+not CPU, and no row layer is fast enough to fix a latency multiplier. SQLAlchemy also
+ships `raiseload()` and `lazy="raise"` to switch the behaviour off — a strategy that
+"replaces the behavior of lazy loading with an informative error being raised" —
+which is the ORM conceding that its own default is worth a flag to disable.
 
 Lazy loading is the famous one, not the only one. Three more defaults where an
 attribute access is I/O:
 
 | | |
 |---|---|
-| **expire on commit** | on by default: after `commit()`, "all objects associated with the Session are expired, meaning their contents are erased to be re-loaded within the next transaction" — so a plain `user.name` is a `SELECT` too |
+| **expire on commit** | on by default: after `commit()`, "all objects associated with the Session are expired, meaning their contents are erased to be re-loaded within the next transaction" — so the next `user.name` is a `SELECT` too |
 | **autoflush** | "the flush occurs before any individual SQL statement is issued as a result of a … `Session.execute()` call", so a *read* can emit the writes you had pending, in an order the unit of work chose |
-| **identity map** | it "doesn't do any kind of query caching" — the `SELECT` runs, and a row whose primary key is already in the map then yields the object that was already there — the fetched values dropped, unless you remembered `populate_existing` |
+| **identity map** | it "doesn't do any kind of query caching" — the `SELECT` runs, and a row whose primary key is already in the map yields the object that is already there — for an unexpired object the fetched values are dropped, unless you asked for `populate_existing` |
 
-**Under asyncio the first of those does not work at all.** A lazy load "will fail
-under asyncio as no implicit IO is allowed", and the documented ways to live with
-that are a list of ways to turn implicitness back off: `AsyncAttrs.awaitable_attrs`,
-write-only collections that "never emit IO implicitly", `lazy="raise"` "so that by
-default they will not attempt to emit SQL", and `expire_on_commit=False`. One
-relationship and one flag at a time, by whoever remembers. rowform is async-only,
-so every model here would be configured into that shape anyway — it starts there
-instead. There is no instrumented attribute to raise from, so there is nothing to
-switch off and nobody left checking in review whether someone did.
+**Under asyncio, lazy loading does not work at all.** It "will fail under asyncio as
+no implicit IO is allowed" — and the documented ways to live with that are this
+library's own position, taken piecemeal. Three of them stop the load: write-only
+collections that "never emit IO implicitly", `lazy="raise"` "so that by default they
+will not attempt to emit SQL", and `expire_on_commit=False`. The fourth,
+`AsyncAttrs.awaitable_attrs`, keeps the load and makes it explicit at the point it
+happens — `await a1.awaitable_attrs.bs` — which is the same trade every read here
+already makes. Either way it is one relationship and one flag at a time, by whoever
+remembers. rowform is async-only, so every model here would end up configured into
+that shape anyway; it starts there instead. There is no instrumented attribute to
+raise from, so there is nothing to switch off and nobody left checking in review
+whether someone did.
 
-What replaces that discipline is a property: **a request's round trips are a static
-property of its source.** No attribute access can add one, the plan comes from the
-statement rather than the model, and the `observer` fires once per statement — so
-the query count is something a test asserts rather than something production
-reveals:
+What replaces that discipline is narrower, and checkable: **every round trip
+corresponds to a statement you wrote.** How many times one runs is still up to
+control flow — a loop runs a loop — but nothing outside the `fetch_*` calls on the
+page can add one, because no attribute access can reach the database. The plan comes
+from the statement rather than the model, and the `observer` fires once per
+statement, so a request's query count is something a test asserts rather than
+something production reveals:
 
 ```python
 seen: list[str] = []
