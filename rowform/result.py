@@ -12,21 +12,32 @@ SQLAlchemy's own `IteratorResult` — so `.scalars()`, `.tuples()`, `.mappings()
 everything added upstream later are the real implementations, not reimplementations
 that could drift.
 
-**What that costs**, measured at 1000 rows: the 1-tuple wrap 0.042 ms (arity 1
-only — at two or more selected entities the hydrator already produces tuples), and
-`Row` construction 0.09–0.15 ms on top. `.scalars().all()` is *more* expensive than
-`.all()`, not less (0.187 vs 0.091 at arity 2): `ScalarResult` builds the rows and
-then extracts, so there is no consuming a `Result` without paying for its rows.
-That is exactly why `fetch_all()` exists beside it.
+**Nothing is wrapped on the way in.** The hydrator's output goes to the `Result`
+as it is, and `source_supports_scalars` tells SQLAlchemy whether each item is a
+whole row (two or more selected entities, already a tuple) or one scalar to be
+wrapped *if and when* somebody asks for rows. So the cost is paid per accessor
+rather than per execute, measured at 1000 rows:
 
-`SimpleResultMetaData` is SQLAlchemy-internal, like the compiler surface the rest
-of this library reads. It is built once per compiled statement and cached on the
-`CoreQuery`, which is what SQLAlchemy itself does with `CursorResultMetaData`.
+    .scalars().all()   0.0049 ms   — no Row is built at all
+    .all()             0.168 ms    — one Row per row, on demand
+    .mappings().all()  0.471 ms
+
+An earlier arrangement wrapped every arity-1 row in a 1-tuple here and let
+`ScalarResult` undo it with `itemgetter(0)`, which made `.scalars().all()` cost
+0.210 ms — *more* than `.all()`. Handing the scalars over directly is both less
+code and 43x cheaper on the most idiomatic call there is.
+
+`SimpleResultMetaData` and the `source_supports_scalars` flag are
+SQLAlchemy-internal, like the compiler surface the rest of this library reads.
+Note the flag is spelled `_source_supports_scalars` on `IteratorResult` and
+`source_supports_scalars` on `ChunkedIteratorResult` — upstream's inconsistency,
+not a typo here. The metadata is built once per compiled statement and cached on
+the `CoreQuery`, which is what SQLAlchemy itself does with `CursorResultMetaData`.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
 
 from sqlalchemy.engine.result import (
@@ -59,18 +70,6 @@ def keys_for(plan: Plan) -> list[str]:
     return keys
 
 
-def rows_for(plan: Plan, hydrated: list[Any]) -> Sequence[Any]:
-    """Hydrated rows in the shape a `Result` expects — a tuple per row.
-
-    `plan.wrap` is already true for two or more selected entities, and the
-    generated hydrator emits tuples in that case, so this is free there and costs
-    one tuple per row only for the single-entity shape rowform otherwise unwraps.
-    """
-    if plan.wrap:
-        return hydrated
-    return [(row,) for row in hydrated]
-
-
 def rowcount_of(report: Any) -> int:
     """The driver's report of a write, as an int.
 
@@ -91,8 +90,15 @@ class _Result(IteratorResult):
     """`IteratorResult` plus the two attributes a `CursorResult` carries and it
     does not: `rowcount`, for a write, and `returns_rows`."""
 
-    def __init__(self, metadata: Any, iterator: Iterator[Any], rowcount: int = -1):
-        super().__init__(metadata, iterator)
+    def __init__(
+        self,
+        metadata: Any,
+        iterator: Iterator[Any],
+        rowcount: int = -1,
+        *,
+        _source_supports_scalars: bool = False,
+    ):
+        super().__init__(metadata, iterator, _source_supports_scalars=_source_supports_scalars)
         self._rowform_rowcount = rowcount
 
     @property
@@ -122,8 +128,9 @@ class _NoRows(_Result):
 
 
 def result_for(plan: Plan, metadata: Any, hydrated: list[Any]) -> _Result:
-    rows = rows_for(plan, hydrated)
-    return _Result(metadata, iter(rows), len(rows))
+    return _Result(
+        metadata, iter(hydrated), len(hydrated), _source_supports_scalars=not plan.wrap
+    )
 
 
 def no_rows(report: Any) -> _NoRows:
@@ -131,7 +138,10 @@ def no_rows(report: Any) -> _NoRows:
 
 
 def chunked_result(
-    metadata: Any, make_chunks: Callable[[int | None], AsyncIterator[list[Any]]]
+    metadata: Any,
+    make_chunks: Callable[[int | None], AsyncIterator[list[Any]]],
+    *,
+    scalars: bool = False,
 ) -> ChunkedIteratorResult:
     """A streaming `Result` fed by an async generator.
 
@@ -153,4 +163,4 @@ def chunked_result(
             except StopAsyncIteration:
                 return
 
-    return ChunkedIteratorResult(metadata, sync_chunks)
+    return ChunkedIteratorResult(metadata, sync_chunks, source_supports_scalars=scalars)

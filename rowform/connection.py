@@ -197,8 +197,12 @@ class Connection:
         await self._autobegin()
         bound = {**(parameters or {}), **params}
         query, extracted = engine._require_rows(statement)
+        plan = query.entities
+        assert plan is not None  # _require_rows guarantees it
         chunks = engine._chunks(query, bound, extracted, chunk, self._pinned)
-        return AsyncResult(_result.chunked_result(query.result_metadata, chunks))
+        return AsyncResult(
+            _result.chunked_result(query.result_metadata, chunks, scalars=not plan.wrap)
+        )
 
     async def stream_scalars(
         self, statement: Any, parameters: Any = None, *, chunk: int = 1000, **params: Any

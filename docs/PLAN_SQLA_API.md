@@ -350,3 +350,24 @@ And one removal worth naming: **`pool_stats()` is gone**, with `PoolStats`. It
 described rowform's pool. SQLAlchemy's is `engine.sa_engine.pool.status()` — which
 costs the one number psycopg's pool reported and SQLAlchemy's does not, the count
 of callers *waiting* for a connection.
+
+**8c. The compatibility track's cost was mostly self-inflicted.** The first
+version wrapped every single-entity row in a 1-tuple before handing it to
+`IteratorResult`, and `ScalarResult` then undid the wrap with `itemgetter(0)` —
+which is why `.scalars().all()` measured *more* expensive than `.all()` (0.210 vs
+0.191 ms per 1000 rows) and why §6's guidance said the granularity of "pay only
+if used" was the method name.
+
+SQLAlchemy already had the seam: `IteratorResult(..., _source_supports_scalars=True)`
+takes the scalars themselves and builds a `Row` only if one is asked for.
+Switching to it **deleted** the wrapping helper and moved the numbers to
+`.scalars().all()` 0.0049 ms, `.all()` 0.168 ms, `.mappings().all()` 0.471 ms —
+43x cheaper on the most idiomatic call, with every accessor byte-identical
+(the compatibility suite passed unchanged, which is the proof).
+
+So the granularity *is* per accessor after all, and the guidance is simpler than
+§6's: take `.scalars()` and the compatibility track costs almost nothing; take
+rows and you pay for rows. The flag is spelled `_source_supports_scalars` on
+`IteratorResult` and `source_supports_scalars` on `ChunkedIteratorResult` —
+upstream's inconsistency, and a second internal coupling on top of
+`SimpleResultMetaData`.

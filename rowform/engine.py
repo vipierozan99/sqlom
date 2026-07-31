@@ -38,7 +38,6 @@ import sqlalchemy as sa
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from . import result as _result
 from .connection import _ACTIVE, Connection
 from .drivers import Driver, driver_for
 from .errors import (
@@ -722,8 +721,6 @@ class Engine:
             if wanted < 1:
                 raise ConfigurationError(f"chunk must be at least 1, got {wanted}")
             sql, bound = query.bind(params, extracted)
-            plan = query.entities
-            assert plan is not None  # _require_rows guarantees it
             start = perf_counter() if self.observer is not None else 0.0
             total = 0
             async with acquire() as conn:
@@ -734,7 +731,7 @@ class Engine:
                     if hydrate is None:
                         hydrate = query.hydrator(self.dialect, description)
                     total += len(rows)
-                    yield list(_result.rows_for(plan, hydrate(rows)))
+                    yield hydrate(rows)
             self._observe(sql, start, total)
 
         return chunks
