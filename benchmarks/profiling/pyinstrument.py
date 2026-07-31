@@ -1,4 +1,4 @@
-"""pyinstrument adapter (PLAN.md §10): in-process sampling, wall clock,
+"""pyinstrument adapter: in-process sampling, wall clock,
 `async_mode="enabled"` so time spent awaiting is attributed correctly instead
 of charged to whatever happened to be on the stack when the sampler fired.
 """

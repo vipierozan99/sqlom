@@ -1,6 +1,6 @@
-"""py-spy adapter (PLAN.md §10): external sampling, wall clock, attaches to a
+"""py-spy adapter: external sampling, wall clock, attaches to a
 live PID with zero in-process overhead. Requires `ptrace_scope=0` for a
-non-root attach — already the case on the reference machine (PLAN.md §3).
+non-root attach — already the case on the reference machine.
 """
 
 from __future__ import annotations

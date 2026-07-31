@@ -1,4 +1,4 @@
-"""`python -m benchmarks` — the unified benchmark CLI (PLAN.md §9).
+"""`python -m benchmarks` — the unified benchmark CLI.
 
 `AsyncTyper` for the root app (so `cli/*` modules can mix async and sync
 commands); each subcommand area is its own plain `typer.Typer()` mounted here.

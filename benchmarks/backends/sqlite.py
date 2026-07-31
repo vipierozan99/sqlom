@@ -2,7 +2,7 @@
 
 Independent of rowform's own `SqliteEngine` (`rowform/sqlite_engine.py`) — this
 provisions the on-disk database that *any* contender (rowform, raw sqlite3,
-SQLAlchemy) reads from, matching PLAN.md §7's tier-3 "real driver" contract.
+SQLAlchemy) reads from, so every contender runs against a real driver.
 """
 
 from __future__ import annotations

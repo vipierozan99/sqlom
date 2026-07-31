@@ -1,4 +1,4 @@
-"""`MockEngine`: the row layer's floor, with zero driver cost (PLAN.md D8/D9, §7).
+"""`MockEngine`: the row layer's floor, with zero driver cost.
 
 Every rowform engine touches its driver through exactly one hook:
 
@@ -13,7 +13,7 @@ shipped engine under the previous design).
 Rows are precomputed plain tuples. Its absolutes are therefore not comparable to
 sqlite/Postgres numbers — it is a row-layer instrument only.
 
-(D9) `mock_sqlalchemy_engine()` is the equivalent seam for SQLAlchemy: it fakes
+`mock_sqlalchemy_engine()` is the equivalent seam for SQLAlchemy: it fakes
 aiosqlite one layer further down. SQL compilation, Core result processing and ORM
 hydration all run for real; only the SQLite call is canned. It must sit at the
 driver seam rather than at `engine.connect()`/`execute()` because ORM hydration

@@ -322,7 +322,7 @@ class TestMixinsAndOrder:
         assert A.created.table is A.__table__
 
     def test_inherited_fields_come_first_and_are_recorded(self):
-        """R11: adding a mixin moves its columns to the front of CREATE TABLE,
+        """Adding a mixin moves its columns to the front of CREATE TABLE,
         and Alembic autogenerate does not diff column order — so the order is at
         least deterministic and readable off the class."""
         Scratch = make_base()
@@ -412,9 +412,9 @@ class TestGuards:
                 thing: Mapped[int | str]
 
     def test_metaclass_conflict_is_real_and_documented(self):
-        """R10: every model carries ModelMeta, so combining with ABC or Protocol
+        """Every model carries ModelMeta, so combining with ABC or Protocol
         raises. Accepted rather than worked around — a decorator would compose
-        freely, but the decorator route erases field types (§5b)."""
+        freely, but the decorator route erases field types."""
         Scratch = make_base()
 
         with pytest.raises(TypeError, match="metaclass conflict"):

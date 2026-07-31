@@ -1,4 +1,4 @@
-"""`bench load run` (PLAN.md §9, phase-4 gate — audit folded in).
+"""`bench load run`.
 
 Provisions whatever backend `--case` needs (an ephemeral sqlite file, or an
 ephemeral postgres container — `benchmarks/backends/provision.py`) plus
@@ -14,13 +14,12 @@ running after a `bench load run` exits.
 `--case` is a contender slug (`bench contenders list`) resolved two ways:
 `harness/registry.py` says which shape/backend to provision and which route
 it serves; `load/registry.py` says which locustfile drives traffic at it
-(PLAN.md-successor decision: "each contender is a locust file", discovered by
-scanning `benchmarks/loadtests/`, not by importing `contenders.py`).
+(each contender is a locust file, discovered by scanning `benchmarks/loadtests/`
+rather than by importing `contenders.py`).
 
 `--workers` (how many uvicorn processes are spawned) and `--levels` (how many
 locust users are kept in flight) are deliberately separate knobs: each worker
-is its own process on its own port (PLAN.md §5 — no shared-port `--workers`
-forking, so pinning stays sound), so testing N workers under load means
+is its own process on its own port, so testing N workers under load means
 splitting the requested concurrency across N ports and summing the result —
 `_split_across_workers`/`_aggregate_locust` below.
 

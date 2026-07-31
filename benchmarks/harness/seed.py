@@ -1,5 +1,5 @@
 """One deterministic seeder for every shape — collapses the 9 near-identical
-`seed()`/`seed_database()` functions the old suite had (PLAN.md §1), 8 of which
+`seed()`/`seed_database()` functions the old suite had, 8 of which
 shared the literal `1 if rng.random() > 0.1 else 0` for `is_active`.
 
 Pure data: this module knows *what* rows and DDL a shape needs, not how to get

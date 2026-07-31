@@ -1,4 +1,4 @@
-"""austin adapter (PLAN.md §10): external sampling, **wall + CPU**
+"""austin adapter: external sampling, **wall + CPU**
 (`-c`/`--cpu` samples on-CPU stacks only; the default samples wall time),
 thread-aware. Austin 4's `-o` output is its binary "mojo" format, which
 `austin2speedscope` cannot read directly — it wants the older text/collapsed

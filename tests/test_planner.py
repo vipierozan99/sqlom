@@ -1,9 +1,9 @@
 """What a statement's rows mean — planned from the statement, never the model.
 
-This is the correctness-critical half of the library (docs/PLAN_CORE_COMPILER.md
-§5c, R7). The generated hydrator unpacks rows positionally, so a rf.plan that
+This is the correctness-critical half of the library. The generated hydrator
+unpacks rows positionally, so a rf.plan that
 disagrees with the SELECT list by even one column mis-assigns fields silently.
-The matrix below is §8 P3's, asserted at the rf.plan level; `test_engines.py` asserts
+The matrix below is asserted at the rf.plan level; `test_engines.py` asserts
 the same statements end to end against real rows.
 """
 

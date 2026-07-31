@@ -1,4 +1,4 @@
-"""Profiler adapter protocols (PLAN.md §10).
+"""Profiler adapter protocols.
 
 Two kinds, because they attach fundamentally differently:
 

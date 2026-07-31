@@ -1,4 +1,4 @@
-"""yappi adapter (PLAN.md §10): instrumented, **both** CPU and wall clock,
+"""yappi adapter: instrumented, **both** CPU and wall clock,
 with native per-coroutine aggregation — the one adapter here that attributes
 time to individual async tasks rather than charging it all to the event loop.
 """

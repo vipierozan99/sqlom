@@ -21,14 +21,14 @@ straight attribute stores (`compile.py`).
 
 **Why a base class and not a decorator.** `@sa_model(metadata)` would be a
 decorator *factory*, and factories lose field typing entirely — `u.id` infers as
-`Any` (docs/PLAN_CORE_COMPILER.md §5b, and the same propagation gap recorded at
-docs/FINDINGS.md for `@model(tablename=...)`). A base class needs no arguments at
+`Any`, because pyright does not propagate the `dataclass_transform` synthesis
+through the intermediate closure. A base class needs no arguments at
 class-creation time because `metadata` lives on the base, which sidesteps the
 factory problem. It is also SQLAlchemy's own shape: `dataclass_transform` sits on
 the metaclass, and `DeclarativeBase` declares one.
 
 The cost is a metaclass conflict: `class User(Base, ABC)` and combining with
-`Protocol` raise `TypeError`. Accepted, not worked around (§9, R10).
+`Protocol` raise `TypeError`. Accepted, not worked around.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ class _MappedColumn:
     from it, and rebuilds the namespace without it. That ordering is
     load-bearing — `dataclasses` probes `getattr(cls, field_name)` for a default,
     so a marker still sitting on the class would become every field's default
-    value (docs/FINDINGS.md, "The `@model` metaclass").
+    value (docs/FINDINGS.md, "Why the metaclass").
     """
 
     __slots__ = ("args", "default", "default_factory", "init", "kwargs")
@@ -182,7 +182,7 @@ class ModelMeta(type):
     """Builds the `Table` and the dataclass from one set of `Mapped[]` annotations.
 
     `dataclass_transform` sits here rather than on a decorator so field types
-    survive into the checker (§5b). Class keyword arguments are forwarded to
+    survive into the checker. Class keyword arguments are forwarded to
     `dataclasses.dataclass`, so `class User(Base, frozen=True)` does what it
     looks like.
     """
@@ -247,7 +247,7 @@ class ModelMeta(type):
             if "follows default argument" not in str(err):
                 raise
             # The class body reads fine; what reordered it is that inherited
-            # fields sort ahead of own fields (§5b-i). Say so, since the stdlib
+            # fields sort ahead of own fields. Say so, since the stdlib
             # message names two fields the author never wrote in that order.
             raise DeclarationError(
                 f"{name}: {err}. Fields inherited from a base or mixin come before "
@@ -368,7 +368,7 @@ def _collect_specs(cls: type, bases: tuple[type, ...], ns: dict[str, Any]) -> di
     types so `dataclasses` sees them, which erases the `Mapped[]` wrapper a base
     scan would look for.
 
-    **Inherited-first is a migration hazard** (§5b-i, R11): adding a mixin moves
+    **Inherited-first is a migration hazard**: adding a mixin moves
     its columns to the front of `CREATE TABLE`, and Alembic autogenerate does not
     diff column *order*, so the drift is invisible. The order is at least
     deterministic and recorded on the built class as `__column_order__`; pin it
@@ -376,7 +376,7 @@ def _collect_specs(cls: type, bases: tuple[type, ...], ns: dict[str, Any]) -> di
     exists.
 
     It does *not* affect hydration — hydrators are planned from
-    `stmt.selected_columns`, never from declaration order (`planner.py`, §5c).
+    `stmt.selected_columns`, never from declaration order (`planner.py`).
     """
     specs: dict[str, _Spec] = {}
     for base in reversed(cls.__mro__[1:]):

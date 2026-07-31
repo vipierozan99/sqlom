@@ -27,7 +27,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 # SQLAlchemy is a hard, unconditional dependency: it compiles every statement and
-# owns the schema (docs/PLAN_CORE_COMPILER.md §1a). There is no standalone mode.
+# owns the schema. There is no standalone mode.
 #
 # The floor is 2.0.18, not 2.0: `AsyncpgEngine` reads `dialect._native_inet_types`
 # and calls `_disable_asyncpg_inet_codecs`, and neither exists before then — the
@@ -40,7 +40,7 @@ Homepage = "https://github.com/vipierozan99/sqlom"
 Repository = "https://github.com/vipierozan99/sqlom"
 Issues = "https://github.com/vipierozan99/sqlom/issues"
 Documentation = "https://github.com/vipierozan99/sqlom/blob/main/docs/GUIDE.md"
-Benchmarks = "https://github.com/vipierozan99/sqlom/blob/main/docs/BENCHMARKS.md"
+Benchmarks = "https://github.com/vipierozan99/sqlom/blob/main/docs/METHODOLOGY.md"
 
 [project.optional-dependencies]
 asyncpg = ["asyncpg>=0.29"]
@@ -109,7 +109,7 @@ bench = [
     # SQLAlchemy rather than arguing about two.
     "sqlalchemy>=2.0.18",
     # async-typer 0.2.1 imports `typer.clear`, removed in typer 0.26 — cap until
-    # async-typer publishes a release that drops it (see PLAN.md discoveries).
+    # async-typer publishes a release that drops it.
     "typer>=0.15,<0.26",
     "uvicorn[standard]>=0.34",
 ]

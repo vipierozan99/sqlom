@@ -1,4 +1,4 @@
-"""`bench contenders list` (PLAN.md §5): the contender registry, made
+"""`bench contenders list`: the contender registry, made
 inspectable on its own instead of only discoverable by reading
 `contenders/*.py` — the source every other command's `--shape`/`--backend`/
 `--only` filters draw from, and of the slugs `bench load run --case` takes.

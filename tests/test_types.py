@@ -1,6 +1,6 @@
 """Values must survive the round trip identically to stock SQLAlchemy.
 
-This is the gate docs/PLAN_CORE_COMPILER.md §7 R1 asks for, and the reason the
+This is the gate docs/METHODOLOGY.md correction 11 asks for, and the reason the
 library reads SQLAlchemy's own per-column processors instead of keeping a type
 table of its own.
 

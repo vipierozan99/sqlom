@@ -98,7 +98,7 @@ class Colour(enum.Enum):
 class Wide(Base):
     """Every type whose driver representation differs from its Python one.
 
-    This is the shape docs/PLAN_CORE_COMPILER.md §7 R1 asks for: on sqlite, 8 of
+    This is the shape docs/METHODOLOGY.md correction 11 asks for: on sqlite, 8 of
     these come back as something other than what they went in as unless the right
     processor runs. `int/str/str/bool` — the old benchmark shape — is the one
     layout where that hazard is invisible.

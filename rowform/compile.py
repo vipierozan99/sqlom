@@ -26,7 +26,7 @@ Python object the processor is `None` and the field compiles to a bare store —
 which is most columns on asyncpg, and why bypassing `Row` costs nothing there.
 An earlier design hand-maintained `SQLITE_CONVERTERS = {bool: bool}` instead;
 measured against a widened shape, that covered 1 of 8 columns that need
-conversion (docs/PLAN_CORE_COMPILER.md §7 R1).
+conversion (docs/METHODOLOGY.md correction 11).
 """
 
 from __future__ import annotations

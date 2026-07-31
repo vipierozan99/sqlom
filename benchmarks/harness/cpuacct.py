@@ -1,5 +1,5 @@
-"""Per-role CPU accounting (PLAN.md §4: "record utilization, not just
-throughput"). Reads `/proc/<pid>/stat` utime+stime for the pids in each role
+"""Per-role CPU accounting — utilization is recorded, not inferred from
+throughput. Reads `/proc/<pid>/stat` utime+stime for the pids in each role
 (server/generator/db), so `cpu_ms_per_request`/`cpu_utilization` are measured
 per role rather than inferred from the client's own `process_time()` alone —
 the client-only version is what the old suite's `run_load()` had.

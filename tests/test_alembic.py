@@ -1,6 +1,6 @@
 """Alembic works off `Base.metadata`, with no DeclarativeBase involved.
 
-This is the motivation for the whole design (docs/PLAN_CORE_COMPILER.md §1, R3):
+This is the motivation for the whole design:
 DDL, reflection and migrations are large, mature, and already written. If
 autogenerate did not work against a metaclass-built `MetaData`, there would be no
 reason to depend on SQLAlchemy at all.
@@ -132,9 +132,10 @@ def test_a_model_added_later_joins_the_same_metadata(blank_db):
 
 
 def test_column_order_drift_is_invisible_to_alembic(blank_db):
-    """R11, asserted rather than asserted-away. Adding a mixin moves its columns
-    to the front of CREATE TABLE, and autogenerate reports *nothing* — which is
-    why `__column_order__` exists and is worth pinning on an existing table."""
+    """The column-order hazard, asserted rather than asserted-away. Adding a
+    mixin moves its columns to the front of CREATE TABLE, and autogenerate
+    reports *nothing* — which is why `__column_order__` exists and is worth
+    pinning on an existing table."""
     Base.metadata.create_all(blank_db)
 
     reordered = sa.MetaData()

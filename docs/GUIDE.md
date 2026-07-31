@@ -121,6 +121,8 @@ One selected entity yields that entity; two or more yield a tuple, in select
 order. An `outerjoin` with no match gives `None` for that slot rather than an
 object full of `None`s.
 
+## Aliases and self-joins
+
 **Self-joins** go through `rowform.alias()`, and hydrate as models:
 
 ```python
@@ -147,8 +149,25 @@ await engine.fetch_all(sa.select(active).order_by(active.id))   # list[User]
 
 `of=` demands exactly that model's columns, in order — anything else is a
 `DeclarationError` rather than rows that quietly hydrate as `(User, extra)` while
-still typed `Select[tuple[User]]`. See
-[Aliases and self-joins](../README.md#aliases-and-self-joins) for the full rules.
+still typed `Select[tuple[User]]`. `select()` on a from clause expands to *all* of
+its columns, and without a `Mapper` there is no notion of "the entity's columns" to
+narrow that to.
+
+So when the subquery needs an extra column of its own — a window function you want
+to filter on — filter inside it and select the model's columns out:
+
+```python
+inner = sa.select(User, sa.func.row_number().over(...).label("rk")).subquery()
+first = rowform.alias(User, of=(
+    sa.select(*[inner.c[c.key] for c in User.__table__.c])
+      .where(inner.c.rk == 1)
+      .subquery()
+))
+```
+
+The mark lands on the from clause you passed, not on a wrapper of it, so
+`active.id` and the CTE's own `.c.id` stay the same column — wrapping would make
+`select(active, cte.c.id)` two from clauses and a cartesian product.
 
 **Hoist the compile** out of the request when you can:
 

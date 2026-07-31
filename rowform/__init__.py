@@ -27,8 +27,6 @@ ORM identity.
 `User` is one declaration serving three jobs: `User.__table__` feeds
 `create_all()`, `Inspector` and Alembic's `target_metadata`; `sa.select(User)`
 builds real SQL; and instances are ordinary dataclasses.
-
-See docs/PLAN_CORE_COMPILER.md for why, what it costs, and what it retires.
 """
 
 from typing import TYPE_CHECKING

@@ -1,4 +1,4 @@
-"""The one equivalence gate (PLAN.md §4): every contender must emit
+"""The one equivalence gate: every contender must emit
 byte-identical output before timing starts, or the comparison means nothing.
 Three dialects of this existed across 8 files; this is the one implementation.
 """

@@ -1,10 +1,10 @@
-"""Timing modes, one implementation each (PLAN.md §5) — the old suite had five
+"""Timing modes, one implementation each — the old suite had five
 mutually incompatible timing-loop dialects for one concept.
 
     per_iteration()   micro latency samples: N calls, each timed individually
     closed_loop()     rps + cpu_ms + utilization + percentiles under concurrency
 
-Plus `gc_control()`: PLAN.md §4 records that disabling GC collapsed stdev
+Plus `gc_control()`: disabling GC collapsed stdev
 5-10x on the join shape (~2000 allocations/iteration) — first-order enough to
 be a harness primitive, not a per-script flag.
 """

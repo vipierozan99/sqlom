@@ -1,5 +1,5 @@
-"""Machine + git + package-version capture (PLAN.md §6 `env` block, §4's
-closing invariant: "absolutes drift with the machine"). `docs/METHODOLOGY.md`
+"""Machine + git + package-version capture, because absolutes drift with the
+machine while ratios travel. `docs/METHODOLOGY.md`
 records a run coming back ~1.35x slower for every contender after a machine
 change — recording the machine is how a later reader tells "the code changed"
 from "the box changed".
@@ -149,7 +149,7 @@ def capture() -> dict:
 
 
 def merge_start_end(start: dict, end: dict) -> dict:
-    """Combine two `capture()` snapshots into the PLAN.md §6 `env` shape:
+    """Combine two `capture()` snapshots into one `env` block:
     static facts (host/cpu identity/python/packages/git) come from `start`;
     the handful of fields that can move mid-run are recorded as both
     endpoints (`mhz_start`/`mhz_end`, `loadavg_start`/`loadavg_end`) or a
@@ -168,7 +168,7 @@ def merge_start_end(start: dict, end: dict) -> dict:
 
 
 def warnings_for(env: dict) -> list[str]:
-    """Audit failures worth surfacing (PLAN.md §4/§6 `warnings[]`)."""
+    """Audit failures worth surfacing."""
     warnings = []
     if env["cpu"].get("boost"):
         warnings.append("cpu boost enabled — a live noise source")

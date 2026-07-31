@@ -1,10 +1,11 @@
-"""`bench profile micro|load` (PLAN.md §9, phase-5 gate).
+"""`bench profile micro|load`.
 
 `micro`: in-process profiling of one contender — cProfile (instrumented) and
 pyinstrument (sampling) run by default over the same call count, so their
 per-request CPU and the resulting instrumentation-inflation factor are always
-printed side by side (PLAN.md §4: "cross-check instrumented against
-sampling... runs by default"). Also runs the impossible-row tripwire
+printed side by side — an instrumented profile is always cross-checked against a
+sampling one, since they have opposite blind spots. Also runs the impossible-row
+tripwire
 (`attribution.check_impossible_rows`) whenever the profiled contender is
 tagged `floor` (never touches rowform).
 

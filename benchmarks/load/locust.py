@@ -16,8 +16,7 @@ Design choices:
 Each case file sets its own `path` class attribute (the route to hit) and is
 loaded via `locust -f <that file's path>` — no `LOCUST_PATH` env var
 indirection for *which* route, since that's now a property of the file
-itself, not a runtime parameter (PLAN.md-successor decision: "each contender
-is a locust file").
+itself, not a runtime parameter — each contender is a locust file.
 """
 
 from __future__ import annotations

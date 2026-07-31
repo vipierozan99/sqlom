@@ -15,7 +15,6 @@ and the FastAPI worker use to build routes) by design: the worker's routes
 are generated once, in Python, from the compiled hydrator/query objects that
 actually serve a request; a load-test case only needs to know which URL path
 to hit, a much thinner concern that doesn't need the same machinery — and one
-the two registries can, in principle, drift out of sync on (adding a new
-`harness/registry.py` contender doesn't automatically get a loadtest file;
-see PLAN.md for that trade-off).
+the two registries can, in principle, drift out of sync: adding a new
+`harness/registry.py` contender doesn't automatically get a loadtest file.
 """

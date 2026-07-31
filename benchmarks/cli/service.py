@@ -1,4 +1,4 @@
-"""`bench service run` (PLAN.md §9): stand up the FastAPI worker
+"""`bench service run`: stand up the FastAPI worker
 (`service/app.py`, a plain hand-written app — see its module docstring) in
 the foreground, for manual `curl` or as the target of an external profiler
 attach.

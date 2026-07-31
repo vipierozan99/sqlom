@@ -1,4 +1,4 @@
-"""Ephemeral Postgres via docker (PLAN.md D6): `--network host` avoids the
+"""Ephemeral Postgres via docker: `--network host` avoids the
 unpinned docker-proxy userspace hop that would confound loopback latency
 measurements; `--cpuset-cpus` covers every backend from birth, structurally
 removing the "pin before the pool opens" hazard `docs/METHODOLOGY.md` warns
@@ -46,7 +46,7 @@ class EphemeralPostgres:
         cls, *, port: int = 5432, cpuset: str | None = None, version: str = "16",
         ssl: bool = False, db: str = DEFAULT_DB,
     ) -> EphemeralPostgres:
-        # Host networking (D6) means this container binds the port directly —
+        # Host networking means this container binds the port directly —
         # no docker-proxy fallback to silently pick a different one, so a
         # collision must fail loudly rather than start a container nothing
         # can reach.

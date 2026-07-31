@@ -5,7 +5,7 @@
 asyncpg's pool runs `SELECT pg_advisory_unlock_all(); CLOSE ALL; UNLISTEN *;
 RESET ALL;` on every release, as its own server round trip — so a pooled request
 costs two round trips, one of which is cleanup. Measured, that cleanup is ~20-30%
-of throughput (docs/BENCHMARKS.md §6).
+of throughput (docs/FINDINGS.md, "the pool sends a second query").
 
 The usual advice is to pass `reset=` a no-op, but that changes behaviour: session
 state then leaks between requests. This engine takes a third route — run the

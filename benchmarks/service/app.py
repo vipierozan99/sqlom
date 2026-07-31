@@ -107,7 +107,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/noop")
 async def noop() -> Response:
-    """The floor: routing + ASGI only, no database (PLAN.md §7)."""
+    """The floor: routing + ASGI only, no database."""
     return Response(content=b"[]", media_type=JSON)
 
 

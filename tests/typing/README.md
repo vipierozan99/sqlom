@@ -20,8 +20,7 @@ mode that matters most, because `Any` makes everything else pass.
 This is also the file that decided the library's shape. `@sa_model(metadata)`
 would be a decorator *factory*, and factories lose field typing entirely: every
 `assert_type` in `positive.py` would fail with `Any`. That is why declaration is
-a base class with a `dataclass_transform`-decorated metaclass
-(docs/PLAN_CORE_COMPILER.md §5b).
+a base class with a `dataclass_transform`-decorated metaclass.
 
 ### 2. Expected errors — negative assertions
 

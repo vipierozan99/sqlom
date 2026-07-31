@@ -1,5 +1,4 @@
-"""Concurrency audit (PLAN.md §5/§9/§11, ported from the old
-`verify_concurrency.sh`): proves the load generator actually keeps N requests
+"""Concurrency audit: proves the load generator actually keeps N requests
 in flight, three independent ways, rather than assuming it.
 
   1. Direct observation: count ESTABLISHED sockets on the server's port from
@@ -117,6 +116,5 @@ def check_generator_saturation(
     """The generator's own CPU utilization (process CPU time / wall time)
     during a run must stay below `maximum` — above it, the client is the
     bottleneck and every rps figure from that level describes the generator,
-    not the server (PLAN.md §4: "audit the load generator; never assume
-    concurrency")."""
+    not the server. Audit the generator; never assume its concurrency."""
     return utilization < maximum, utilization
