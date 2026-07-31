@@ -15,6 +15,7 @@ Every snippet here was run against a real database before being written down.
 - [Wiring it into FastAPI](#wiring-it-into-fastapi)
 - [Sizing the pool](#sizing-the-pool)
 - [Seeing what runs](#seeing-what-runs)
+- [Timeouts and cancellation](#timeouts-and-cancellation)
 - [Testing an app that uses rowform](#testing-an-app-that-uses-rowform)
 - [Schema and migrations](#schema-and-migrations)
 - [Coming from the SQLAlchemy ORM](#coming-from-the-sqlalchemy-orm)
@@ -231,6 +232,18 @@ created = await engine.fetch_all(
 )   # RETURNING hydrates like any other read
 ```
 
+**Bulk loading** goes through COPY rather than a statement per row:
+
+```python
+await engine.copy_in(User.__table__, rows)     # rows: a list of dicts
+```
+
+20 000 rows of a wide shape: 1.8x faster than `execute_many` on asyncpg, 13.6x on
+psycopg. Postgres only — `SqliteEngine` says so and points at `execute_many`. It
+is a load path rather than a write path: no RETURNING, no ON CONFLICT. Values go
+through the same bind processors as an INSERT, so what lands is what
+`execute_many` would have written.
+
 Writes take `User.__table__`, not `User`. `execute()` refuses a statement that
 returns rows and `fetch_all()` refuses one that does not, so a `returning()` you
 forgot fails loudly instead of returning `[]`.
@@ -257,6 +270,20 @@ async with engine.transaction(isolation="serializable", readonly=True) as tx:
 ```
 
 sqlite raises `UnsupportedError` for those rather than accepting them as no-ops.
+
+**Pipelining** is worth reaching for when the database is a network hop away:
+
+```python
+async with engine.transaction() as tx, tx.pipeline():
+    for row in rows:
+        await tx.execute(update, **row)
+```
+
+200 updates took 564 ms one at a time and 42 ms pipelined at 1 ms of latency —
+13.5x. On loopback it is marginally slower, so it is not a default. psycopg only.
+While the block is open a statement's result is not available (rowcount is -1),
+and an error raises when the pipeline synchronises rather than at the statement
+that caused it.
 
 ## Handling errors
 
@@ -345,6 +372,15 @@ rowform.AsyncpgEngine(dsn, min_size=4, max_size=16, command_timeout=5)
 rowform.PsycopgEngine(dsn, min_size=4, max_size=16, timeout=5)
 ```
 
+`cache_size` (default 500) caps the compiled statements an engine keeps, evicting
+the least recently used. Statements built per request vary in *shape* and so mint
+a new cache entry each time; without the cap that dict grows for the life of the
+process. `engine.cached_statements` is the number to watch — a fixed statement set
+sits at a constant, and one pinned to `cache_size` is recompiling forever, which
+is worth knowing since compiling is the cost `prepare()` exists to hoist. (An
+`IN` list of varying length is *not* one of these: it compiles to a single
+expanding placeholder and shares one entry.)
+
 Anything else you pass reaches the driver's own pool
 (`asyncpg.create_pool`, `psycopg_pool.AsyncConnectionPool`), where timeouts,
 connection lifetimes and health checks live. `SqliteEngine` has no third-party
@@ -378,10 +414,48 @@ def to_tracer(sql: str, seconds: float, rows: int | None) -> None:
     tracer.record("db.query", duration=seconds, attributes={"db.statement": sql, "db.rows": rows})
 ```
 
+`engine.pool_stats()` answers the other half — whether anything was *waiting*
+for a connection while that statement ran:
+
+```python
+stats = engine.pool_stats()
+log.info("pool %d/%d in use, %s waiting", stats.in_use, stats.max_size, stats.waiting)
+```
+
+Saturation and a slow database look the same from outside and are fixed
+differently, so it is worth exporting both. `waiting` is `None` on sqlite and
+asyncpg, whose pools do not count waiters; psycopg reports it.
+
 `logging.getLogger("rowform")` emits at DEBUG and nowhere else: one line per
 statement compiled — per compile, not per execute, so it also tells you whether
 the cache is working — one per hydrator built, carrying the generated source, and
 one per pool open and close.
+
+## Timeouts and cancellation
+
+There is no `timeout=` argument. `asyncio.timeout()` is the mechanism, and it
+composes:
+
+```python
+async with asyncio.timeout(2):
+    users = await engine.fetch_all(sa.select(User))
+```
+
+What matters is what happens to the connection afterwards, since a cancelled
+query is routine — any web framework cancels the handler's task when a client
+disconnects, and that handler is often awaiting a query.
+
+* **asyncpg and psycopg** cancel server-side and hand back a clean connection.
+  Nothing extra is needed, and nothing here interferes.
+* **sqlite** needs help. aiosqlite runs each statement in a worker thread, and
+  cancelling the awaiting task does not stop that thread, so a connection handed
+  straight back would make the next borrower queue behind work nobody is waiting
+  for. `SqliteEngine` interrupts the abandoned statement before returning the
+  connection.
+
+A cancelled `fetch_iter` closes its cursor and releases its connection the same
+way. Inside a transaction, cancellation unwinds the block and rolls back, as any
+other exception would.
 
 ## Testing an app that uses rowform
 

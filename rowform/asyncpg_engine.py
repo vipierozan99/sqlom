@@ -36,7 +36,7 @@ from typing import Any
 
 from sqlalchemy.dialects.postgresql import asyncpg as _asyncpg
 
-from .engine import Engine
+from .engine import Engine, PoolStats
 from .transaction import Transaction
 
 
@@ -93,6 +93,14 @@ class AsyncpgEngine(Engine):
         await self.dialect.setup_asyncpg_jsonb_codec(shim)
         if self.dialect._native_inet_types is False:
             await self.dialect._disable_asyncpg_inet_codecs(shim)
+
+    def _pool_stats(self, pool: Any) -> PoolStats:
+        return PoolStats(
+            size=pool.get_size(),
+            idle=pool.get_idle_size(),
+            max_size=pool.get_max_size(),
+            waiting=None,  # asyncpg's pool keeps no waiter count
+        )
 
     async def _close_pool(self, pool: Any) -> None:
         await pool.close()
@@ -162,6 +170,26 @@ class AsyncpgEngine(Engine):
                 if not rows:
                     return
                 yield rows, description
+
+    async def _copy_in(self, conn, table, columns, records):
+        """asyncpg's own COPY, over the binary protocol.
+
+        It encodes each value with the same codec a parameterised query would
+        use, so the bind-processed values `copy_in` hands over are exactly what
+        an INSERT of the same rows would have sent.
+        """
+        # `table.schema` straight through, including None: asyncpg then leaves the
+        # name unqualified and postgres resolves it through `search_path`, which is
+        # what psycopg's `format_table` does for the same table. Defaulting to
+        # "public" instead would send the two engines to different tables under a
+        # non-default search_path.
+        await conn.copy_records_to_table(
+            table.name,
+            records=records,
+            columns=list(columns),
+            schema_name=table.schema,
+        )
+        return len(records)
 
     async def _execute(self, conn, sql, params):
         """asyncpg returns its own status tag, e.g. "INSERT 0 3" — the driver's

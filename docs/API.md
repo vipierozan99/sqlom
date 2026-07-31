@@ -99,9 +99,9 @@ how the planner resolves an aliased self-join back to a model.
 only in how they open a pool, run a statement, and open a transaction block.
 
 ```python
-rowform.SqliteEngine(path, *, min_size=1, max_size=5, observer=None)
-rowform.AsyncpgEngine(dsn, *, conditional_reset=True, observer=None, **pool_kwargs)
-rowform.PsycopgEngine(dsn, *, observer=None, **pool_kwargs)
+rowform.SqliteEngine(path, *, min_size=1, max_size=5, observer=None, cache_size=500)
+rowform.AsyncpgEngine(dsn, *, conditional_reset=True, observer=None, cache_size=500, **pool_kwargs)
+rowform.PsycopgEngine(dsn, *, observer=None, cache_size=500, **pool_kwargs)
 ```
 
 `pool_kwargs` reach `asyncpg.create_pool` and `psycopg_pool.AsyncConnectionPool`
@@ -124,6 +124,8 @@ connections that could have been dirtied — anything reached through `acquire()
 | `engine.pool` | the driver's pool, or `None` |
 | `engine.dialect` | the SQLAlchemy dialect statements compile for |
 | `engine.observer` | see [Observer](#rowformobserver); reassignable at any time |
+| `engine.cached_statements` | how many compiled statements are held, of at most `cache_size` |
+| `engine.pool_stats()` | a `PoolStats` snapshot — see below |
 
 ### Reading
 
@@ -205,11 +207,41 @@ against this block's pinned connection.
 | `tx.depth` | 0 for the outermost, 1+ for savepoints |
 | `tx.connection` | the pinned driver connection |
 | `tx.execute("SQL string")` | also accepts raw SQL, for DDL and session state — no parameters, no escaping |
+| `tx.pipeline()` | psycopg only — see below |
+
+### `async with tx.pipeline():`
+
+Statements go out without waiting for each result; the replies are collected when
+the block exits. Worth it only where the round trip is the cost: over 200 updates
+it is slightly *slower* on loopback (56 ms against 44 ms) and **13.5x** faster at
+1 ms of network latency (42 ms against 564 ms).
+
+It is on the transaction because a pipeline belongs to one connection. Two
+inherent consequences: a statement's result is unavailable while the block is
+open (psycopg reports a rowcount of -1), and an error raises when the pipeline
+synchronises rather than at the statement that caused it — it does still raise,
+and still rolls the transaction back.
+
+`AsyncpgEngine` and `SqliteEngine` raise `UnsupportedError`: asyncpg exposes no
+such API, and sqlite is a local file with no round trip to hide.
 
 ### `rowform.active_transaction() -> Transaction | None`
 
 The innermost `Transaction` running in this task, from a `ContextVar`. This is what
 `engine.fetch_all()` consults in order to refuse to run inside a block.
+
+---
+
+## `rowform.PoolStats`
+
+What `engine.pool_stats()` returns: a frozen snapshot with `size` (connections
+that exist), `idle` (available right now), `max_size`, `waiting` (callers blocked
+on the pool) and an `in_use` property.
+
+`waiting` is `None` on `SqliteEngine` and `AsyncpgEngine`, because neither pool
+counts its waiters — a zero would be a claim rather than a measurement.
+`PsycopgEngine` reports it, and it is the number that separates "the database is
+slow" from "the pool is too small".
 
 ---
 

@@ -28,7 +28,7 @@ from typing import Any
 
 from sqlalchemy.dialects.sqlite import aiosqlite as _aiosqlite
 
-from .engine import Engine, Observer
+from .engine import DEFAULT_CACHE_SIZE, Engine, Observer, PoolStats
 from .errors import ConfigurationError, UnsupportedError
 from .transaction import Transaction
 
@@ -117,6 +117,20 @@ class _SqlitePool:
             conn = await self._idle.get()
         try:
             yield conn
+        except asyncio.CancelledError:
+            # aiosqlite runs each statement in a worker thread, and cancelling the
+            # task that is awaiting it does not stop that thread. Handing the
+            # connection straight back would queue the *next* borrower behind work
+            # nobody is waiting for any more — with a small pool, a client
+            # disconnecting mid-query stalls everything, which reads as a leak.
+            #
+            # `interrupt()` reaches the sqlite3 connection directly instead of
+            # going through aiosqlite's queue, so it aborts the abandoned
+            # statement rather than waiting in line behind it. It never suspends,
+            # so awaiting it while unwinding a cancellation is safe, and it is a
+            # no-op when nothing is running.
+            await conn.interrupt()
+            raise
         finally:
             self._idle.put_nowait(conn)
 
@@ -133,6 +147,7 @@ class SqliteEngine(Engine):
         min_size: int = 1,
         max_size: int = 5,
         observer: Observer | None = None,
+        cache_size: int | None = DEFAULT_CACHE_SIZE,
         **kwargs: Any,
     ):
         if kwargs:
@@ -142,7 +157,7 @@ class SqliteEngine(Engine):
                 f"pool sizes must satisfy 0 <= min_size <= max_size and max_size >= 1; "
                 f"got min_size={min_size}, max_size={max_size}"
             )
-        super().__init__(path, observer=observer)
+        super().__init__(path, observer=observer, cache_size=cache_size)
         self.path = path
         self._min_size = min_size
         self._max_size = max_size
@@ -151,6 +166,17 @@ class SqliteEngine(Engine):
         pool = _SqlitePool(self.path, self._min_size, self._max_size)
         await pool.open()
         return pool
+
+    def _pool_stats(self, pool: Any) -> PoolStats:
+        # `_count` includes connections currently being opened, which is what
+        # "exists" has to mean for a pool that grows on demand — otherwise the
+        # ceiling could be exceeded between the decision and the connect.
+        return PoolStats(
+            size=pool._count,
+            idle=pool._idle.qsize(),
+            max_size=pool._max,
+            waiting=None,  # asyncio.Queue does not report its waiters
+        )
 
     async def _close_pool(self, pool: Any) -> None:
         await pool.close()

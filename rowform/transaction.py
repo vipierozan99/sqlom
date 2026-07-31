@@ -102,6 +102,31 @@ class Transaction:
         rows, hydrate = await self._engine._run(query, params, self._pinned, extracted)
         return hydrate(rows)
 
+    def pipeline(self) -> AbstractAsyncContextManager[Any]:
+        """Send statements without waiting for each result in turn.
+
+            async with engine.transaction() as tx, tx.pipeline():
+                for row in rows:
+                    await tx.execute(update, **row)
+
+        Only worth it when the round trip is the cost. Measured over 200 updates:
+        on loopback it is slightly *slower* than issuing them one by one (56 ms
+        against 44 ms, the batching being pure overhead when latency is nil), and
+        at 1 ms of network latency it is **13.5x** faster (42 ms against 564 ms).
+
+        It lives on the transaction because a pipeline is a property of one
+        connection, and a transaction is how a connection gets pinned.
+
+        Two consequences, both inherent: a statement's result is not available
+        while the pipeline is open — psycopg reports a rowcount of -1 — and an
+        error raises when the pipeline synchronises rather than at the statement
+        that caused it.
+
+        psycopg only. `AsyncpgEngine` and `SqliteEngine` raise `UnsupportedError`
+        rather than accepting the block and doing nothing.
+        """
+        return self._engine._pipeline(self.connection)
+
     def fetch_iter(self, statement: Any, *, chunk: int = 1000, **params: Any) -> Any:
         """`Engine.fetch_iter`, on this block's connection.
 
@@ -112,7 +137,11 @@ class Transaction:
         return self._engine._iterate(statement, chunk, params, self._pinned)
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
-        rows = await self.fetch_all(statement, **params)
+        """The first row, or None — narrowed to `LIMIT 1` where that is safe, as
+        on the engine (`engine._one_row`)."""
+        from .engine import _one_row
+
+        rows = await self.fetch_all(_one_row(statement), **params)
         return rows[0] if rows else None
 
     async def fetch_value(self, statement: Any, **params: Any) -> Any:

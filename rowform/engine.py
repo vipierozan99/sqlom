@@ -19,25 +19,93 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, TypeVar, overload
 
 import sqlalchemy as sa
 from sqlalchemy import Select
 
-from .errors import ConfigurationError, EngineStateError, StatementError
+from .errors import (
+    ConfigurationError,
+    EngineStateError,
+    StatementError,
+    UnsupportedError,
+)
 from .query import CoreQuery
 from .transaction import _ACTIVE, Transaction
 
 _LOG = logging.getLogger("rowform")
+
+
+def _one_row(statement: Any) -> Any:
+    """`statement`, narrowed to a single row where that is safe to do.
+
+    `fetch_one` and `fetch_value` read the whole result and threw away everything
+    after the first row, so "get me this user" transferred and hydrated the entire
+    table. Adding the LIMIT is the fix, but only for a `Select` that sets none of
+    its own:
+
+    * a caller's `.limit()` may be a bind parameter, and replacing it would leave
+      their value with nothing to bind to;
+    * a `CoreQuery` is already compiled, so there is no statement left to narrow —
+      hoist it with `.limit(1)` already applied if you want that.
+
+    An OFFSET without a LIMIT is narrowed too: the first row of *that* statement
+    is still what the caller asked for.
+
+    `_limit_clause` is SQLAlchemy-private, like the rest of the compiler surface
+    this library reads (`docs/PLAN_CORE_COMPILER.md`); there is no public way to
+    ask a Select whether it is limited.
+    """
+    if isinstance(statement, Select) and statement._limit_clause is None:
+        return statement.limit(1)
+    return statement
 
 #: What an `observer` is handed after every statement: the SQL as executed, how
 #: long the round trip took in seconds, and how many rows came back — `None` for a
 #: statement that returns none, where the driver's own report is the useful number
 #: and `execute()` already returns it.
 Observer = Callable[[str, float, "int | None"], None]
+
+@dataclass(frozen=True, slots=True)
+class PoolStats:
+    """A snapshot of one engine's pool.
+
+    The `observer` answers "which statement was slow"; this answers the question
+    that usually comes next, which is whether anything was waiting for a
+    connection at the time. Saturation looks like slow queries from the outside,
+    and the two are fixed differently.
+
+    `waiting` is `None` where the driver does not report it — asyncpg's pool
+    keeps no waiter count, and rowform's sqlite pool queues on an
+    `asyncio.Queue` whose waiters it does not track. A zero would be a claim;
+    `None` is the truth.
+    """
+
+    #: Connections that exist, idle or not.
+    size: int
+    #: Connections available to be checked out right now.
+    idle: int
+    #: The ceiling `size` will not pass.
+    max_size: int
+    #: Callers currently blocked waiting for one, where the driver reports it.
+    waiting: int | None = None
+
+    @property
+    def in_use(self) -> int:
+        return self.size - self.idle
+
+
+#: How many compiled statements an engine keeps. Matches SQLAlchemy's own
+#: `compiled_cache` default, and for the same reason: an application's statement
+#: set is normally small and fixed, but one built from a request — a filter set
+#: that varies, an `IN` whose length varies — mints a new cache key every time,
+#: and an uncapped dict would hold every one of them for the life of the process.
+DEFAULT_CACHE_SIZE = 500
 
 # One type variable per selected entity. The overloads below are written out per
 # arity rather than with a variadic, because that is exactly the information a
@@ -56,7 +124,18 @@ class Engine(ABC):
     #: type handling both come from it.
     dialect: Any
 
-    def __init__(self, dsn: str, *, observer: Observer | None = None, **pool_kwargs: Any):
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        observer: Observer | None = None,
+        cache_size: int | None = DEFAULT_CACHE_SIZE,
+        **pool_kwargs: Any,
+    ):
+        if cache_size is not None and cache_size < 1:
+            raise ConfigurationError(
+                f"cache_size must be at least 1, or None for no limit; got {cache_size}"
+            )
         self.dsn = dsn
         self.pool: Any = None
         #: Called after every statement with `(sql, seconds, rows)` — the hook for
@@ -67,7 +146,8 @@ class Engine(ABC):
         #: must not throw.
         self.observer = observer
         self._pool_kwargs = pool_kwargs
-        self._queries: dict[Any, CoreQuery[Any]] = {}
+        self._cache_size = cache_size
+        self._queries: OrderedDict[Any, CoreQuery[Any]] = OrderedDict()
 
     # --- lifecycle ----------------------------------------------------------
 
@@ -144,14 +224,34 @@ class Engine(ABC):
 
         `.key` rather than the `CacheKey` itself, whose `__hash__` deliberately
         returns None — only the structural tuple inside it is hashable.
+
+        The cache is bounded and least-recently-used. Unbounded, an application
+        that builds statements per request holds every one of them forever; a
+        plain cap would instead evict whatever happened to be compiled first,
+        which for a long-lived service is its startup statements — the hot ones.
+        The bookkeeping is one `move_to_end` per cached execute, measured at no
+        cost against the flat micro shape.
         """
         if isinstance(statement, CoreQuery):
             return statement, None
         cache_key = statement._generate_cache_key()
-        query = self._queries.get(cache_key.key)
+        queries = self._queries
+        query = queries.get(cache_key.key)
         if query is None:
-            query = self._queries[cache_key.key] = self.prepare(statement)
+            query = queries[cache_key.key] = self.prepare(statement)
+            if self._cache_size is not None and len(queries) > self._cache_size:
+                queries.popitem(last=False)
+        else:
+            queries.move_to_end(cache_key.key)
         return query, cache_key.bindparams
+
+    @property
+    def cached_statements(self) -> int:
+        """How many compiled statements are held. Worth watching: an application
+        whose statement set is fixed sits at a constant here, and one building
+        statements per request pins itself to `cache_size` and recompiles
+        forever."""
+        return len(self._queries)
 
     # --- reads --------------------------------------------------------------
 
@@ -290,8 +390,13 @@ class Engine(ABC):
     async def fetch_one(self, statement: Any, **params: Any) -> Any: ...
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
-        """The first row, or None."""
-        rows = await self.fetch_all(statement, **params)
+        """The first row, or None.
+
+        The statement is narrowed to one row where that is safe (`_one_row`), so
+        this is a `LIMIT 1` rather than a whole result set with everything after
+        the first discarded.
+        """
+        rows = await self.fetch_all(_one_row(statement), **params)
         return rows[0] if rows else None
 
     async def fetch_value(self, statement: Any, **params: Any) -> Any:
@@ -341,6 +446,77 @@ class Engine(ABC):
             result = await self._execute_many(conn, sql, [bound for _, bound in shaped])
         self._observe(sql, start, None)
         return result
+
+    async def copy_in(
+        self,
+        table: sa.Table,
+        rows: Sequence[dict[str, Any]],
+        *,
+        columns: Sequence[str] | None = None,
+    ) -> int:
+        """Bulk-load rows through the server's COPY path. Returns how many.
+
+            await engine.copy_in(User.__table__, [{"id": 1, "name": "ada"}, ...])
+
+        `execute_many` sends one INSERT per row's worth of parameters; COPY sends
+        a stream the server parses without planning a statement per row, which is
+        the difference between a backfill that takes minutes and one that takes
+        seconds. It is a load path, not a write path: no RETURNING, no ON
+        CONFLICT, no per-row result.
+
+        `columns` defaults to every column of the table; name a subset to let
+        server defaults fill the rest. Every row must carry each named column.
+
+        **Values go through the same bind processors a parameterised INSERT
+        uses** (`column.type._cached_bind_processor`), because COPY bypasses the
+        statement path where those normally run — and a `Decimal`, `datetime`,
+        `Enum` or `dict` that skipped them would land as something the round trip
+        does not return unchanged. The tests assert `copy_in` and `execute_many`
+        produce identical rows for every type in the type map.
+
+        Refused inside `engine.transaction()`, as the reads are: it would take a
+        different pooled connection and commit on its own, so a rollback of the
+        surrounding block would leave the loaded rows behind.
+        """
+        self._reject_if_in_transaction("copy_in")
+        if not rows:
+            return 0
+        names = list(columns) if columns is not None else [c.key for c in table.columns]
+        selected = [table.columns[name] for name in names]
+        processors = [
+            column.type._cached_bind_processor(self.dialect) for column in selected
+        ]
+        records = [
+            tuple(
+                processor(row[column.key]) if processor is not None else row[column.key]
+                for column, processor in zip(selected, processors, strict=True)
+            )
+            for row in rows
+        ]
+        start = perf_counter() if self.observer is not None else 0.0
+        label = f"COPY {table.name} ({', '.join(names)})"
+        async with self._acquire() as conn:
+            copied = await self._copy_in(conn, table, [c.name for c in selected], records)
+        self._observe(label, start, copied)
+        return copied
+
+    async def _copy_in(
+        self, conn: Any, table: sa.Table, columns: Sequence[str], records: Sequence[tuple]
+    ) -> int:
+        """Per-driver COPY. The default is a refusal, since only the postgres
+        engines have one."""
+        raise UnsupportedError(
+            f"{type(self).__name__} has no COPY path — that is a postgres feature. "
+            f"Use execute_many() instead."
+        )
+
+    def _pipeline(self, conn: Any) -> Any:
+        """Per-driver pipeline mode. Only psycopg has one."""
+        raise UnsupportedError(
+            f"{type(self).__name__} has no pipeline mode. psycopg3 is the only "
+            f"driver here that implements one; asyncpg has no such API, and "
+            f"sqlite is a local file with no round trip to hide."
+        )
 
     # --- schema -------------------------------------------------------------
 
@@ -473,6 +649,20 @@ class Engine(ABC):
             observer(sql, perf_counter() - start, rows)
 
     # --- driver hooks -------------------------------------------------------
+
+    def pool_stats(self) -> PoolStats:
+        """A snapshot of the pool: how many connections exist, how many are free,
+        and — where the driver reports it — how many callers are waiting.
+
+        Pair it with the `observer`: a slow statement and a saturated pool look
+        the same from the outside and are fixed differently.
+        """
+        return self._pool_stats(self._require_pool())
+
+    @abstractmethod
+    def _pool_stats(self, pool: Any) -> PoolStats:
+        """Read the driver's own counters. Every pool here keeps them already, so
+        nothing is tracked twice."""
 
     @abstractmethod
     async def _open_pool(self) -> Any: ...

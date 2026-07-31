@@ -25,7 +25,7 @@ from typing import Any
 
 from sqlalchemy.dialects.postgresql import psycopg as _psycopg
 
-from .engine import Engine
+from .engine import Engine, PoolStats
 from .errors import ConfigurationError, UnsupportedError
 from .transaction import Transaction
 
@@ -49,6 +49,18 @@ class PsycopgEngine(Engine):
         pool = AsyncConnectionPool(self.dsn, open=False, **self._pool_kwargs)
         await pool.open(wait=True)
         return pool
+
+    def _pool_stats(self, pool: Any) -> PoolStats:
+        # The one pool of the three that counts blocked callers, which is the
+        # number that distinguishes "the database is slow" from "the pool is too
+        # small".
+        stats = pool.get_stats()
+        return PoolStats(
+            size=stats.get("pool_size", 0),
+            idle=stats.get("pool_available", 0),
+            max_size=pool.max_size,
+            waiting=stats.get("requests_waiting", 0),
+        )
 
     async def _close_pool(self, pool: Any) -> None:
         await pool.close()
@@ -88,6 +100,21 @@ class PsycopgEngine(Engine):
                     return
                 yield rows, description
 
+    async def _copy_in(self, conn, table, columns, records):
+        """`COPY ... FROM STDIN`, a row at a time into psycopg's writer.
+
+        Identifiers are quoted by SQLAlchemy's own preparer rather than by hand:
+        a table or column needing quotes is exactly the case a hand-rolled f-string
+        gets wrong.
+        """
+        preparer = self.dialect.identifier_preparer
+        target = preparer.format_table(table)
+        names = ", ".join(preparer.quote(name) for name in columns)
+        async with conn.cursor() as cursor, cursor.copy(f"COPY {target} ({names}) FROM STDIN") as copy:
+            for record in records:
+                await copy.write_row(record)
+        return len(records)
+
     async def _execute(self, conn, sql, params):
         # psycopg binds a sequence or mapping, never varargs; None means "no
         # parameters", which matters because passing an empty one makes psycopg
@@ -99,6 +126,23 @@ class PsycopgEngine(Engine):
         async with conn.cursor() as cursor:
             await cursor.executemany(sql, params)
             return cursor.rowcount
+
+    def _pipeline(self, conn: Any) -> Any:
+        """psycopg's pipeline mode: statements go out without waiting for each
+        result, and the server's replies are collected on exit.
+
+        Needs libpq 14+, so it is checked rather than assumed — an older libpq
+        would otherwise fail somewhere less obvious.
+        """
+        import psycopg
+
+        supported = getattr(getattr(psycopg, "capabilities", None), "has_pipeline", None)
+        available = supported() if supported is not None else psycopg.Pipeline.is_supported()
+        if not available:
+            raise UnsupportedError(
+                "this psycopg build has no pipeline mode; it needs libpq 14 or newer"
+            )
+        return conn.pipeline()
 
     def _block(self, conn: Any, depth: int, kwargs: dict[str, Any]) -> Any:
         return _psycopg_block(self, conn, depth, kwargs)
