@@ -81,7 +81,15 @@ def active_connection() -> Connection | None:
 class Connection:
     """A checked-out connection. See the module docstring for the two tracks."""
 
-    __slots__ = ("_defers_txn", "_engine", "_owns", "_token", "connection", "sa_connection")
+    __slots__ = (
+        "_defers_txn",
+        "_engine",
+        "_outer",
+        "_owns",
+        "_token",
+        "connection",
+        "sa_connection",
+    )
 
     def __init__(
         self,
@@ -103,10 +111,15 @@ class Connection:
         # rowform neither opens nor ends one.
         self._owns = owns
         self._token: Any = None
+        #: The scope this one was opened inside, so `_reject_if_in_transaction`
+        #: can walk the stack rather than seeing only the innermost. Set on
+        #: `_enter`, because only a registered scope is on it.
+        self._outer: Connection | None = None
 
     # --- scope bookkeeping ---------------------------------------------------
 
     def _enter(self) -> None:
+        self._outer = _ACTIVE.get()
         self._token = _ACTIVE.set(self)
 
     def _exit(self) -> None:
@@ -196,6 +209,18 @@ class Connection:
         SQLAlchemy raises rather than returning an empty list that reads as
         "nothing matched".
         """
+        return await self._execute_any(statement, parameters, params, None)
+
+    async def _execute_any(
+        self, statement: Any, parameters: Any, params: dict[str, Any], resolved: Any
+    ) -> Result[Any]:
+        """`execute()`, with the compiled query optionally already in hand.
+
+        `Engine.execute` has to resolve it before opening the scope — the commit
+        decision depends on `is_select` — and passing it down keeps that from
+        being a second structural cache-key computation per one-shot, which is
+        the expensive half of `_query_for`.
+        """
         engine = self._engine
         await self._autobegin()
         if isinstance(parameters, (list, tuple)):
@@ -207,7 +232,7 @@ class Connection:
                 )
             return _result.no_rows(await self.execute_many(statement, parameters))
         bound = {**(parameters or {}), **params}
-        query, extracted = engine._query_for(statement)
+        query, extracted = resolved if resolved is not None else engine._query_for(statement)
         if not query.returns_rows:
             return _result.no_rows(await self._execute(query, bound, extracted))
         rows, hydrate = await engine._run(query, bound, self._pinned, extracted)

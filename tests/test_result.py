@@ -335,7 +335,8 @@ class TestBothTracksAgree:
         async with engine.connect() as conn:
             hot = await conn.fetch_all(statement)
             compat = (await conn.execute(statement)).scalars().all()
-        assert [rf.__version__] and hot == compat
+        assert hot == compat
+        assert all(isinstance(a, Author) for a in hot)
 
     async def test_scalar_projection_agrees(self, engine):
         statement = sa.select(Author.name, Author.id).order_by(Author.id)

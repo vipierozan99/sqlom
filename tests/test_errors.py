@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author, sqlite_url
+from conftest import Author, Base, engine_at, sqlite_url
 from sqlalchemy.dialects.sqlite import aiosqlite
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import Mapped
@@ -183,6 +183,32 @@ class TestEngineStateError:
         async with engine.begin():
             with pytest.raises(rowform.EngineStateError, match="different pooled connection"):
                 await engine.fetch_all(sa.select(Author))
+
+    async def test_it_looks_past_an_inner_scope_on_another_engine(
+        self, sqlite_engine, tmp_path
+    ):
+        """The guard reads a ContextVar, and only the innermost scope is in it.
+
+        Two engines nest — a service reading from a second database inside its
+        own transaction — and the outer engine's read is still the mistake the
+        guard exists for: a second connection from *its* pool, missing its own
+        uncommitted writes. Seeing only the innermost scope let it through.
+        """
+        async with engine_at(sqlite_url(str(tmp_path / "other.sqlite3"))) as other:
+            await other.create_all(Base.metadata)
+            async with sqlite_engine.begin(), other.begin():
+                with pytest.raises(
+                    rowform.EngineStateError, match="different pooled connection"
+                ):
+                    await sqlite_engine.fetch_all(sa.select(Author))
+
+    async def test_an_unrelated_engine_is_still_allowed(self, sqlite_engine, tmp_path):
+        """The walk must not become "any scope anywhere". An engine with no scope
+        of its own on the stack has nothing to miss."""
+        async with engine_at(sqlite_url(str(tmp_path / "other.sqlite3"))) as other:
+            await other.create_all(Base.metadata)
+            async with sqlite_engine.begin():
+                assert await other.fetch_all(sa.select(Author)) == []
 
 
 # --------------------------------------------------------------------------

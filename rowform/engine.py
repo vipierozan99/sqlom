@@ -337,18 +337,27 @@ class Engine:
         sql, bound = query.bind(params, extracted)
         start = perf_counter() if self.observer is not None else 0.0
         total = 0
-        async with acquire() as conn:
-            async for rows, description in self.driver.stream(conn, sql, bound, chunk, query):
-                hydrate = query._hydrate
-                if hydrate is None:
-                    hydrate = query.hydrator(self.dialect, description)
-                total += len(rows)
-                for row in hydrate(rows):
-                    yield row
-        # One call for the whole stream, with the total row count. Unlike the
-        # other paths, this duration includes the consumer's own time between
-        # chunks — there is no round trip to time in isolation.
-        self._observe(sql, start, total)
+        try:
+            async with acquire() as conn:
+                async for rows, description in self.driver.stream(
+                    conn, sql, bound, chunk, query
+                ):
+                    hydrate = query._hydrate
+                    if hydrate is None:
+                        hydrate = query.hydrator(self.dialect, description)
+                    total += len(rows)
+                    for row in hydrate(rows):
+                        yield row
+        finally:
+            # One call for the whole stream, with the total row count. Unlike the
+            # other paths, this duration includes the consumer's own time between
+            # chunks — there is no round trip to time in isolation.
+            #
+            # In `finally` because breaking out of the `async for` closes this
+            # generator, and an abandoned export is exactly the stream an
+            # observer wants to hear about. It reports the rows actually
+            # delivered, not the rows the statement would have produced.
+            self._observe(sql, start, total)
 
     @overload
     async def fetch_one(self, statement: CoreQuery[R], **params: Any) -> R | None: ...
@@ -399,10 +408,10 @@ class Engine:
         it commits too.
         """
         self._reject_if_in_transaction("execute")
-        query, _ = self._query_for(statement)
+        resolved = self._query_for(statement)
         many = isinstance(parameters, (list, tuple))
-        async with self._scope(commit=many or not query.is_select) as conn:
-            return await conn.execute(statement, parameters, **params)
+        async with self._scope(commit=many or not resolved[0].is_select) as conn:
+            return await conn._execute_any(statement, parameters, params, resolved)
 
     async def scalar(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
         """`execute(...).scalar()`, in a scope of its own."""
@@ -707,8 +716,14 @@ class Engine:
         wrong results — or, for the one-shots that commit, leave a write behind
         after the surrounding block rolled back. A fixed `pool_size=1` engine
         turns the same mistake into a deadlock instead."""
+        # Walk the whole stack, not just the innermost: `db_a.begin()` wrapping
+        # `db_b.begin()` leaves db_b innermost, and a `db_a.fetch_all()` there is
+        # exactly the mistake this guard is for — it takes a second connection
+        # from db_a's pool and misses db_a's uncommitted writes.
         active = _ACTIVE.get()
-        if active is not None and active._engine is self:
+        while active is not None and active._engine is not self:
+            active = active._outer
+        if active is not None:
             raise EngineStateError(
                 f"engine.{method}() was called inside connect()/begin(); it would run "
                 f"on a different pooled connection and miss the scope's uncommitted "

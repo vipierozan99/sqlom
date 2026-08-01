@@ -13,6 +13,7 @@ nothing per row.
 from __future__ import annotations
 
 import logging
+from contextlib import aclosing
 
 import sqlalchemy as sa
 from conftest import Author, seed, sqlite_db
@@ -73,6 +74,31 @@ class TestObserver:
             await conn.fetch_all(sa.select(Author))
 
         assert len(seen) == 2
+
+    async def test_an_abandoned_stream_is_still_reported(self, engine):
+        """`fetch_iter` reports once, at the end, with the total row count — and
+        the line that did it sat after the loop, so a consumer that gave up half
+        way never reached it. An abandoned export is exactly the stream an
+        observer is for. It now reports from a `finally`.
+
+        `aclosing` because that is what makes an abandoned async generator finish
+        *here* rather than whenever it is collected — the same reason it is the
+        right way to leave `fetch_iter` early at all.
+        """
+        seen: list[tuple[str, float, int | None]] = []
+        engine.observer = lambda *call: seen.append(call)
+
+        rows = engine.fetch_iter(sa.select(Author).order_by(Author.id), chunk=1)
+        async with aclosing(rows):
+            async for _ in rows:
+                break
+
+        assert len(seen) == 1
+        sql, duration, delivered = seen[0]
+        assert "SELECT" in sql.upper()
+        assert duration >= 0
+        # What was delivered, not what the statement would have produced.
+        assert delivered == 1
 
     async def test_it_can_be_passed_to_the_constructor(self, sqlite_path):
         seen: list[tuple[str, float, int | None]] = []

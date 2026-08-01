@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 import sqlalchemy as sa
 from conftest import Author, Base, Book, Tag, sqlite_url
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 import rowform as rf
 
@@ -344,6 +344,14 @@ class TestSchema:
 
 class TestAcquire:
     async def test_yields_a_raw_driver_connection(self, engine):
+        """The *driver's* connection, not SQLAlchemy's wrapper around it.
+
+        `_checkout` resolves `.driver_connection` so statements are awaited
+        directly rather than through the adapter's DBAPI shim — the ~0.17 ms per
+        statement its docstring claims. Asserting only "not None" would let a
+        regression that yielded the `AsyncConnection` through unnoticed.
+        """
         async with engine.acquire() as conn:
-            assert conn is not None
-            assert not isinstance(conn, rf.Engine)
+            assert not isinstance(conn, (AsyncConnection, rf.Engine))
+            # It belongs to the driver's own package, not to SQLAlchemy's.
+            assert type(conn).__module__.split(".")[0] == engine.dialect.driver
