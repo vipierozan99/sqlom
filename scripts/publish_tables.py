@@ -72,8 +72,14 @@ LABELS = {
     "SQLAlchemy ORM (DC)": "SQLAlchemy ORM (`MappedAsDataclass`)",
 }
 
+#: Rows whose values are bolded as well as their label — the contender the ratio
+#: column is measured against. Emitted here rather than added by hand afterwards,
+#: since a hand-edit on the way to the doc is the transcription step this script
+#: exists to remove.
+BOLD_ROWS = frozenset({"rowform", "rowform (mock)"})
 
-def load(paths: list[Path]) -> dict[tuple[str, str], dict[str, Any]]:
+
+def load(paths: list[Path], gc: str = "off") -> dict[tuple[str, str], dict[str, Any]]:
     """`(backend, shape) -> {contender: {median, spread_pct, ratio, tie}}`.
 
     Later runs win, so re-running one cell and re-pointing the glob at both is
@@ -85,9 +91,11 @@ def load(paths: list[Path]) -> dict[tuple[str, str], dict[str, Any]]:
         shape = run["config"]["shape"]
         ratios = {(r["contender"], r["gc"]): r for r in run.get("ratios", [])}
         for cell in run["cells"]:
-            backend, gc_mode = cell["params"]["backend"], cell["params"]["gc"]
+            if cell["params"]["gc"] != gc:
+                continue
+            backend = cell["params"]["backend"]
             summary = cell["summary"]["median_ms"]
-            ratio = ratios.get((cell["contender"], gc_mode))
+            ratio = ratios.get((cell["contender"], gc))
             table.setdefault((backend, shape), {})[cell["contender"]] = {
                 "median": summary["median"],
                 "spread_pct": summary["spread_pct"],
@@ -95,57 +103,93 @@ def load(paths: list[Path]) -> dict[tuple[str, str], dict[str, Any]]:
                 "tie": bool(ratio["tie"]) if ratio else False,
                 "quotable": run["quotable"],
                 "trials": len(cell["trials"]),
+                "p95": _worst(cell, "p95_over_p50"),
+                "max_over_p50": _worst(cell, "max_over_p50"),
             }
+    if not table:
+        raise SystemExit(
+            f"no cells with gc={gc!r} in those runs — pass --gc to pick a mode "
+            f"the sweep actually recorded"
+        )
     return table
 
 
-def _cell(entry: dict[str, Any] | None, field: str) -> str:
+def _worst(cell: dict[str, Any], key: str) -> float:
+    """The worst trial's value for a detector metric. `Cell.summary` only carries
+    the keys the run asked `summarize()` for, so fall back to the trials, which
+    always have all of them."""
+    summary = cell.get("summary", {}).get(key)
+    if summary is not None:
+        return summary["max"]
+    return max(t["metrics"][key] for t in cell["trials"])
+
+
+def _cell(entry: dict[str, Any] | None, field: str, *, bold: bool = False) -> str:
     if entry is None:
         return "—"
     if field == "median":
-        return f"{entry['median']:.4f}"
-    if entry["ratio"] == 1.0 and not entry["tie"]:
-        return "1.00x"
-    return f"~{entry['ratio']:.2f}x" if entry["tie"] else f"{entry['ratio']:.2f}x"
+        text = f"{entry['median']:.4f}"
+    elif entry["ratio"] == 1.0 and not entry["tie"]:
+        text = "1.00x"
+    else:
+        text = f"~{entry['ratio']:.2f}x" if entry["tie"] else f"{entry['ratio']:.2f}x"
+    return f"**{text}**" if bold else text
 
 
-def render(table: dict[tuple[str, str], dict[str, Any]], backend: str, field: str) -> str:
+def render(table: dict[tuple[str, str], dict[str, Any]], backend: str) -> str:
+    """One combined table per backend: medians, a blank spacer column, then the
+    ratios — the layout that is actually checked into README.md and
+    METHODOLOGY.md.
+
+    Emitting the two halves as separate tables (which this did first) meant
+    hand-merging them row by row to publish, which is precisely the transcription
+    step the script exists to remove.
+    """
     shapes = [s for s in SHAPES if (backend, s) in table]
     if not shapes:
         return ""
     present = [
         name for name in ROW_ORDER if any(name in table[(backend, s)] for s in shapes)
     ]
+    span = " | ".join(shapes)
     lines = [
-        "| contender | " + " | ".join(shapes) + " |",
-        "|---|" + "---|" * len(shapes),
+        f"| contender | {span} | | {span} |",
+        "|---|" + "---|" * (len(shapes) * 2 + 1),
     ]
     for name in present:
-        cells = [_cell(table[(backend, s)].get(name), field) for s in shapes]
-        lines.append(f"| {LABELS.get(name, name)} | " + " | ".join(cells) + " |")
+        entries = [table[(backend, s)].get(name) for s in shapes]
+        bold = name in BOLD_ROWS
+        medians = " | ".join(_cell(e, "median", bold=bold) for e in entries)
+        ratios = " | ".join(_cell(e, "ratio", bold=bold) for e in entries)
+        lines.append(f"| {LABELS.get(name, name)} | {medians} | | {ratios} |")
     return "\n".join(lines)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("runs", nargs="+", type=Path)
+    parser.add_argument(
+        "--gc",
+        default="off",
+        help="which gc mode's cells to render; a run recorded with --gc both "
+        "carries two per contender and only one belongs in a table (default: off)",
+    )
     args = parser.parse_args()
 
-    table = load(args.runs)
+    table = load(args.runs, args.gc)
     for backend in BACKENDS:
         if not any(key[0] == backend for key in table):
             continue
         entries = [e for key, cells in table.items() if key[0] == backend for e in cells.values()]
-        worst = max(e["spread_pct"] for e in entries)
-        trials = sorted({e["trials"] for e in entries})
         print(f"\n### {backend}\n")
-        print(render(table, backend, "median"))
-        print(f"\n#### {backend} — vs rowform (`~` = tie)\n")
-        print(render(table, backend, "ratio"))
+        print(render(table, backend))
         print(
-            f"\nworst trial spread across these cells: {worst:.1f}% "
-            f"over {trials} trials; quotable="
-            f"{sorted({e['quotable'] for e in entries})}"
+            f"\nworst across these cells — trial spread "
+            f"{max(e['spread_pct'] for e in entries):.1f}%, "
+            f"p95/p50 {max(e['p95'] for e in entries):.2f}, "
+            f"max/p50 {max(e['max_over_p50'] for e in entries):.2f}; "
+            f"trials={sorted({e['trials'] for e in entries})}, "
+            f"quotable={sorted({e['quotable'] for e in entries})}"
         )
     return 0
 

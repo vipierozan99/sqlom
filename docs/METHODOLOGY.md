@@ -17,7 +17,8 @@ sqlite is an ephemeral 200,000-row database; postgres is a container on the same
 process**, GC off, pinned to cpus 6-9:
 
 ```
-just bench db up
+DSN="postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
+just bench db up          # prints that DSN back on the "up:" line
 
 for shape in flat join wide; do
   for backend in sqlite postgres mock; do
@@ -32,13 +33,18 @@ done
 Medians of the per-trial medians, in milliseconds, lower is better. Ratios come from
 `stats.ratio_with_spread`, so `~` marks a pair the trials do not actually order —
 either the worst-case interval spans 1.0 or the medians are within 5%. Worst
-trial-to-trial spread anywhere below: **8.1%**.
+trial-to-trial spread anywhere below: **8.1%** (sqlite), 4.5% (postgres), 7.5% (mock).
 
 > **These runs report `quotable=False`, on one clause: cpu boost is enabled and cannot
 > be disabled without root on this box.** Every other gate passes — clean tree,
-> equivalence enforced and self-consistent, one contender per process. Boost inflates
-> the tail rather than the median (`p95/p50` sits at 1.03–1.12 across the tables), so
-> read the ratios and treat the absolutes as this box's.
+> equivalence enforced and self-consistent, one contender per process.
+>
+> It shows, and in the place the detectors are for rather than in the medians. Worst
+> single trial anywhere: `p95/p50` **4.11** and `max/p50` **9.47**, both on sqlite,
+> both on SQLAlchemy Core cells rather than rowform's. Against that, the worst
+> *median* moved 8.1% across five trials. So the tail is disturbed and the central
+> value is not, which is what taking a median of per-trial medians is for — but read
+> the ratios, not the absolutes.
 
 Runs land in `benchmarks/results/runs/`, which is gitignored on main; chosen ones are
 committed to a dated `bench/` branch by hand and indexed in [RUNS.md](RUNS.md).

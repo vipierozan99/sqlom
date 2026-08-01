@@ -8,7 +8,8 @@ satisfies `Run.quotable`'s isolation clause — `bench micro run` hardcoded
 `isolation="combined"` until this commit's parent, so no run before it could.
 
 ```
-just bench db up
+DSN="postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
+just bench db up          # prints that DSN back on the "up:" line
 
 for shape in flat join wide; do
   for backend in sqlite postgres mock; do
@@ -30,7 +31,13 @@ duplicated here; what follows is what the run *changed*.
 **Still `quotable=False`, on one clause.** Cpu boost is enabled and
 `/sys/devices/system/cpu/cpufreq/boost` is root-only on this box. Clean tree,
 equivalence enforced and self-consistent, and one contender per process all pass.
-Boost moves the tail, not the median — `p95/p50` is 1.03-1.12 across every table.
+
+Boost moves the tail and not the median, and the size of that is worth stating rather
+than summarising away: the worst single trial anywhere hit `p95/p50` **4.11** and
+`max/p50` **9.47**, both on sqlite and both on SQLAlchemy Core cells rather than
+rowform's, while the worst median moved 8.1% across five trials. Per backend, worst
+`p95/p50` / `max/p50` / median spread: sqlite 4.11 / 9.47 / 8.1%, postgres 1.33 / 2.00
+/ 4.5%, mock 1.28 / 1.66 / 7.5%.
 
 **1. The compatibility track ties with the hot one, and the earlier number was an
 artifact.** An in-process run on 2026-08-01 (superseded, commit `9452819`) put
@@ -49,8 +56,8 @@ a ~0.09 ms checkout. That is the pool trade (`PLAN_SQLA_API.md` §2b, §5.3) arr
 the table. Postgres: 1.34x/1.17x/1.17x.
 
 **3. The sqlite floor comparison is not apples-to-apples, and the postgres one is.**
-Both sqlite floors hoist a single connection; rowform checks one out per read, so its
-0.75x against the same-hydrator floor is mostly SQLAlchemy's per-checkout cost. The
+Both sqlite floors hoist a single connection; rowform checks one out per read, so the
+0.75x ratio against the same-hydrator floor is mostly SQLAlchemy's per-checkout cost. The
 asyncpg floor acquires per request exactly as rowform does, and there the ratio is
 `~0.96x` — a tie the harness now flags mechanically, where METHODOLOGY previously
 argued it in prose ("1.0075 vs 1.0330, and that run's rowform IQR was 38%").

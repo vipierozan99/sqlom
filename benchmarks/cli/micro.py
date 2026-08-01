@@ -71,6 +71,35 @@ _TRIAL_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 
+#: Summarised across trials, and *how* differs by what the metric is for.
+#:
+#: `median_ms` and `iqr_pct` are central values, so the median across trials is
+#: the representative one. The rest are detectors — `p95_over_p50` is the tail,
+#: `max_over_p50` is explicitly an interference detector (`stats.SampleShape`),
+#: and the Tukey counts say how much of the sample was disturbed — so the **worst**
+#: trial is what gets reported. A detector summarised by its best case detects
+#: nothing.
+#:
+#: The first version of this printed all five from the single fastest trial while
+#: the median column came from all of them, which quietly biased every published
+#: dispersion figure toward the cleanest run: p95/p50 read 1.02-1.30 where the
+#: full trial set reached 4.11, and max/p50 read 1.70 against 9.47.
+_SUMMARY_KEYS = [
+    "median_ms",
+    "iqr_pct",
+    "p95_over_p50",
+    "outliers_mild",
+    "outliers_severe",
+    "max_over_p50",
+]
+_WORST_KEYS = {"p95_over_p50", "outliers_mild", "outliers_severe", "max_over_p50"}
+
+
+def _summarised(cell_obj: result.Cell, key: str) -> float:
+    """One number per metric across a cell's trials — see `_SUMMARY_KEYS`."""
+    return cell_obj.summary[key]["max" if key in _WORST_KEYS else "median"]
+
+
 def _row(columns: tuple[tuple[str, str], ...], *cells: str) -> str:
     return "    " + "".join(
         f"{cell:{spec}}" for cell, (_, spec) in zip(cells, columns, strict=True)
@@ -431,22 +460,21 @@ async def _run(
                                     )
                                 )
                         for cell_obj in group_cells:
-                            cell_obj.summarize(["median_ms", "iqr_pct"])
+                            cell_obj.summarize(_SUMMARY_KEYS)
 
                         group_ratios = _ratios_for(group_cells)
                         typer.echo(f"  -- gc={mode}, trials={trials} --")
                         typer.echo(header)
                         for cell_obj in group_cells:
-                            best = min(cell_obj.trials, key=lambda t: t.metrics["median_ms"])
                             values = [
-                                f"{cell_obj.summary['median_ms']['median']:.4f}",
-                                f"{best.metrics['iqr_pct']:.1f}",
-                                f"{best.metrics['p95_over_p50']:.2f}",
+                                f"{_summarised(cell_obj, 'median_ms'):.4f}",
+                                f"{_summarised(cell_obj, 'iqr_pct'):.1f}",
+                                f"{_summarised(cell_obj, 'p95_over_p50'):.2f}",
                                 "{}/{}".format(
-                                    best.metrics["outliers_mild"],
-                                    best.metrics["outliers_severe"],
+                                    int(_summarised(cell_obj, "outliers_mild")),
+                                    int(_summarised(cell_obj, "outliers_severe")),
                                 ),
-                                f"{best.metrics['max_over_p50']:.2f}x",
+                                f"{_summarised(cell_obj, 'max_over_p50'):.2f}x",
                             ]
                             if trials > 1:
                                 values += [
