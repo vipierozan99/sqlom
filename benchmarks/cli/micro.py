@@ -259,8 +259,23 @@ async def _measure(
     return asdict(sample_shape(samples))
 
 
+def _reference_in(group: list[result.Cell]) -> result.Cell | None:
+    """The cell everything else is measured against.
+
+    Exact name first. Falling back to a unique `REFERENCE`-prefixed name is what
+    picks `rowform (mock)` out of the mock group, where nothing is called plain
+    `rowform`; the uniqueness requirement is what stops it picking one of the
+    three `rowform ...` cells in a group that also has the real one.
+    """
+    exact = [c for c in group if c.contender == REFERENCE]
+    if exact:
+        return exact[0]
+    prefixed = [c for c in group if c.contender.startswith(REFERENCE)]
+    return prefixed[0] if len(prefixed) == 1 else None
+
+
 def _ratios_for(cells: list[result.Cell]) -> list[dict]:
-    """Every cell's median against `REFERENCE`'s, per gc mode, as
+    """Every cell's median against the group's reference, per gc mode, as
     `ratio_with_spread` — value, the worst-case interval the trials allow, and
     the tie flag. Needs one value per trial, which is why this is empty for a
     single-trial run rather than quietly reporting a bare ratio."""
@@ -270,18 +285,18 @@ def _ratios_for(cells: list[result.Cell]) -> list[dict]:
 
     ratios = []
     for mode, group in by_mode.items():
-        reference = next((c for c in group if c.contender == REFERENCE), None)
+        reference = _reference_in(group)
         if reference is None or len(reference.trials) < 2:
             continue
         denominator = [t.metrics["median_ms"] for t in reference.trials]
         for cell_obj in group:
-            if cell_obj.contender == REFERENCE:
+            if cell_obj is reference:
                 continue
             numerator = [t.metrics["median_ms"] for t in cell_obj.trials]
             ratios.append(
                 {
                     "contender": cell_obj.contender,
-                    "against": REFERENCE,
+                    "against": reference.contender,
                     "gc": mode,
                     **ratio_with_spread(numerator, denominator),
                 }
@@ -289,8 +304,8 @@ def _ratios_for(cells: list[result.Cell]) -> list[dict]:
     return ratios
 
 
-def _format_ratio(cell_obj: result.Cell, ratios: list[dict], mode: str) -> str:
-    if cell_obj.contender == REFERENCE:
+def _format_ratio(cell_obj: result.Cell, group: list[result.Cell], ratios: list[dict], mode: str) -> str:
+    if cell_obj is _reference_in(group):
         return "1.00x"
     entry = next(
         (r for r in ratios if r["contender"] == cell_obj.contender and r["gc"] == mode), None
@@ -436,7 +451,7 @@ async def _run(
                             if trials > 1:
                                 values += [
                                     f"{cell_obj.summary['median_ms']['spread_pct']:.1f}",
-                                    _format_ratio(cell_obj, group_ratios, mode),
+                                    _format_ratio(cell_obj, group_cells, group_ratios, mode),
                                 ]
                             typer.echo(_row(columns, cell_obj.contender, *values))
 
