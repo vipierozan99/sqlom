@@ -73,12 +73,19 @@ _TRIAL_COLUMNS: tuple[tuple[str, str], ...] = (
 
 #: Summarised across trials, and *how* differs by what the metric is for.
 #:
-#: `median_ms` and `iqr_pct` are central values, so the median across trials is
-#: the representative one. The rest are detectors — `p95_over_p50` is the tail,
-#: `max_over_p50` is explicitly an interference detector (`stats.SampleShape`),
-#: and the Tukey counts say how much of the sample was disturbed — so the **worst**
-#: trial is what gets reported. A detector summarised by its best case detects
-#: nothing.
+#: `median_ms` is a central value, so the median across trials is the
+#: representative one. `iqr_pct` is a dispersion figure (`stats.py` calls it
+#: *the* one, the reason pytest-benchmark reports IQR at all) but is summarised
+#: the same way on purpose: it describes the spread *within* a trial, and the
+#: representative answer to "how disturbed is a typical run" is the median of
+#: those, not the worst. The across-trial counterpart is `spread_pct`, printed
+#: beside it. The rest are detectors — `p95_over_p50` is the tail, `max_over_p50`
+#: is explicitly an interference detector (`stats.SampleShape`), and the Tukey
+#: counts say how much of the sample was disturbed — so the **worst** trial is
+#: what gets reported. A detector summarised by its best case detects nothing.
+#:
+#: The outlier pair is taken from one trial rather than per metric; `_worst_outliers`
+#: says why.
 #:
 #: The first version of this printed all five from the single fastest trial while
 #: the median column came from all of them, which quietly biased every published
@@ -98,6 +105,27 @@ _WORST_KEYS = {"p95_over_p50", "outliers_mild", "outliers_severe", "max_over_p50
 def _summarised(cell_obj: result.Cell, key: str) -> float:
     """One number per metric across a cell's trials — see `_SUMMARY_KEYS`."""
     return cell_obj.summary[key]["max" if key in _WORST_KEYS else "median"]
+
+
+def _worst_outliers(cell_obj: result.Cell) -> tuple[int, int]:
+    """The mild/severe pair from the *most disturbed trial*, not each metric's
+    maximum taken separately.
+
+    `stats.sample_shape` defines mild as `count(outside inner) - severe`, so the
+    two are anti-correlated across trials: a trial whose outliers turn severe
+    reports fewer mild ones. Maximising each independently therefore printed a
+    pair no trial produced — 19/33 from a run whose worst single trial was 9/33,
+    with a total (52) higher than any trial reached (42). Conservative, but not
+    an observation. Ranking on the total and reporting that trial's pair is.
+    """
+    trials = [
+        (
+            int(t.metrics.get("outliers_mild", 0)),
+            int(t.metrics.get("outliers_severe", 0)),
+        )
+        for t in cell_obj.trials
+    ]
+    return max(trials, key=sum) if trials else (0, 0)
 
 
 def _row(columns: tuple[tuple[str, str], ...], *cells: str) -> str:
@@ -470,10 +498,7 @@ async def _run(
                                 f"{_summarised(cell_obj, 'median_ms'):.4f}",
                                 f"{_summarised(cell_obj, 'iqr_pct'):.1f}",
                                 f"{_summarised(cell_obj, 'p95_over_p50'):.2f}",
-                                "{}/{}".format(
-                                    int(_summarised(cell_obj, "outliers_mild")),
-                                    int(_summarised(cell_obj, "outliers_severe")),
-                                ),
+                                "{}/{}".format(*_worst_outliers(cell_obj)),
                                 f"{_summarised(cell_obj, 'max_over_p50'):.2f}x",
                             ]
                             if trials > 1:
