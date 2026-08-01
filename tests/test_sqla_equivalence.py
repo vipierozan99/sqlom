@@ -24,6 +24,7 @@ import uuid
 
 import pytest
 import sqlalchemy as sa
+from conftest import engine_at, pg_url, sqlite_url
 from sqlalchemy import orm
 from sqlalchemy.orm import Mapped
 
@@ -154,7 +155,7 @@ WIDGETS = [
 def _sync_pg_url(dsn: str) -> str:
     """The same DSN, for a synchronous psycopg SQLAlchemy engine.
 
-    rowform's `AsyncpgEngine` drives asyncpg; the reference reads here go through
+    rowform drives asyncpg; the reference reads here go through
     a stock synchronous `Session`, which needs `postgresql+psycopg://`.
     """
     return dsn.replace("postgresql://", "postgresql+psycopg://", 1)
@@ -177,21 +178,19 @@ async def backend(request, tmp_path):
     """
     if request.param == "sqlite":
         path = str(tmp_path / "eq.sqlite3")
-        rf_engine: rf.Engine = rf.SqliteEngine(path)
-        sa_engine = sa.create_engine(f"sqlite:///{path}")
+        url, sync_url = sqlite_url(path), f"sqlite:///{path}"
     else:
         dsn = request.getfixturevalue("pg_dsn")
-        rf_engine = rf.AsyncpgEngine(dsn)
-        sa_engine = sa.create_engine(_sync_pg_url(dsn))
+        url, sync_url = pg_url(dsn), _sync_pg_url(dsn)
 
-    await rf_engine.connect()
-    try:
-        await _seed(rf_engine)
-        yield rf_engine, sa_engine
-    finally:
-        await rf_engine.drop_all(RfBase.metadata)
-        await rf_engine.close()
-        sa_engine.dispose()
+    sa_engine = sa.create_engine(sync_url)
+    async with engine_at(url) as rf_engine:
+        try:
+            await _seed(rf_engine)
+            yield rf_engine, sa_engine
+        finally:
+            await rf_engine.drop_all(RfBase.metadata)
+            sa_engine.dispose()
 
 
 def _canonical_type(value: object) -> type:

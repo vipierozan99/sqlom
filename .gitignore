@@ -8,6 +8,6 @@ dist/
 .mypy_cache/
 .serena
 
-# bench results/runs/ are ephemeral; `bench record` commits chosen artifacts to a
-# dated branch instead.
+# bench results/runs/ are ephemeral; chosen artifacts are committed to a dated
+# bench/ branch instead, and indexed in docs/RUNS.md.
 benchmarks/results/runs/

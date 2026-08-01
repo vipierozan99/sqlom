@@ -57,16 +57,27 @@ JSON = "application/json"
 DEFAULT_LIMIT = 1000
 
 
+#: One pool configuration for every contender. This is a *concurrent* load test,
+#: so pool size is a first-class variable — running rowform at 1+3 against
+#: SQLAlchemy's default 5+10 compares two configurations, not two result layers.
+POOL = {"pool_size": 1, "max_overflow": 3}
+
+
 def _sa_dsn(path: str) -> str:
     return f"sqlite+aiosqlite:///{path}"
 
 
-def _sa_dsn_pg(dsn: str) -> str:
-    """psycopg-style DSN (`postgresql://...?sslmode=disable`) -> the URL the
-    asyncpg SQLAlchemy dialect wants: swap the driver prefix and drop the
-    query string (that dialect forwards query params verbatim to
-    `asyncpg.connect()`, which has no `sslmode` kwarg)."""
-    return dsn.replace("postgresql://", "postgresql+asyncpg://", 1).split("?", 1)[0]
+def _sa_dsn_pg(dsn: str, driver: str = "asyncpg") -> str:
+    """psycopg-style DSN (`postgresql://...?sslmode=disable`) -> the URL a
+    SQLAlchemy dialect wants.
+
+    The query string only goes for asyncpg, whose dialect forwards URL params
+    verbatim to `asyncpg.connect()` — which has no `sslmode` kwarg. psycopg
+    speaks libpq, so dropping it there would silently ignore the connection
+    options this contender is meant to run under.
+    """
+    url = dsn.replace("postgresql://", f"postgresql+{driver}://", 1)
+    return url.split("?", 1)[0] if driver == "asyncpg" else url
 
 
 @asynccontextmanager
@@ -75,27 +86,32 @@ async def lifespan(app: FastAPI):
     Postgres pools are only opened if `BENCH_PG_DSN` is set — `bench service
     run` doesn't provision postgres, so its worker leaves `app.state.pg_*` as
     `None` and never serves a `/postgres-*` route."""
-    app.state.rowform = rf.SqliteEngine(DB_PATH, min_size=1, max_size=4)
-    await app.state.rowform.connect()
+    app.state.rf_sa_engine = create_async_engine(_sa_dsn(DB_PATH), **POOL)
+    app.state.rowform = rf.Engine(app.state.rf_sa_engine)
     app.state.aiosqlite = await aiosqlite.connect(DB_PATH)
-    app.state.sa_engine = create_async_engine(_sa_dsn(DB_PATH))
+    app.state.sa_engine = create_async_engine(_sa_dsn(DB_PATH), **POOL)
 
     app.state.pg_rowform = None
     app.state.pg_asyncpg = None
     app.state.pg_sa_engine = None
     if PG_DSN:
-        app.state.pg_rowform = rf.PsycopgEngine(PG_DSN, min_size=1, max_size=4)
-        await app.state.pg_rowform.connect()
-        app.state.pg_asyncpg = await asyncpg.create_pool(PG_DSN, min_size=1, max_size=4)
-        app.state.pg_sa_engine = create_async_engine(_sa_dsn_pg(PG_DSN))
+        # Same driver on both sides. rowform used to run these routes on psycopg
+        # while its comparators ran on asyncpg, so every /postgres-* number was
+        # a driver difference and a result-layer difference added together.
+        app.state.pg_rf_sa_engine = create_async_engine(_sa_dsn_pg(PG_DSN), **POOL)
+        app.state.pg_rowform = rf.Engine(app.state.pg_rf_sa_engine)
+        app.state.pg_asyncpg = await asyncpg.create_pool(
+            PG_DSN, min_size=POOL["pool_size"], max_size=POOL["pool_size"] + POOL["max_overflow"]
+        )
+        app.state.pg_sa_engine = create_async_engine(_sa_dsn_pg(PG_DSN), **POOL)
     try:
         yield
     finally:
-        await app.state.rowform.close()
+        await app.state.rf_sa_engine.dispose()
         await app.state.aiosqlite.close()
         await app.state.sa_engine.dispose()
         if app.state.pg_rowform is not None:
-            await app.state.pg_rowform.close()
+            await app.state.pg_rf_sa_engine.dispose()
         if app.state.pg_asyncpg is not None:
             await app.state.pg_asyncpg.close()
         if app.state.pg_sa_engine is not None:

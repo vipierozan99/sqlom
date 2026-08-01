@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author, seed
+from conftest import Author, seed, sqlite_db, sqlite_url
+from sqlalchemy.ext.asyncio import create_async_engine
 
 import rowform
 
@@ -30,7 +31,7 @@ def varied(n: int) -> sa.Select:
 @pytest.fixture
 async def db(sqlite_path):
     """A freshly-opened engine, so cache counts start from zero and are exact."""
-    async with rowform.SqliteEngine(sqlite_path) as engine:
+    async with sqlite_db(sqlite_path) as engine:
         await seed(engine)
         engine._queries.clear()  # seeding compiles statements of its own
         yield engine
@@ -52,7 +53,7 @@ class TestBounding:
         assert [a.id for a in await db.fetch_all(sa.select(Author))] == expected
 
     async def test_none_means_unbounded(self, sqlite_path):
-        async with rowform.SqliteEngine(sqlite_path, cache_size=None) as engine:
+        async with sqlite_db(sqlite_path, cache_size=None) as engine:
             await seed(engine)
             engine._queries.clear()
             for n in range(1, 25):
@@ -76,7 +77,7 @@ class TestBounding:
     def test_an_impossible_size_is_refused(self, sqlite_path):
         for bad in (0, -1):
             with pytest.raises(rowform.ConfigurationError, match="cache_size"):
-                rowform.SqliteEngine(sqlite_path, cache_size=bad)
+                rowform.Engine(create_async_engine(sqlite_url(sqlite_path)), cache_size=bad)
 
 
 class TestEvictionOrder:

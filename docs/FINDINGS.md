@@ -130,16 +130,24 @@ synchronous calls plus process-level parallelism.
 
 ## The pool sends a second query
 
+> [!NOTE]
+> **History.** This was measured when rowform ran `asyncpg.create_pool` itself.
+> The pool is SQLAlchemy's now and `conditional_reset` is gone with it, so the
+> knob described below no longer exists — what survives is the finding, which is
+> about asyncpg's pool and still true of anyone using it directly. SQLAlchemy's
+> equivalent is `pool_reset_on_return`, on the engine you hand to `rf.Engine`;
+> `PLAN_SQLA_API.md` §2b prices it at ~0.11 ms of the checkout.
+
 asyncpg's `PoolConnectionHolder.release()` calls `Connection.reset()`, which executes
 `SELECT pg_advisory_unlock_all(); CLOSE ALL; UNLISTEN *; RESET ALL;` as its own round
 trip. Measured via `_protocol.queries_count`, a pooled request sends **2.01 queries**
 against 1.00 with a no-op reset — so half the server round trips in the default
 configuration are cleanup, worth 20–30% of throughput.
 
-`conditional_reset=True` is the engine default and gets **1.23x against the no-op's
+`conditional_reset=True` was the engine default and got **1.23x against the no-op's
 1.24x**: the whole benefit with the semantics intact. Compiled reads cannot leave
-session state behind, so those connections are provably clean; `acquire()` and
-`transaction()` mark a connection dirty and its release pays the full reset.
+session state behind, so those connections were provably clean; `acquire()` and
+`transaction()` marked a connection dirty and its release paid the full reset.
 
 Two routes that *don't* work, measured first:
 

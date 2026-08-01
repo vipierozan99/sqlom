@@ -5,7 +5,7 @@ different primitives — `fetchmany` on a sqlite cursor, a portal on asyncpg, a
 `DECLARE`d cursor on psycopg — and the interesting failures are per-driver:
 asyncpg refuses to open a portal outside a transaction (so the engine opens one),
 and postgres refuses to `DECLARE` a cursor for a write with RETURNING (so
-`PsycopgEngine` says so rather than passing on a syntax error).
+psycopg says so rather than passing on a syntax error).
 
 `fetch_all` is the oracle throughout: a stream that does not agree with it,
 row for row and type for type, is broken however elegantly it chunks.
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author, Book, Wide, seed
+from conftest import Author, Book, Wide, engine_at, pg_url, seed, sqlite_db
 
 import rowform
 
@@ -27,7 +27,7 @@ async def collect(iterator):
 @pytest.fixture
 async def seeded_sqlite(sqlite_path):
     """Schema and rows at `sqlite_path`, for tests opening their own engine."""
-    async with rowform.SqliteEngine(sqlite_path) as db:
+    async with sqlite_db(sqlite_path) as db:
         await seed(db)
 
 
@@ -127,7 +127,7 @@ class TestChunking:
     async def test_it_really_arrives_in_chunks(self, engine, monkeypatch):
         """Otherwise this is `fetch_all` with extra steps. One yield of the driver
         hook is one server fetch, so N rows at chunk=1 must be N yields."""
-        original = type(engine)._stream
+        original = type(engine.driver).stream
         yields = 0
 
         async def counting(self, conn, sql, params, chunk, query):
@@ -136,7 +136,7 @@ class TestChunking:
                 yields += 1
                 yield item
 
-        monkeypatch.setattr(type(engine), "_stream", counting)
+        monkeypatch.setattr(type(engine.driver), "stream", counting)
         rows = await collect(engine.fetch_iter(sa.select(Author.id), chunk=1))
         assert len(rows) > 1
         assert yields == len(rows)
@@ -160,7 +160,7 @@ class TestConnectionHandling:
         assert await engine.fetch_all(sa.select(Author))
 
     async def test_repeated_streams_do_not_exhaust_the_pool(self, sqlite_path, seeded_sqlite):
-        async with rowform.SqliteEngine(sqlite_path, min_size=1, max_size=2) as db:
+        async with sqlite_db(sqlite_path, pool_size=1, max_overflow=1) as db:
             for _ in range(6):
                 async for _row in db.fetch_iter(sa.select(Author), chunk=1):
                     break
@@ -169,21 +169,21 @@ class TestConnectionHandling:
     async def test_it_is_refused_on_the_engine_inside_a_transaction(self, engine):
         """Same reason `fetch_all` is: it would take a different pooled connection
         and miss the transaction's uncommitted writes."""
-        async with engine.transaction():
+        async with engine.begin():
             with pytest.raises(rowform.EngineStateError, match="fetch_iter"):
                 await collect(engine.fetch_iter(sa.select(Author)))
 
     async def test_streaming_inside_a_transaction_sees_its_writes(self, engine):
-        async with engine.transaction() as tx:
-            await tx.execute(
+        async with engine.begin() as conn:
+            await conn.execute(
                 sa.insert(Author.__table__).values(id=8001, name="uncommitted", active=True)
             )
-            names = [a.name async for a in tx.fetch_iter(sa.select(Author), chunk=2)]
+            names = [a.name async for a in conn.fetch_iter(sa.select(Author), chunk=2)]
         assert "uncommitted" in names
 
     async def test_a_savepoint_can_stream_too(self, engine):
-        async with engine.transaction() as tx, tx.transaction() as sp:
-            rows = await collect(sp.fetch_iter(sa.select(Author), chunk=2))
+        async with engine.begin() as conn, conn.begin_nested():
+            rows = await collect(conn.fetch_iter(sa.select(Author), chunk=2))
         assert rows
 
 
@@ -193,22 +193,23 @@ class TestStatementsItRefuses:
         with pytest.raises(rowform.StatementError, match="produces no rows"):
             await collect(engine.fetch_iter(statement))
 
-    async def test_returning_streams_on_sqlite_and_asyncpg(self, engine):
+    async def test_returning_streams_on_sqlite_and_asyncpg(self, streamable_engine):
         """sqlite has no restriction, and asyncpg opens a portal over the write —
-        both stream what `PsycopgEngine` cannot."""
+        both stream what the psycopg driver cannot. psycopg's half of this is
+        `test_psycopg_refuses_returning_with_a_reason` below."""
         statement = (
             sa.insert(Author.__table__)
             .values(id=8200, name="barbara", active=True)
             .returning(Author.__table__)
         )
-        streamed = await collect(engine.fetch_iter(statement, chunk=1))
+        streamed = await collect(streamable_engine.fetch_iter(statement, chunk=1))
         assert [a.name for a in streamed] == ["barbara"]
 
     async def test_psycopg_refuses_returning_with_a_reason(self, pg_dsn):
         """Postgres cannot DECLARE a cursor for a write, so this fails as an
         `UnsupportedError` naming the alternative rather than as a syntax error
         from the server."""
-        async with rowform.PsycopgEngine(pg_dsn) as db:
+        async with engine_at(pg_url(pg_dsn, "psycopg")) as db:
             await seed(db)
             statement = (
                 sa.insert(Author.__table__)
@@ -222,23 +223,23 @@ class TestStatementsItRefuses:
         """Two live streams on the same pinned connection.
 
         Cursor names are per session, so a fixed one made the second stream fail
-        with `DuplicateCursor: cursor "rowform_stream" already exists`. Only
-        `PsycopgEngine` declares a named cursor, so only it can hit this.
+        with `DuplicateCursor: cursor "rowform_stream" already exists`. Only the
+        psycopg driver declares a named cursor, so only it can hit this.
         """
-        async with rowform.PsycopgEngine(pg_dsn) as db:
+        async with engine_at(pg_url(pg_dsn, "psycopg")) as db:
             await seed(db)
-            async with db.transaction() as tx:
-                outer = tx.fetch_iter(sa.select(Author).order_by(Author.id), chunk=1)
+            async with db.begin() as conn:
+                outer = conn.fetch_iter(sa.select(Author).order_by(Author.id), chunk=1)
                 try:
                     async for _first in outer:
-                        inner = await collect(tx.fetch_iter(sa.select(Author), chunk=1))
+                        inner = await collect(conn.fetch_iter(sa.select(Author), chunk=1))
                         assert inner
                         break
                 finally:
                     await outer.aclose()
 
     async def test_psycopg_streams_a_select(self, pg_dsn):
-        async with rowform.PsycopgEngine(pg_dsn) as db:
+        async with engine_at(pg_url(pg_dsn, "psycopg")) as db:
             await seed(db)
             statement = sa.select(Author).order_by(Author.id)
             streamed = await collect(db.fetch_iter(statement, chunk=2))

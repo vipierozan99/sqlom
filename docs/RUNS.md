@@ -1,5 +1,103 @@
 # Recorded runs
 
+## 2026-08-01 (later) — re-run after two contender fixes
+
+Commit `31974e5`, branch `bench/2026-08-01-contender-fixes` (all eight `run.json`s).
+**This is the sweep [METHODOLOGY.md](METHODOLOGY.md) now publishes**, replacing the one
+below. Same command, same box, same `quotable=False` clause. It was re-taken because
+two contenders were not running the same race as the rest:
+
+* the `MappedAsDataclass` rows built their payload with `dataclasses.asdict()` — a
+  recursive deep copy inside the timed region — where every sibling used a `getattr`
+  comprehension, for byte-identical JSON;
+* the mock table charged the SQLAlchemy contenders a pool checkout inside the timed
+  region while `MockEngine` overrides `_connection` to skip it entirely.
+
+What that changed, and nothing else moved by more than the noise:
+
+| | before | after |
+|---|---|---|
+| ORM (`MappedAsDataclass`), sqlite wide | 17.3702 ms — **4.75x** | 8.8390 ms — **2.18x** |
+| ORM (`MappedAsDataclass`), sqlite flat | 5.1737 ms — 4.31x | 4.6983 ms — 3.61x |
+| Core (positional), mock flat | 0.5467 ms — 2.13x | 0.4214 ms — **1.54x** |
+
+So most of the published `MappedAsDataclass` gap was `asdict()`, not the ORM: with the
+payload builder equalised it lands *level with stock declarative* (2.18x against 2.24x
+on wide), which is the honest reading — the two differ in instrumentation, not in how
+expensive they are to read out. And a fifth of the mock Core ratio was a checkout
+charged to one side only.
+
+**Read the absolutes loosely on this one.** Worst median spread is 12.9% (sqlite),
+30.1% (postgres), 29.2% (mock), against 8.1%/4.5%/7.5% on the sweep below. The die ran
+72–90 °C and this chassis throttles; a first attempt on a hot box reported 32.8% and
+was discarded, and the numbers above are from a re-run after a cooldown with a settle
+gap between groups. The ratios held across all three attempts.
+
+## 2026-08-01 — the first published sweep: both tracks, both backends, isolated
+
+Commit `3757a0d`, branch `bench/2026-08-01-two-tracks` (all eight `run.json`s).
+This was the sweep METHODOLOGY.md published until the re-run above, and the first one that
+satisfies `Run.quotable`'s isolation clause — `bench micro run` hardcoded
+`isolation="combined"` until this commit's parent, so no run before it could.
+
+```
+DSN="postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
+just bench db up          # prints that DSN back on the "up:" line
+
+for shape in flat join wide; do
+  for backend in sqlite postgres mock; do
+    # wide has no mock contenders, and an empty selection is an error
+    if [ "$backend" = mock ] && [ "$shape" = wide ]; then continue; fi
+    just bench micro run --shape "$shape" --backend "$backend" \
+      --iterations 300 --warmup 50 --trials 5 --isolate --pg-dsn "$DSN" --record
+  done
+done
+
+uv run python scripts/publish_tables.py benchmarks/results/runs/*_3757a0d/run.json
+```
+
+**Superseded** by the re-run above; kept for the comparison it supports.
+
+200,000 rows (1.2M for join), 1000 per read, 300 timed iterations after 50 warmup,
+**5 trials, one contender per process**, gc off, pinned to cpus 6-9. Worst
+trial-to-trial spread anywhere: **8.1%** — cleaner than the re-run above, which is why
+its dispersion figures are the ones worth quoting. Its tables are superseded; what
+follows is what the run *changed*.
+
+**Still `quotable=False`, on one clause.** Cpu boost is enabled and
+`/sys/devices/system/cpu/cpufreq/boost` is root-only on this box. Clean tree,
+equivalence enforced and self-consistent, and one contender per process all pass.
+
+Boost moves the tail and not the median, and the size of that is worth stating rather
+than summarising away: the worst single trial anywhere hit `p95/p50` **4.11** and
+`max/p50` **9.47**, both on sqlite and both on SQLAlchemy Core cells rather than
+rowform's, while the worst median moved 8.1% across five trials. Per backend, worst
+`p95/p50` / `max/p50` / median spread: sqlite 4.11 / 9.47 / 8.1%, postgres 1.33 / 2.00
+/ 4.5%, mock 1.28 / 1.66 / 7.5%.
+
+**1. The compatibility track ties with the hot one, and the earlier number was an
+artifact.** An in-process run on 2026-08-01 (superseded, commit `9452819`) put
+`execute().scalars()` 3-4% above `fetch_all()`, and that entry said so. Under real
+process isolation the two tie in all four cells where both run — the earlier gap was
+the compat contender inheriting the allocator state of the `fetch_all` contender that
+had just run in the same interpreter. This is correction 2 (contender ordering inside
+one process) recurring in a suite that had already written it down, and it is why the
+isolation clause exists.
+
+`execute().all()` costs 11-17% and is a real cost: one `Row` per row.
+
+**2. The Core ratios narrowed, as predicted.** On sqlite, 1.26x/1.16x/1.13x
+(flat/join/wide) against the 1.55x/1.16x/1.37x published when rowform owned a pool with
+a ~0.09 ms checkout. That is the pool trade (`PLAN_SQLA_API.md` §2b, §5.3) arriving in
+the table. Postgres: 1.34x/1.17x/1.17x.
+
+**3. The sqlite floor comparison is not apples-to-apples, and the postgres one is.**
+Both sqlite floors hoist a single connection; rowform checks one out per read, so the
+0.75x ratio against the same-hydrator floor is mostly SQLAlchemy's per-checkout cost. The
+asyncpg floor acquires per request exactly as rowform does, and there the ratio is
+`~0.96x` — a tie the harness now flags mechanically, where METHODOLOGY previously
+argued it in prose ("1.0075 vs 1.0330, and that run's rowform IQR was 38%").
+
 ## 2026-07-29 — SQLAlchemy mock-engine micro benchmarks (flat + join)
 
 Two `bench micro run` sweeps (in-process, not load test) — default flat

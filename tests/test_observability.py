@@ -13,11 +13,10 @@ nothing per row.
 from __future__ import annotations
 
 import logging
+from contextlib import aclosing
 
 import sqlalchemy as sa
-from conftest import Author, seed
-
-import rowform
+from conftest import Author, seed, sqlite_db
 
 
 class TestObserver:
@@ -68,17 +67,42 @@ class TestObserver:
         seen: list[tuple[str, float, int | None]] = []
         engine.observer = lambda *call: seen.append(call)
 
-        async with engine.transaction() as tx:
-            await tx.execute(
+        async with engine.begin() as conn:
+            await conn.execute(
                 sa.insert(Author.__table__).values(id=7201, name="ken", active=True)
             )
-            await tx.fetch_all(sa.select(Author))
+            await conn.fetch_all(sa.select(Author))
 
         assert len(seen) == 2
 
+    async def test_an_abandoned_stream_is_still_reported(self, engine):
+        """`fetch_iter` reports once, at the end, with the total row count — and
+        the line that did it sat after the loop, so a consumer that gave up half
+        way never reached it. An abandoned export is exactly the stream an
+        observer is for. It now reports from a `finally`.
+
+        `aclosing` because that is what makes an abandoned async generator finish
+        *here* rather than whenever it is collected — the same reason it is the
+        right way to leave `fetch_iter` early at all.
+        """
+        seen: list[tuple[str, float, int | None]] = []
+        engine.observer = lambda *call: seen.append(call)
+
+        rows = engine.fetch_iter(sa.select(Author).order_by(Author.id), chunk=1)
+        async with aclosing(rows):
+            async for _ in rows:
+                break
+
+        assert len(seen) == 1
+        sql, duration, delivered = seen[0]
+        assert "SELECT" in sql.upper()
+        assert duration >= 0
+        # What was delivered, not what the statement would have produced.
+        assert delivered == 1
+
     async def test_it_can_be_passed_to_the_constructor(self, sqlite_path):
         seen: list[tuple[str, float, int | None]] = []
-        async with rowform.SqliteEngine(sqlite_path, observer=lambda *c: seen.append(c)) as db:
+        async with sqlite_db(sqlite_path, observer=lambda *c: seen.append(c)) as db:
             await seed(db)
             await db.fetch_all(sa.select(Author))
         assert seen
@@ -105,7 +129,7 @@ class TestObserver:
 
 class TestLogging:
     async def test_compiling_and_hydrating_are_logged_at_debug(self, sqlite_path, caplog):
-        async with rowform.SqliteEngine(sqlite_path) as db:
+        async with sqlite_db(sqlite_path) as db:
             await seed(db)
             with caplog.at_level(logging.DEBUG, logger="rowform"):
                 await db.fetch_all(sa.select(Author).limit(1))
@@ -116,7 +140,7 @@ class TestLogging:
 
     async def test_the_logged_hydrator_is_the_generated_source(self, sqlite_path, caplog):
         """The codegen is inspectable from a log, not only from `__source__`."""
-        async with rowform.SqliteEngine(sqlite_path) as db:
+        async with sqlite_db(sqlite_path) as db:
             await seed(db)
             with caplog.at_level(logging.DEBUG, logger="rowform"):
                 await db.fetch_all(sa.select(Author).limit(1))
@@ -124,14 +148,6 @@ class TestLogging:
         built = [r.message for r in caplog.records if "hydrator built:" in r.message]
         assert built
         assert "def _hydrate(rows):" in built[0]
-
-    async def test_pool_lifecycle_is_logged(self, sqlite_path, caplog):
-        with caplog.at_level(logging.DEBUG, logger="rowform"):
-            async with rowform.SqliteEngine(sqlite_path):
-                pass
-        messages = [r.message for r in caplog.records]
-        assert any("pool opened" in m for m in messages)
-        assert any("pool closed" in m for m in messages)
 
     async def test_nothing_is_logged_above_debug(self, engine, caplog):
         """A library that chatters at INFO is a library people disable."""

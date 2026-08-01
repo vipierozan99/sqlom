@@ -1,3 +1,21 @@
+# Goals
+
+## Speed, without leaving SQLAlchemy
+
+Two goals, and the second is not subordinate to the first.
+
+1. **A read path that is faster than SQLAlchemy's result layer** — the reason the
+   project exists, and what the benchmarks defend.
+2. **A SQLAlchemy application can adopt rowform one query at a time**, without
+   giving up its engine, its sessions, its transactions, or its migrations.
+
+Goal 2 is a design constraint, not a nicety. It rules out anything that makes
+rowform a parallel universe with its own vocabulary for what SQLAlchemy already
+names — and it is testable: rowform reads must work *inside* a stock
+`AsyncSession` transaction, seeing its uncommitted writes and rolling back with
+it. Where the two goals conflict, say so explicitly and measure the trade rather
+than picking silently (`docs/PLAN_SQLA_API.md`).
+
 # Principles
 
 ## 1. Think Before Coding
@@ -59,6 +77,23 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 # Conventions
 - Reach the library through `import rowform as rf` — in docs, tests, benchmarks and examples alike. Not `import rowform`, not `from rowform import x`. One name for the package everywhere, so `rf` is free to mean nothing else.
+
+# Workflow
+
+## Docs are written once, at the end
+
+**Do not update docs as you go.** Code and tests land per commit; prose lands in
+one pass when the PR is opened. Half the doc edits made mid-stream get rewritten
+by the next change anyway, and each one costs a review of text that is about to
+move.
+
+While working, keep a running list of what the changes have made stale — file,
+section, and what is now wrong — and write it all at PR time. Docs in scope:
+`README.md`, `docs/*.md`, `SECURITY.md`, and module docstrings that describe the
+public surface rather than the code beneath them.
+
+Docstrings *inside* code you are already editing are part of that edit, not a doc
+update — keep them true as you write.
 
 # Commands
 - Run linting with: `just lint --fix` (`--fix` will already fix fixable errors)

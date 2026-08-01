@@ -1,11 +1,13 @@
 """`MockEngine`: the row layer's floor, with zero driver cost.
 
-Every rowform engine touches its driver through exactly one hook:
+A rowform engine touches its driver through exactly one hook:
 
-    async def _fetch(self, conn, sql, params, describe) -> (rows, description)
+    async def fetch(self, conn, sql, params, describe) -> (rows, description)
 
-`MockEngine` overrides only that, so statement compilation, parameter binding,
-hydrator planning and hydration all run byte-for-byte identical to production —
+`MockEngine` swaps in a `Driver` supplying only that (and skips the pool
+checkout, which is SQLAlchemy's now and not what this measures), so statement
+compilation, parameter binding, hydrator planning and hydration all run
+byte-for-byte identical to production —
 including the per-request cache-key lookup, which is the kind of self-inflicted
 cost this instrument exists to expose (it caught a real 4% regression in the
 shipped engine under the previous design).
@@ -16,7 +18,7 @@ sqlite/Postgres numbers — it is a row-layer instrument only.
 `mock_sqlalchemy_engine()` is the equivalent seam for SQLAlchemy: it fakes
 aiosqlite one layer further down. SQL compilation, Core result processing and ORM
 hydration all run for real; only the SQLite call is canned. It must sit at the
-driver seam rather than at `engine.connect()`/`execute()` because ORM hydration
+driver seam rather than at `engine.execute()` because ORM hydration
 needs a genuine `CursorResult` (row identity, type processors, entity loading),
 not a hand-rolled stand-in. Pairing it against rowform's mock would still put
 different work inside the two timed regions (correction 6), so each is its own
@@ -25,7 +27,8 @@ row-layer floor, not a cross-mapper comparison.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -130,36 +133,47 @@ def mock_sqlalchemy_engine(columns: Sequence[str], rows: list[tuple[Any, ...]]) 
     )
 
 
-class MockEngine(rf.SqliteEngine):
-    """A `SqliteEngine` whose driver call is canned — see module docstring.
+class _MockDriver(rf.Driver):
+    """`fetch` answers from a list. Nothing else is reachable from a read."""
 
-    Subclasses the sqlite engine rather than a postgres one so the *processors*
-    are sqlite's: rows arrive as 0/1 for booleans and strings for temporal types,
-    exactly as the real driver hands them over, and the hydrator does the same
-    work it would in production. A postgres-flavoured mock would silently skip
-    every conversion and measure a row layer that never runs.
+    def __init__(self, dialect: Any, rows: list[tuple[Any, ...]], description: Any):
+        super().__init__(dialect)
+        self._rows = rows
+        self._description = description
 
-    `connect()`/`close()` are inherited and harmless — nothing opens a file,
-    because `_fetch` never reaches a connection.
+    async def fetch(self, conn, sql, params, describe):
+        return self._rows, self._description if describe else None
+
+    def stream(self, conn, sql, params, chunk, query):
+        raise NotImplementedError("the mock measures fetch_all, not streaming")
+
+    async def execute(self, conn, sql, params):
+        raise NotImplementedError("the mock is a read-path instrument")
+
+    async def execute_many(self, conn, sql, params):
+        raise NotImplementedError("the mock is a read-path instrument")
+
+
+class MockEngine(rf.Engine):
+    """An engine whose driver call is canned — see module docstring.
+
+    Built over a `sqlite+aiosqlite` engine rather than a postgres one so the
+    *processors* are sqlite's: rows arrive as 0/1 for booleans and strings for
+    temporal types, exactly as the real driver hands them over, and the hydrator
+    does the same work it would in production. A postgres-flavoured mock would
+    silently skip every conversion and measure a row layer that never runs.
+
+    `_connection` is overridden as well as the driver, so a read never reaches
+    SQLAlchemy's pool — the ~0.4 ms checkout is exactly the cost this instrument
+    exists to exclude. The engine is still real, so the dialect, the compilation
+    and the cache-key lookup all are too.
     """
 
     def __init__(self, rows: list[tuple[Any, ...]], columns: Sequence[str] = ()):
-        super().__init__(":memory:")
-        self._rows = rows
-        self._description = [(name, None) for name in columns]
+        super().__init__(create_async_engine("sqlite+aiosqlite://"))
+        self.driver = _MockDriver(self.dialect, rows, [(name, None) for name in columns])
 
-    def _acquire(self) -> Any:
-        return _NoConnection()
-
-    async def _fetch(self, conn, sql, params, describe):
-        return self._rows, self._description if describe else None
-
-
-class _NoConnection:
-    """There is no connection to check out, and `_fetch` never looks at one."""
-
-    async def __aenter__(self) -> None:
-        return None
-
-    async def __aexit__(self, *exc: object) -> None:
-        return None
+    @asynccontextmanager
+    async def _connection(self) -> AsyncIterator[Any]:
+        """There is no connection to check out, and `fetch` never looks at one."""
+        yield None

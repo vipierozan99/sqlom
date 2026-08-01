@@ -10,58 +10,115 @@ report until you have tried to break it.**
 
 ## Results
 
-`just bench micro run` is the only way to produce these. sqlite is an ephemeral
-200,000-row database; postgres is a container on the same host. 1000 rows per read,
-300 timed iterations after 50 warmup, GC off, process pinned to cpus 6-9. Medians in
-milliseconds, lower is better.
+All of these come from one sweep at commit `3757a0d`, rendered by
+`scripts/publish_tables.py` from the recorded `run.json` rather than transcribed.
+sqlite is an ephemeral 200,000-row database; postgres is a container on the same host.
+1000 rows per read, 300 timed iterations after 50 warmup, **5 trials, one contender per
+process**, GC off, pinned to cpus 6-9:
 
-Runs land in `benchmarks/results/runs/`, which is gitignored on main; `bench record`
-commits chosen ones to a dated branch, indexed in [RUNS.md](RUNS.md).
+```
+DSN="postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
+just bench db up          # prints that DSN back on the "up:" line
+
+for shape in flat join wide; do
+  for backend in sqlite postgres mock; do
+    # wide has no mock contenders, and an empty selection is an error
+    if [ "$backend" = mock ] && [ "$shape" = wide ]; then continue; fi
+    just bench micro run --shape "$shape" --backend "$backend" \
+      --iterations 300 --warmup 50 --trials 5 --isolate --pg-dsn "$DSN" --record
+  done
+done
+```
+
+Medians of the per-trial medians, in milliseconds, lower is better. Ratios come from
+`stats.ratio_with_spread`, so `~` marks a pair the trials do not actually order —
+either the worst-case interval spans 1.0 or the medians are within 5%. Worst
+trial-to-trial spread anywhere below: **12.9%** (sqlite), 30.1% (postgres), 29.2% (mock).
+
+> **These runs report `quotable=False`, on one clause: cpu boost is enabled and cannot
+> be disabled without root on this box.** Every other gate passes — clean tree,
+> equivalence enforced and self-consistent, one contender per process.
+>
+> It shows, and in the place the detectors are for rather than in the medians. Worst
+> single trial anywhere: `p95/p50` **1.68** and `max/p50` **6.36**. Against that, the
+> worst *median* moved 12.9% on sqlite and 30% on postgres and mock across five
+> trials. So the tail is disturbed and the central value less so, which is what
+> taking a median of per-trial medians is for — but read the ratios, not the
+> absolutes.
+>
+> **This sweep is noisier than the one it replaces** (which reported 8.1% worst
+> spread). The die sat at 72–90 °C throughout and this chassis throttles: an
+> earlier attempt on a hot box reported 32.8%, and re-running after a cooldown
+> with a settle gap between groups produced what is above. Postgres and mock still
+> carry ~30% on their worst cell. The ratios are stable across all three attempts
+> and the conclusions do not move; the absolutes should be read as ±10% or so.
+
+Runs land in `benchmarks/results/runs/`, which is gitignored on main; chosen ones are
+committed to a dated `bench/` branch by hand and indexed in [RUNS.md](RUNS.md).
 
 ### sqlite
 
-| contender | flat | join | wide |
-|---|---|---|---|
-| raw driver → dicts *(floor)* | 0.9226 | 1.8090 | — |
-| raw driver + the same hydrator *(floor)* | 1.0117 | 2.1178 | — |
-| **rowform** | **1.0515** | **2.0960** | **4.0700** |
-| SQLAlchemy Core (positional) | 1.6337 | 2.4253 | 5.5812 |
-| SQLAlchemy Core (`.mappings()`) | 3.6406 | — | — |
-| SQLAlchemy ORM | 4.9284 | 8.3629 | 9.4309 |
-| SQLAlchemy ORM (`MappedAsDataclass`) | 6.1918 | 10.8190 | 21.0983 |
+| contender | flat | join | wide | | flat | join | wide |
+|---|---|---|---|---|---|---|---|
+| raw driver → dicts *(floor)* | 0.9100 | 1.4776 | — | | 0.70x | 0.75x | — |
+| raw driver + the same hydrator *(floor)* | 0.9884 | 1.6000 | — | | 0.76x | 0.81x | — |
+| **rowform** `fetch_all()` | **1.3031** | **1.9788** | **4.0615** | | **1.00x** | **1.00x** | **1.00x** |
+| rowform `execute().scalars()` | 1.3220 | — | 4.1499 | | ~1.01x | — | ~1.02x |
+| rowform `execute().all()` | 1.4881 | 2.1855 | — | | 1.14x | 1.10x | — |
+| SQLAlchemy Core (positional) | 1.6340 | 2.2722 | 4.6956 | | 1.25x | 1.15x | 1.16x |
+| SQLAlchemy Core (`.mappings()`) | 3.4667 | — | — | | 2.66x | — | — |
+| SQLAlchemy ORM | 4.7779 | 7.8465 | 9.0950 | | 3.67x | 3.97x | 2.24x |
+| SQLAlchemy ORM (`MappedAsDataclass`) | 4.6983 | 7.6665 | 8.8390 | | 3.61x | 3.87x | 2.18x |
 
 ### postgres (asyncpg)
 
-| contender | flat | join | wide |
-|---|---|---|---|
-| raw driver → dicts *(floor)* | 1.0330 | — | — |
-| **rowform** | **1.0075** | **1.8827** | **3.3459** |
-| SQLAlchemy Core (positional) | 1.5053 | 2.3630 | 4.0825 |
-| SQLAlchemy Core (`.mappings()`) | 3.7085 | — | — |
-| SQLAlchemy ORM | 5.1658 | 8.3664 | 8.5904 |
-
-`flat/postgres` is the one cell where rowform and the floor sit inside each other's
-noise (1.0075 vs 1.0330, and that run's rowform IQR was 38%). Read it as
-"indistinguishable from hand-rolling the driver", not "faster than the floor".
+| contender | flat | join | wide | | flat | join | wide |
+|---|---|---|---|---|---|---|---|
+| raw driver → dicts *(floor)* | 1.0675 | — | — | | ~0.96x | — | — |
+| **rowform** `fetch_all()` | **1.1140** | **1.9214** | **3.1720** | | **1.00x** | **1.00x** | **1.00x** |
+| rowform `execute().scalars()` | 1.1412 | — | 3.2193 | | ~1.02x | — | ~1.01x |
+| rowform `execute().all()` | 1.2748 | 2.0680 | — | | ~1.14x | 1.08x | — |
+| SQLAlchemy Core (positional) | 1.4918 | 2.2743 | 3.8390 | | 1.34x | 1.18x | 1.21x |
+| SQLAlchemy Core (`.mappings()`) | 3.4677 | — | — | | 3.11x | — | — |
+| SQLAlchemy ORM | 4.6385 | 7.6915 | 8.1734 | | 4.16x | 4.00x | 2.58x |
 
 ### Row layer alone (`mock` backend, zero driver cost)
 
-| contender | flat | join |
-|---|---|---|
-| **rowform** | **0.3091** | **0.6474** |
-| SQLAlchemy Core (positional) | 0.6577 | — |
-| SQLAlchemy ORM | 3.9507 | 6.7420 |
+| contender | flat | join | | flat | join |
+|---|---|---|---|---|---|
+| **rowform** | **0.2734** | **0.5629** | | **1.00x** | **1.00x** |
+| SQLAlchemy Core (positional) | 0.4214 | — | | 1.54x | — |
+| SQLAlchemy ORM | 3.4722 | 5.9427 | | 12.70x | 10.56x |
 
-### Ratios
+### Reading the floors
 
-vs rowform on sqlite: Core **1.55x / 1.16x / 1.37x** (flat/join/wide), ORM
-**4.7x / 4.0x / 2.3x**. Row layer alone: Core **2.1x**, ORM **12.8x**.
+**The two sqlite floors hoist one connection for the whole run; rowform checks one out
+of SQLAlchemy's pool per read.** That is most of the 0.75x — about 0.3-0.4 ms of fixed
+per-checkout cost (`PLAN_SQLA_API.md` §2b), not row-layer work. The postgres floor
+acquires per request from asyncpg's own pool, which is why *that* comparison is
+apples-to-apples and lands on `~0.96x`: a tie, and the honest reading of "as fast as
+hand-rolling the driver". Hold a connection per request — as any `AsyncSession`
+application already does — and the sqlite gap closes the same way.
+
+Before the row layer moved onto SQLAlchemy's engine, rowform owned a pool with a ~0.09 ms
+checkout and this table read 1.55x/1.16x/1.37x against Core on sqlite. The Core ratios
+narrowing to 1.25x/1.15x/1.16x is that trade, paid deliberately and priced here rather
+than left in a table taken under the old arrangement.
+
+### The two tracks
+
+`execute()` returns SQLAlchemy's own `Result`; `fetch_all()` returns hydrated objects.
+Taken as `.scalars()`, the compatibility track **ties with the hot one in all four cells
+where both run** — the `Result` is built but no `Row` ever is. Taken as `.all()` it
+costs 8-14%, which is one `Row` per row and the only real difference between the two
+lines. Both still come in under stock Core on the same statement.
 
 **`wide` is the honest number.** Its columns are
 `DateTime`/`Date`/`Numeric`/`Enum`/`Uuid`/nullable, so per-column type processors
 dominate — and both sides run the *same* processors, leaving proportionally less to
-skip. It is also where the ORM gap closes most (2.3x against 4.7x on `flat`). A suite
-quoting only `flat` would be quoting its best case without saying so.
+skip. It is also where the ORM gap closes most — 2.24x against 3.67x on `flat` — while
+the Core gap barely moves (1.16x against 1.25x). A suite quoting only `flat` would be
+quoting its best case without saying so.
 
 ### What the gate proves
 
@@ -100,10 +157,17 @@ this suite's most valuable tripwire.
 out every payload builder per shape. Shared helper code is exactly how a floor quietly
 stops being one (correction 10).
 
-**One contender per process for any published number.** `--only` plus `--repeat`,
-report medians. Allocator state, CPU caches and thermal drift are all shared within a
-process: Core's median moved 32% across three runs differing only in what had run
-before it.
+**One contender per process for any published number.** `--isolate --trials N`, report
+medians. Allocator state, CPU caches and thermal drift are all shared within a process:
+Core's median moved 32% across three runs differing only in what had run before it, and
+`execute().scalars()` measured 3-4% above `fetch_all()` sharing a process with it and
+tied with it once separated.
+
+> This one was written down, mechanically checked by `Run.quotable`, and impossible to
+> satisfy: `bench micro run` hardcoded `isolation="combined"`, so the command that
+> produces the published tables could never pass the gate guarding them. A convention
+> nothing can comply with is worse than an unenforced one — the check reported
+> `quotable=False` on every run, which trained the reader to ignore it.
 
 **Group ties instead of ranking them.** When the spread between two rows exceeds the
 gap between them, say they tie. Report a dispersion figure alongside every central

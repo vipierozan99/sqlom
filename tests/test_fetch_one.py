@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 import sqlalchemy as sa
 from conftest import Author
+from sqlalchemy.dialects.sqlite import aiosqlite
 
 import rowform
 
@@ -39,8 +40,8 @@ class TestItLimits:
         assert "LIMIT" in seen[0].upper()
 
     async def test_inside_a_transaction_too(self, engine, rows_returned):
-        async with engine.transaction() as tx:
-            await tx.fetch_one(sa.select(Author))
+        async with engine.begin() as conn:
+            await conn.fetch_one(sa.select(Author))
         assert rows_returned == [1]
 
     async def test_an_offset_is_still_narrowed(self, engine, rows_returned):
@@ -104,7 +105,7 @@ class TestUnit:
         assert "LIMIT" not in str(statement).upper()
 
     def test_a_core_query_passes_through(self):
-        query = rowform.SqliteEngine(":memory:").prepare(sa.select(Author))
+        query = rowform.CoreQuery(sa.select(Author), aiosqlite.dialect())
         from rowform.engine import _one_row
 
         assert _one_row(query) is query

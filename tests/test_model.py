@@ -12,6 +12,7 @@ from abc import ABC
 import pytest
 import sqlalchemy as sa
 from conftest import Author, Base, Book, Colour, Wide
+from sqlalchemy.dialects.sqlite import aiosqlite
 from sqlalchemy.orm import Mapped
 
 import rowform as rf
@@ -567,7 +568,7 @@ class TestDdl:
     def test_sqlite_renders_the_types_it_has_no_native_form_for(self):
         ddl = str(
             sa.schema.CreateTable(Wide.__table__).compile(
-                dialect=rf.SqliteEngine("x").dialect
+                dialect=aiosqlite.dialect()
             )
         )
         assert "CHAR(32)" in ddl  # sqlite has no native uuid

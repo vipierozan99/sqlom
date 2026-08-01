@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import Mapped
 
 import rowform as rf
@@ -38,7 +39,7 @@ class Book(Base):
     title: Mapped[str]
 
 
-engine = rf.SqliteEngine("app.db")
+engine = rf.Engine(create_async_engine("sqlite+aiosqlite:///app.db"))
 
 
 # --- construction ----------------------------------------------------------

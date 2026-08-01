@@ -10,38 +10,44 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author, Base, Book, Tag
+from conftest import Author, Base, Book, Tag, sqlite_url
+from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 import rowform as rf
 
 
 class TestLifecycle:
-    async def test_connect_is_idempotent(self, engine):
-        assert await engine.connect() is engine.pool
+    """rowform has no lifecycle of its own any more — the `AsyncEngine` it wraps
+    has one, and it stays the caller's. What is left to assert is that the
+    wrapping is honest about what it accepts."""
 
-    async def test_close_clears_the_pool_and_is_repeatable(self, engine):
-        await engine.close()
-        assert engine.pool is None
-        await engine.close()
+    def test_it_exposes_the_engine_it_wraps(self, sqlite_path):
+        sa_engine = create_async_engine(sqlite_url(sqlite_path))
+        db = rf.Engine(sa_engine)
+        assert db.sa_engine is sa_engine
+        assert db.dialect is sa_engine.dialect
 
-    async def test_use_before_connect_raises(self, sqlite_path):
-        db = rf.SqliteEngine(sqlite_path)
-        with pytest.raises(RuntimeError, match="not connected"):
-            await db.fetch_all(sa.select(Author))
+    def test_a_sync_engine_is_refused(self, sqlite_path):
+        """`create_engine` gives an `Engine`, whose connections are not
+        awaitable — rowform runs statements on the driver connection itself, so
+        there would be nothing to await."""
+        with pytest.raises(rf.ConfigurationError, match="AsyncEngine"):
+            rf.Engine(sa.create_engine(f"sqlite:///{sqlite_path}"))  # pyright: ignore[reportArgumentType]
 
-    async def test_use_after_close_raises(self, engine):
-        await engine.close()
-        with pytest.raises(RuntimeError, match="not connected"):
-            await engine.fetch_all(sa.select(Author))
+    def test_a_url_is_not_an_engine(self, sqlite_path):
+        with pytest.raises(rf.ConfigurationError, match="create_async_engine"):
+            rf.Engine(sqlite_url(sqlite_path))  # pyright: ignore[reportArgumentType]
 
-    async def test_async_context_manager(self, sqlite_path):
-        async with rf.SqliteEngine(sqlite_path) as db:
-            assert db.pool is not None
-        assert db.pool is None
-
-    def test_an_unknown_kwarg_is_refused(self, sqlite_path):
-        with pytest.raises(TypeError, match="unexpected keyword"):
-            rf.SqliteEngine(sqlite_path, conditional_reset=True)
+    async def test_disposing_the_engine_is_the_callers_business(self, tmp_path):
+        """rowform never disposes what it did not open, so a disposed engine
+        fails as SQLAlchemy's, not with an invented state error."""
+        sa_engine = create_async_engine(sqlite_url(str(tmp_path / "dispose.sqlite3")))
+        db = rf.Engine(sa_engine)
+        await db.create_all(Base.metadata)
+        await sa_engine.dispose()
+        # A disposed engine opens a fresh pool rather than refusing, which is
+        # SQLAlchemy's documented behaviour and now rowform's too.
+        assert await db.fetch_all(sa.select(Author)) == []
 
 
 class TestFetchAll:
@@ -64,12 +70,20 @@ class TestFetchAll:
     async def test_limit_binds_from_positiontup_not_from_the_caller(self, engine):
         """Core supplies parameters nobody asked for — on sqlite a bare `.limit()`
         emits `LIMIT ? OFFSET ?` with an OFFSET of 0 — so the positional tuple has
-        to be built from `positiontup` rather than from what was passed."""
+        to be built from `positiontup` rather than from what was passed.
+
+        The tuple is what `positiontup` describes only for a positional
+        paramstyle; psycopg is named, so `bind()` hands over a dict there and
+        there is no order to get wrong (`CoreQuery._shape`).
+        """
         query = engine.prepare(sa.select(Author).order_by(Author.id).limit(2))
         _, params = query.bind()
-        assert len(params) == len(query._keys)
-        if "OFFSET" in query.sql.upper():
-            assert params == (2, 0)
+        if engine.dialect.positional:
+            assert len(params) == len(query._keys)
+            if "OFFSET" in query.sql.upper():
+                assert params == (2, 0)
+        else:
+            assert set(params.values()) >= {2}
         assert [a.id for a in await engine.fetch_all(query)] == [1, 2]
 
     async def test_empty_result(self, engine):
@@ -284,9 +298,16 @@ class TestWrites:
         assert isinstance(rows[0], Author)
         assert (rows[0].name, rows[0].active) == ("frank", False)
 
-    async def test_execute_refuses_a_statement_that_returns_rows(self, engine):
-        with pytest.raises(ValueError, match="produces rows"):
-            await engine.execute(sa.select(Author))
+    async def test_execute_returns_a_sqlalchemy_result(self, engine):
+        result = await engine.execute(sa.select(Author).order_by(Author.id))
+        assert [a.name for a in result.scalars().all()] == ["ada", "brian", "carol", "dan"]
+
+    async def test_execute_reports_a_rowcount_for_a_write(self, engine):
+        result = await engine.execute(
+            sa.insert(Author.__table__).values(id=70, name="p", active=True)
+        )
+        assert result.rowcount == 1
+        assert result.returns_rows is False
 
     async def test_execute_many_with_no_rows_is_a_no_op(self, engine):
         assert await engine.execute_many(sa.insert(Tag.__table__), []) is None
@@ -306,7 +327,14 @@ class TestSchema:
         """A hand-rolled loop over `sorted_tables` omits `CREATE TYPE`, and the
         table then fails to create on postgres. The DDL comes from SQLAlchemy's
         own SchemaGenerator so it cannot."""
-        statements = engine._ddl(Base.metadata, drop=False)
+        statements = []
+        mock = sa.create_mock_engine(
+            f"{engine.dialect.name}://",
+            lambda element, *a, **kw: statements.append(
+                str(element.compile(dialect=engine.dialect)).strip()
+            ),
+        )
+        Base.metadata.create_all(mock, checkfirst=False)
         if engine.dialect.supports_native_enum:
             assert any(s.startswith("CREATE TYPE") for s in statements)
             types = next(i for i, s in enumerate(statements) if s.startswith("CREATE TYPE"))
@@ -316,6 +344,14 @@ class TestSchema:
 
 class TestAcquire:
     async def test_yields_a_raw_driver_connection(self, engine):
+        """The *driver's* connection, not SQLAlchemy's wrapper around it.
+
+        `_checkout` resolves `.driver_connection` so statements are awaited
+        directly rather than through the adapter's DBAPI shim — the ~0.17 ms per
+        statement its docstring claims. Asserting only "not None" would let a
+        regression that yielded the `AsyncConnection` through unnoticed.
+        """
         async with engine.acquire() as conn:
-            assert conn is not None
-            assert not isinstance(conn, rf.Engine)
+            assert not isinstance(conn, (AsyncConnection, rf.Engine))
+            # It belongs to the driver's own package, not to SQLAlchemy's.
+            assert type(conn).__module__.split(".")[0] == engine.dialect.driver

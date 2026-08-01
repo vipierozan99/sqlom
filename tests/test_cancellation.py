@@ -12,7 +12,13 @@ clean connection. **sqlite stalled the pool every time.** aiosqlite runs each
 statement in a worker thread, and cancelling the awaiting task does not stop that
 thread, so the connection went back to the pool with the abandoned statement
 still running — the next borrower queued behind work nobody wanted, which looks
-exactly like a leak. `_SqlitePool.acquire` now interrupts it.
+exactly like a leak. `SqliteDriver.on_cancelled` now interrupts it, from
+`Engine._checkout`'s `except CancelledError` while the scope unwinds.
+
+That measurement predates the move onto SQLAlchemy's pool, so these tests are
+what carry the claim now rather than the note above: the pool being SQLAlchemy's
+is exactly the sort of change that could make "hands back a clean connection"
+stop being true without anything saying so.
 
 The statements here are slow enough to still be running when cancelled and no
 slower, so the suite does not pay for this.
@@ -25,9 +31,7 @@ from typing import Any
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author, seed
-
-import rowform
+from conftest import Author, seed, sqlite_db
 
 # A statement that is still running a quarter of a second in. sqlite has no
 # sleep, so a recursive CTE counts instead; `.columns()` makes it something the
@@ -40,7 +44,7 @@ SLOW_PG = sa.select(sa.func.pg_sleep(30))
 
 
 def slow_for(engine) -> Any:
-    return SLOW_SQLITE if isinstance(engine, rowform.SqliteEngine) else SLOW_PG
+    return SLOW_SQLITE if engine.dialect.name == "sqlite" else SLOW_PG
 
 
 async def cancel_after(coro_factory, delay: float = 0.25) -> None:
@@ -50,6 +54,22 @@ async def cancel_after(coro_factory, delay: float = 0.25) -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+def _idle_connections(pool) -> list[Any]:
+    """The driver connections sitting in a SQLAlchemy pool's queue.
+
+    Absent the fix under test the abandoned connection is one of these: it went
+    back to the pool with its statement still running. SQLAlchemy exposes no
+    public way to enumerate them, so this reaches in and returns nothing if the
+    shape changes — it runs on the failure path only, where the worst outcome is
+    that the failure arrives slowly again.
+    """
+    try:
+        records = list(pool._pool._queue._queue)
+    except AttributeError:
+        return []
+    return [r.driver_connection for r in records if r.driver_connection is not None]
 
 
 async def assert_usable(engine, expected: list[str]) -> None:
@@ -64,10 +84,10 @@ async def assert_usable(engine, expected: list[str]) -> None:
         )
     except TimeoutError:
         # Only reached when the fix under test is absent. The abandoned CTE is
-        # still running, so fixture teardown would queue `close()` behind it and
+        # still running, so fixture teardown would queue `dispose()` behind it and
         # the failure would arrive slowly; interrupt first so it arrives now.
-        if isinstance(engine, rowform.SqliteEngine):
-            for conn in engine._require_pool()._all:
+        if engine.dialect.name == "sqlite":
+            for conn in _idle_connections(engine.sa_engine.pool):
                 await conn.interrupt()
         raise
     assert [a.name for a in rows] == expected
@@ -96,8 +116,8 @@ class TestThePoolSurvives:
 
     async def test_a_cancellation_inside_a_transaction(self, engine, names):
         async def in_transaction():
-            async with engine.transaction() as tx:
-                await tx.fetch_value(slow_for(engine))
+            async with engine.begin() as conn:
+                await conn.fetch_value(slow_for(engine))
 
         await cancel_after(in_transaction)
         await assert_usable(engine, names)
@@ -105,7 +125,7 @@ class TestThePoolSurvives:
     async def test_repeated_cancellations_do_not_drain_a_small_pool(self, sqlite_path):
         """The failing shape: with two connections, three abandoned statements
         used to be enough to stall everything that came after."""
-        async with rowform.SqliteEngine(sqlite_path, min_size=1, max_size=2) as db:
+        async with sqlite_db(sqlite_path, pool_size=1, max_overflow=1) as db:
             await seed(db)
             expected = [a.name for a in await db.fetch_all(sa.select(Author).order_by(Author.id))]
             for _ in range(3):

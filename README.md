@@ -16,6 +16,7 @@ pay for none of its result layer.
 
 ```python
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import Mapped
 import rowform as rf
 
@@ -29,10 +30,9 @@ class User(Base):
     name: Mapped[str]
     email: Mapped[str | None]
 
-engine = rf.AsyncpgEngine("postgresql://localhost/app")
-await engine.connect()
+db = rf.Engine(create_async_engine("postgresql+asyncpg://localhost/app"))
 
-users = await engine.fetch_all(
+users = await db.fetch_all(
     sa.select(User).where(User.name.like("a%")).limit(100)
 )   # list[User]
 ```
@@ -100,28 +100,40 @@ the other direction — correctness rather than latency — and is worth reading
 
 ## 📊 Performance
 
-sqlite, 200k-row table, 1000 rows per read, 300 iterations, GC off, pinned cores.
-Medians in ms, lower is better. `just bench micro run --shape <shape>` reproduces.
+sqlite, 200k-row table, 1000 rows per read, 300 iterations, 5 trials, one contender per
+process, GC off, pinned cores. Medians in ms, lower is better; `x` is against rowform,
+and `~` marks a pair the trials do not actually order.
 
-| | flat | join | wide |
-|---|---|---|---|
-| raw driver → dicts *(floor)* | 0.9226 | 1.8090 | — |
-| raw driver + the same hydrator *(floor)* | 1.0117 | 2.1178 | — |
-| **rowform** | **1.0515** | **2.0960** | **4.0700** |
-| SQLAlchemy Core (positional) | 1.6337 | 2.4253 | 5.5812 |
-| SQLAlchemy Core (`.mappings()`) | 3.6406 | — | — |
-| SQLAlchemy ORM | 4.9284 | 8.3629 | 9.4309 |
-| SQLAlchemy ORM (`MappedAsDataclass`) | 6.1918 | 10.8190 | 21.0983 |
+| | flat | join | wide | | flat | join | wide |
+|---|---|---|---|---|---|---|---|
+| raw driver → dicts *(floor)* | 0.9100 | 1.4776 | — | | 0.70x | 0.75x | — |
+| raw driver + the same hydrator *(floor)* | 0.9884 | 1.6000 | — | | 0.76x | 0.81x | — |
+| **rowform** `fetch_all()` | **1.3031** | **1.9788** | **4.0615** | | **1.00x** | **1.00x** | **1.00x** |
+| rowform `execute().scalars()` | 1.3220 | — | 4.1499 | | ~1.01x | — | ~1.02x |
+| rowform `execute().all()` | 1.4881 | 2.1855 | — | | 1.14x | 1.10x | — |
+| SQLAlchemy Core (positional) | 1.6340 | 2.2722 | 4.6956 | | 1.25x | 1.15x | 1.16x |
+| SQLAlchemy Core (`.mappings()`) | 3.4667 | — | — | | 2.66x | — | — |
+| SQLAlchemy ORM | 4.7779 | 7.8465 | 9.0950 | | 3.67x | 3.97x | 2.24x |
+| SQLAlchemy ORM (`MappedAsDataclass`) | 4.6983 | 7.6665 | 8.8390 | | 3.61x | 3.87x | 2.18x |
 
-**1.2–1.6x SQLAlchemy Core's result layer, 2.3–4.7x its ORM, and within ~14% of
-hand-rolling the driver.** With the driver removed entirely, the row layer alone is
-**0.31 ms against Core's 0.66 and the ORM's 3.95**.
+**1.2–1.3x SQLAlchemy Core's result layer and 2.2–4.2x its ORM**, on both backends. With
+the driver removed entirely, the row layer alone is **0.27 ms against Core's 0.42 and
+the ORM's 3.47**. Postgres numbers, the ratios' intervals, and this run's dispersion —
+noisier than usual, on a chassis that throttles — are in
+[METHODOLOGY.md](docs/METHODOLOGY.md).
 
-Two things matter more than the ratios. **Every contender runs identical SQL**, compiled
-by Core, so what is compared is only what happens to the rows afterwards. And **`wide`
-shows the smallest win, which is why it is in the table** — it is the shape full of
-`DateTime`/`Numeric`/`Enum`/`Uuid` columns, where type processors dominate and both
-sides run the same ones. Quoting only `flat` would flatter.
+Three things matter more than the ratios. **Every contender runs identical SQL**,
+compiled by Core, so what is compared is only what happens to the rows afterwards.
+**`wide` shows the smallest win, which is why it is in the table** — it is the shape full
+of `DateTime`/`Numeric`/`Enum`/`Uuid` columns, where type processors dominate and both
+sides run the same ones. And **the sqlite floors hold one connection for the whole run
+while rowform checks one out per read**, so most of that 0.75x is SQLAlchemy's ~0.3-0.4 ms
+pool checkout rather than row-layer work — against the postgres floor, which acquires per
+request like rowform does, the two tie.
+
+These runs report `quotable=False` on exactly one clause: cpu boost is on and needs root
+to disable. Everything else the gate checks — clean tree, equivalence enforced, one
+contender per process — passes.
 
 Full numbers, and a log of **eleven published claims that turned out to be wrong**:
 [METHODOLOGY.md](docs/METHODOLOGY.md).
@@ -177,12 +189,12 @@ native-dict path, which slotted instances fall off
 ### Reading
 
 ```python
-await engine.fetch_all(sa.select(User))                   # list[User]
-await engine.fetch_all(sa.select(User.name))              # list[str]
-await engine.fetch_all(sa.select(User, Post).join(Post))  # list[tuple[User, Post]]
+await db.fetch_all(sa.select(User))                   # list[User]
+await db.fetch_all(sa.select(User.name))              # list[str]
+await db.fetch_all(sa.select(User, Post).join(Post))  # list[tuple[User, Post]]
 
-await engine.fetch_one(sa.select(User).where(User.id == 1))             # User | None
-await engine.fetch_value(sa.select(sa.func.count()).select_from(User))  # int
+await db.fetch_one(sa.select(User).where(User.id == 1))             # User | None
+await db.fetch_value(sa.select(sa.func.count()).select_from(User))  # int
 ```
 
 **One selected entity yields that entity; two or more yield a tuple.** The statement
@@ -195,12 +207,35 @@ For an export or a backfill, `fetch_iter` reads through a cursor and hydrates a 
 a time instead of building one list:
 
 ```python
-async for user in engine.fetch_iter(sa.select(User), chunk=500):
+async for user in db.fetch_iter(sa.select(User), chunk=500):
     await sink.write(user)
 ```
 
 The connection is held for the whole iteration, so a slow consumer holds a pooled
-connection while it works. Inside a transaction use `tx.fetch_iter`.
+connection while it works. Inside a scope use `conn.fetch_iter`.
+
+**There is a second way to read, and it is SQLAlchemy's.** `execute()` returns a real
+`sqlalchemy.Result` — rowform hands its hydrated rows to SQLAlchemy's own result
+machinery rather than imitating it, so every accessor is the upstream implementation:
+
+```python
+async with db.connect() as conn:
+    users = await conn.fetch_all(sa.select(User))                     # list[User]
+    users = (await conn.execute(sa.select(User))).scalars().all()     # list[User]
+    rows  = (await conn.execute(sa.select(User))).all()               # list[Row]
+```
+
+`.scalars()`, `.mappings()`, `.tuples()`, `.unique()`, `.partitions()`, `row.name`,
+`NoResultFound` — all of it behaves as it does upstream, which is what lets code move
+over a query at a time. Nothing is wrapped on the way in, so you pay for what you take:
+measured on the accessor alone, per 1000 rows, `.scalars().all()` costs 0.0049 ms,
+`.all()` 0.168 ms and `.mappings().all()` 0.471 ms.
+
+End to end that holds up: measured against `fetch_all` on the same 1000-row read,
+one contender per process, `.scalars()` **ties** with it in every cell where both
+run, and `.all()` costs **8-14%** — the `Row` per row, and nothing else. Both are
+still under stock SQLAlchemy Core on the same statement, because what changes
+underneath is `Row`/`CursorResult`, not the idiom above it.
 
 ### Aliases and self-joins
 
@@ -210,7 +245,7 @@ connection while it works. Inside a transaction use `tx.fetch_iter`.
 ```python
 mgr = rf.alias(User, "mgr")
 
-await engine.fetch_all(
+await db.fetch_all(
     sa.select(User, mgr).join(mgr, User.manager_id == mgr.id)
 )   # list[tuple[User, User]]
 ```
@@ -221,7 +256,7 @@ than to any table. `of=` says the rows are that model's:
 ```python
 active = rf.alias(User, of=sa.select(User).where(User.active).cte("active"))
 
-await engine.fetch_all(sa.select(active).order_by(active.id))   # list[User]
+await db.fetch_all(sa.select(active).order_by(active.id))   # list[User]
 ```
 
 `of=` demands that model's columns, in order, and nothing else — an extra column is a
@@ -232,37 +267,74 @@ select a model out of a window-function subquery.
 ### Writing
 
 ```python
-await engine.execute(sa.insert(User).values(name="ada"))
-await engine.execute_many(sa.insert(User), [{...}, {...}])
-await engine.execute(sa.update(User).where(User.id == 1).values(hits=User.hits + 1))
+await db.execute(sa.insert(User).values(name="ada"))
+await db.execute_many(sa.insert(User), [{...}, {...}])
+await db.execute(sa.update(User).where(User.id == 1).values(hits=User.hits + 1))
 
-rows = await engine.fetch_all(sa.insert(User).values(name="ada").returning(User))
+rows = await db.fetch_all(sa.insert(User).values(name="ada").returning(User))
 ```
 
 The class stands in for its table in writes exactly as in reads, so `sa.insert(User)`
-and `sa.insert(User.__table__)` are the same statement. `execute()` refuses a statement
-that returns rows and `fetch_all()` refuses one that does not — a write whose
-`returning()` you forgot fails loudly instead of returning `[]`.
+and `sa.insert(User.__table__)` are the same statement.
+
+`execute()` returns a `Result` either way: `.rowcount` for a plain write, rows for one
+with `returning()`. A write whose `returning()` you forgot gives a *closed* result, so
+reading it raises `ResourceClosedError` rather than returning `[]` and reading as
+"nothing matched" — SQLAlchemy's behaviour, and the same guard as before under its own
+name. `fetch_all()` still refuses a statement that returns no rows.
 
 ### Transactions
 
-```python
-async with engine.transaction() as tx:
-    await tx.execute(sa.update(Account)...)
-    rows = await tx.fetch_all(sa.select(Account).where(...))
+Two scopes, named as SQLAlchemy names them. `begin()` is begin-once — commits on clean
+exit, rolls back on any exception:
 
-    async with tx.transaction() as sp:      # a savepoint
-        await sp.execute(...)
+```python
+async with db.begin() as conn:
+    await conn.execute(sa.update(Account)...)
+    rows = await conn.fetch_all(sa.select(Account).where(...))
+
+    async with conn.begin_nested():         # a savepoint
+        await conn.execute(...)
 ```
 
-Commits on clean exit, rolls back on any exception, nests as savepoints on every driver.
-Calling `engine.fetch_all()` *inside* a block raises rather than silently reading from a
-different pooled connection.
+`connect()` is commit-as-you-go: the first statement autobegins and leaving without
+`commit()` rolls back, exactly as on an `AsyncConnection`.
+
+```python
+async with db.connect() as conn:
+    await conn.execute(sa.insert(User).values(name="ada"))
+    await conn.commit()
+```
+
+The `BEGIN`, the `COMMIT` and the `SAVEPOINT` are SQLAlchemy's, so they behave the same
+on every driver — `conn.begin()` and `conn.begin_nested()` hand back its `AsyncTransaction`
+unwrapped. Calling `db.fetch_all()` *inside* a scope raises rather than silently reading
+from a different pooled connection.
+
+**A scope can be one you did not open.** `bind=` takes an `AsyncConnection` or an
+`AsyncSession`, and statements then run on that connection — seeing its uncommitted
+writes, rolling back with it:
+
+```python
+async with Session() as session, session.begin():
+    session.add(AuditRow(...))                        # their ORM write
+    await session.flush()                             # rowform will not
+    async with db.connect(bind=session) as conn:
+        hot = await conn.fetch_all(sa.select(User))   # our rows, their transaction
+```
+
+That is what makes adoption incremental: an application keeps its engine, its sessions
+and its migrations, and moves one query at a time.
+
+Flush first when binding to a session: rowform reads the connection under it, not the
+session, so a pending `add()` is not in the database yet and nothing rowform does will
+autoflush it. [API.md](docs/API.md#async-with-engineconnectbindnone-execution_options)
+says why that is left to you.
 
 ### Schema and migrations
 
 ```python
-await engine.create_all(Base.metadata)      # bootstrap
+await db.create_all(Base.metadata)      # bootstrap
 
 # alembic/env.py
 target_metadata = Base.metadata
@@ -272,30 +344,32 @@ That is the whole integration. `alembic revision --autogenerate` produces real
 `create_table`/`add_column` ops with foreign keys, indexes and constraints, because
 `Base.metadata` is an ordinary `MetaData` full of ordinary `Table`s.
 
-### Engines
+### The engine is SQLAlchemy's
 
-`SqliteEngine` (aiosqlite, WAL), `AsyncpgEngine` and `PsycopgEngine` share one API. Each
-owns a pool and a dialect, so the same statement runs on all three.
+`rf.Engine` wraps an `AsyncEngine`. It does not open one, does not pool, and does not
+dispose one — the pool, the URL, `pool_size`, `pool_pre_ping`, `pool_recycle`, events
+and `echo` are all SQLAlchemy's and reach it the usual way:
 
 ```python
-db = rf.SqliteEngine("app.db", min_size=1, max_size=5)
-db = rf.AsyncpgEngine(dsn, min_size=4, max_size=16, command_timeout=5)
+sa_engine = create_async_engine("postgresql+asyncpg://localhost/app", pool_size=10)
+db = rf.Engine(sa_engine)
+...
+await sa_engine.dispose()      # yours to open, yours to close
 ```
 
-`min_size` connections open on `connect()`, growing to `max_size` on demand and never
-past it. Other keyword arguments go straight to the driver's own pool, where timeouts and
-health checks live; `SqliteEngine` has no third-party pool behind it, so an unrecognised
-keyword is a `ConfigurationError` rather than a silent no-op. `connect()` is idempotent,
-`close()` is repeatable, and `async with engine` does both.
+`aiosqlite`, `asyncpg` and `psycopg` are supported; which one is in play comes from the
+URL, and the dialect statements compile for is the engine's own — one SQLAlchemy has
+already run `initialize()` against, so it knows the server version.
 
-`AsyncpgEngine` keeps a **conditional session reset**: asyncpg's pool runs a `RESET ALL`
-round trip on every release, worth 20–30% of throughput, and this engine skips it for
-connections that only ran compiled statements. Anything through `acquire()` or
-`transaction()` is marked dirty and pays it.
+Giving up rowform's own pool costs a measured ~0.3 ms per checkout, paid per *checkout*
+rather than per row or per statement — with the connection in hand, executing on a
+SQLAlchemy-pooled connection costs what executing on rowform's own did. What it buys is
+the `bind=` case above, which an engine owning its own pool cannot do at any price.
+[PLAN_SQLA_API.md](docs/PLAN_SQLA_API.md) §2 has the numbers and the ablation.
 
 ### Seeing what runs
 
-An `observer` is called after every statement — engine or transaction, read or write —
+An `observer` is called after every statement — engine or scope, read or write —
 with the SQL, the round-trip time, and the row count (`None` when the statement returns
 none):
 
@@ -304,13 +378,13 @@ def slow_queries(sql: str, seconds: float, rows: int | None) -> None:
     if seconds > 0.05:
         log.warning("slow query %.1fms rows=%s: %s", seconds * 1000, rows, sql)
 
-engine = rf.AsyncpgEngine(dsn, observer=slow_queries)
+db = rf.Engine(sa_engine, observer=slow_queries)
 ```
 
 Leaving it `None` costs one attribute load and a branch per statement, nothing per row.
 Exceptions raised inside it are not caught — it runs on the caller's path.
-`logging.getLogger("rowform")` adds DEBUG lines per statement compiled, per hydrator
-built (carrying the generated source), and per pool open and close.
+`logging.getLogger("rowform")` adds DEBUG lines per statement compiled and per hydrator
+built, carrying the generated source.
 
 ---
 

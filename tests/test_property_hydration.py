@@ -30,6 +30,7 @@ from typing import Any
 
 import pytest
 import sqlalchemy as sa
+from conftest import sqlite_db
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from sqlalchemy.orm import Mapped
@@ -149,7 +150,7 @@ def through_rowform(path: str, values: dict[str, Any], statement: Any) -> Any:
     """
 
     async def go():
-        async with rowform.SqliteEngine(path) as db:
+        async with sqlite_db(path) as db:
             await db.execute(sa.delete(Sample.__table__))
             await db.execute(sa.insert(Sample.__table__).values(id=1, **values))
             return await db.fetch_all(statement)
@@ -244,7 +245,7 @@ def test_streaming_matches_core_too(sample_db, values, names):
     statement = sa.select(*columns)
 
     async def go():
-        async with rowform.SqliteEngine(sample_db) as db:
+        async with sqlite_db(sample_db) as db:
             await db.execute(sa.delete(Sample.__table__))
             await db.execute(sa.insert(Sample.__table__).values(id=1, **values))
             return [row async for row in db.fetch_iter(statement, chunk=1)]
