@@ -154,14 +154,13 @@ for what you take.
 | `execute(...).all()` | 0.168 ms — one `Row` per row, on demand |
 | `execute(...).mappings().all()` | 0.471 ms |
 
-Those are the accessors alone. Measured end to end against `fetch_all()` on the
-same read there is also a small fixed cost for building the `Result` at all:
-`.scalars().all()` comes out **+3-4%** and `.all()` **+9-18%**
-(`docs/RUNS.md`, 2026-08-01).
+Those are the accessors alone. End to end against `fetch_all()` on the same read,
+one contender per process, `.scalars().all()` **ties** with it and `.all()` costs
+**11-17%** (`docs/METHODOLOGY.md`).
 
-So the idiomatic ORM-style read is close to the hot path, and only asking for
-actual `Row` objects costs real money. Use `execute()` while porting and where the
-`Result` API earns its keep; use `fetch_all()` on the paths you care about.
+So the idiomatic ORM-style read is not measurably off the hot path, and only asking
+for actual `Row` objects costs real money. Use `execute()` while porting and where
+the `Result` API earns its keep; use `fetch_all()` on the paths you care about.
 
 ## Aliases and self-joins
 

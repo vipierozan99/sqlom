@@ -262,14 +262,14 @@ this box. It is §5.1's first item.
    commits and psycopg does not. Refusing it uniformly is still the likely
    answer.
 
-3. **The per-request tax is real and the benchmark story must say so.** The
-   published "1.2–1.6x SQLAlchemy Core" figure is a per-request-acquire
-   comparison on *rowform's* pool. On SQLAlchemy's pool the same comparison
-   narrows, because both sides now pay the same checkout. The honest fix is to
-   report both connection sources rather than to quietly keep quoting the
-   favourable one. `docs/RUNS.md` (2026-08-01) is the first re-measurement, on
-   both backends and with the compatibility track priced beside the hot one; the
-   published tables are deliberately still untouched.
+3. **The per-request tax is real and the benchmark story must say so.** *Closed.*
+   The published "1.2–1.6x SQLAlchemy Core" figure was a per-request-acquire
+   comparison on *rowform's* pool. Re-measured on SQLAlchemy's, one contender per
+   process, five trials: **1.26x/1.16x/1.13x** on sqlite and 1.34x/1.17x/1.17x on
+   postgres. METHODOLOGY.md and the README carry those now, and say beside them
+   that the sqlite floors hoist a connection while rowform checks one out — which
+   is where most of the remaining floor gap is, and why the postgres floor, which
+   acquires per request as rowform does, ties instead.
 
 4. **Which suggests keeping rowform's pool as an option, not a default.** If the
    row API is `rf.fetch_all(conn, stmt)`, then rowform's pool does not need an
@@ -343,11 +343,12 @@ its own piece of work with its own cost to measure (§5.6).
 4. **Done.** §3's deletion table is applied. §5.4's "keep the pool as an opt-in
    provider" was *not* taken, on the explicit call that the checkout cost is
    worth the deletion.
-5. Docs done. **Benchmarks re-run but not re-published**: the README table
-   predates this, and its rowform arms now pay SQLAlchemy's checkout. §5.3 stands.
-   `bench micro` now carries the compatibility track alongside the hot one, on
-   every shape and backend, so "you pay per accessor" is a measurement rather
-   than an assertion — `docs/RUNS.md`, 2026-08-01.
+5. **Done.** Benchmarks re-run *and* re-published. `bench micro` carries the
+   compatibility track alongside the hot one on every shape and backend, and
+   `bench micro run --isolate --trials N` makes a run that satisfies the
+   `quotable` gate's isolation clause — which the command could not do before, so
+   no published table had ever met it. §5.3's tables are replaced from that sweep
+   (`docs/RUNS.md`, 2026-08-01, commit `3757a0d`).
 
 ---
 
@@ -445,3 +446,10 @@ rows and you pay for rows. The flag is spelled `_source_supports_scalars` on
 `IteratorResult` and `source_supports_scalars` on `ChunkedIteratorResult` —
 upstream's inconsistency, and a second internal coupling on top of
 `SimpleResultMetaData`.
+
+End to end this holds, and slightly stronger than "almost nothing": one contender
+per process, `execute().scalars()` **ties** with `fetch_all()` in every cell where
+both run, and `execute().all()` costs 11-17% (METHODOLOGY.md). An in-process run
+first put `.scalars()` 3-4% above `fetch_all()`, which was the compat contender
+inheriting the allocator state of the one before it — correction 2, in a suite that
+had already written correction 2 down.

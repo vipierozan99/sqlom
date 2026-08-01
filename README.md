@@ -100,28 +100,39 @@ the other direction — correctness rather than latency — and is worth reading
 
 ## 📊 Performance
 
-sqlite, 200k-row table, 1000 rows per read, 300 iterations, GC off, pinned cores.
-Medians in ms, lower is better. `just bench micro run --shape <shape>` reproduces.
+sqlite, 200k-row table, 1000 rows per read, 300 iterations, 5 trials, one contender per
+process, GC off, pinned cores. Medians in ms, lower is better; `x` is against rowform,
+and `~` marks a pair the trials do not actually order.
 
-| | flat | join | wide |
-|---|---|---|---|
-| raw driver → dicts *(floor)* | 0.9226 | 1.8090 | — |
-| raw driver + the same hydrator *(floor)* | 1.0117 | 2.1178 | — |
-| **rowform** | **1.0515** | **2.0960** | **4.0700** |
-| SQLAlchemy Core (positional) | 1.6337 | 2.4253 | 5.5812 |
-| SQLAlchemy Core (`.mappings()`) | 3.6406 | — | — |
-| SQLAlchemy ORM | 4.9284 | 8.3629 | 9.4309 |
-| SQLAlchemy ORM (`MappedAsDataclass`) | 6.1918 | 10.8190 | 21.0983 |
+| | flat | join | wide | | flat | join | wide |
+|---|---|---|---|---|---|---|---|
+| raw driver → dicts *(floor)* | 0.8075 | 1.3351 | — | | 0.67x | 0.73x | — |
+| raw driver + the same hydrator *(floor)* | 0.9058 | 1.4891 | — | | 0.75x | 0.82x | — |
+| **rowform** `fetch_all()` | **1.2003** | **1.8212** | **3.6604** | | **1.00x** | **1.00x** | **1.00x** |
+| rowform `execute().scalars()` | 1.2368 | — | 3.6992 | | ~1.03x | — | ~1.01x |
+| rowform `execute().all()` | 1.3757 | 2.0185 | — | | 1.15x | 1.11x | — |
+| SQLAlchemy Core (positional) | 1.5163 | 2.1204 | 4.1496 | | 1.26x | 1.16x | 1.13x |
+| SQLAlchemy Core (`.mappings()`) | 3.1747 | — | — | | 2.64x | — | — |
+| SQLAlchemy ORM | 4.2782 | 6.9755 | 7.8641 | | 3.56x | 3.83x | 2.15x |
+| SQLAlchemy ORM (`MappedAsDataclass`) | 5.1737 | 9.0512 | 17.3702 | | 4.31x | 4.97x | 4.75x |
 
-**1.2–1.6x SQLAlchemy Core's result layer, 2.3–4.7x its ORM, and within ~14% of
-hand-rolling the driver.** With the driver removed entirely, the row layer alone is
-**0.31 ms against Core's 0.66 and the ORM's 3.95**.
+**1.1–1.3x SQLAlchemy Core's result layer and 2.1–4.3x its ORM**, on both backends. With
+the driver removed entirely, the row layer alone is **0.26 ms against Core's 0.55 and
+the ORM's 3.18**. Postgres numbers, and the ratios' intervals, are in
+[METHODOLOGY.md](docs/METHODOLOGY.md).
 
-Two things matter more than the ratios. **Every contender runs identical SQL**, compiled
-by Core, so what is compared is only what happens to the rows afterwards. And **`wide`
-shows the smallest win, which is why it is in the table** — it is the shape full of
-`DateTime`/`Numeric`/`Enum`/`Uuid` columns, where type processors dominate and both
-sides run the same ones. Quoting only `flat` would flatter.
+Three things matter more than the ratios. **Every contender runs identical SQL**,
+compiled by Core, so what is compared is only what happens to the rows afterwards.
+**`wide` shows the smallest win, which is why it is in the table** — it is the shape full
+of `DateTime`/`Numeric`/`Enum`/`Uuid` columns, where type processors dominate and both
+sides run the same ones. And **the sqlite floors hold one connection for the whole run
+while rowform checks one out per read**, so most of that 0.75x is SQLAlchemy's ~0.3-0.4 ms
+pool checkout rather than row-layer work — against the postgres floor, which acquires per
+request like rowform does, the two tie.
+
+These runs report `quotable=False` on exactly one clause: cpu boost is on and needs root
+to disable. Everything else the gate checks — clean tree, equivalence enforced, one
+contender per process — passes.
 
 Full numbers, and a log of **eleven published claims that turned out to be wrong**:
 [METHODOLOGY.md](docs/METHODOLOGY.md).
@@ -219,13 +230,11 @@ over a query at a time. Nothing is wrapped on the way in, so you pay for what yo
 measured on the accessor alone, per 1000 rows, `.scalars().all()` costs 0.0049 ms,
 `.all()` 0.168 ms and `.mappings().all()` 0.471 ms.
 
-End to end the picture is the same with one addition — the `Result` itself is not
-quite free. Against `fetch_all` on the same 1000-row read
-(`docs/RUNS.md`, 2026-08-01), `.scalars().all()` costs **+3-4%** and `.all()`
-**+9-18%**; the gap between those two is the `Row` per row, and the 3-4% floor
-under both is building the `Result`. Both are still ahead of stock SQLAlchemy
-Core on the same statement — 1.21x on sqlite, 1.33x on postgres — because what
-changes underneath is `Row`/`CursorResult`, not the idiom above it.
+End to end that holds up: measured against `fetch_all` on the same 1000-row read,
+one contender per process, `.scalars()` **ties** with it in every cell where both
+run, and `.all()` costs **11-17%** — the `Row` per row, and nothing else. Both are
+still under stock SQLAlchemy Core on the same statement, because what changes
+underneath is `Row`/`CursorResult`, not the idiom above it.
 
 ### Aliases and self-joins
 

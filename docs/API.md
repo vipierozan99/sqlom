@@ -292,9 +292,10 @@ take from it rather than a flat toll — per 1000 rows, `.scalars().all()` 0.004
 `.all()` 0.168 ms, `.mappings().all()` 0.471 ms. `.scalars()` is the cheap one:
 SQLAlchemy is told the source yields scalars, so no `Row` is built at all.
 
-"Mostly", because the `Result` is not free to build even when nothing is taken
-from it: end to end against `fetch_all()` on the same read, `.scalars().all()`
-costs +3-4% and `.all()` +9-18% (`docs/RUNS.md`, 2026-08-01).
+End to end against `fetch_all()` on the same read, one contender per process,
+`.scalars().all()` **ties** with it and `.all()` costs **11-17%**
+(`docs/METHODOLOGY.md`). Building the `Result` is not free in principle, but it
+does not show above the trial spread; building a `Row` per row does.
 
 ### `async with conn.pipeline():`
 
