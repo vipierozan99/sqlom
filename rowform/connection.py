@@ -42,7 +42,7 @@ from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncResult, AsyncScalarResult
 
 from . import result as _result
-from .errors import StatementError
+from .errors import EngineStateError, StatementError
 from .query import CoreQuery
 
 if TYPE_CHECKING:
@@ -135,13 +135,33 @@ class Connection:
         """A SAVEPOINT, as `AsyncConnection.begin_nested()`."""
         return self.sa_connection.begin_nested()
 
+    def _refuse_if_bound(self, method: str) -> None:
+        """A bound scope does not own its transaction, so it must not end it.
+
+        `_owns` already keeps `_autobegin` from *starting* one; without the same
+        guard here, `conn.close()` on a scope bound to somebody's session closed
+        the connection under them and their next statement raised
+        `ResourceClosedError`. `connect()` promises the caller's block is the
+        scope, and these are the three methods that could break that promise.
+        """
+        if not self._owns:
+            raise EngineStateError(
+                f"conn.{method}() on a connection rowform did not open; that "
+                f"transaction is the caller's and ending it here would end it "
+                f"under them. Call {method}() on the connection or session you "
+                f"passed to bind=."
+            )
+
     async def commit(self) -> None:
+        self._refuse_if_bound("commit")
         await self.sa_connection.commit()
 
     async def rollback(self) -> None:
+        self._refuse_if_bound("rollback")
         await self.sa_connection.rollback()
 
     async def close(self) -> None:
+        self._refuse_if_bound("close")
         await self.sa_connection.close()
 
     async def execution_options(self, **options: Any) -> Connection:

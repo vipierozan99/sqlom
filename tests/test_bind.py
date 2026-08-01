@@ -159,6 +159,33 @@ class TestOnASession:
         assert [a.name for a in await db.fetch_all(sa.select(Author))] == ["ada"]
 
 
+class TestItWillNotEndSomebodyElsesTransaction:
+    """`connect(bind=...)` promises the caller's block is the scope. `_owns` kept
+    rowform from *starting* a transaction there; these are the three methods that
+    could have ended one."""
+
+    @pytest.mark.parametrize("method", ["commit", "rollback", "close"])
+    async def test_it_refuses(self, pair, method):
+        db, sa_engine = pair
+        async with sa_engine.connect() as their, db.connect(bind=their) as conn:
+            with pytest.raises(rf.EngineStateError, match=f"conn.{method}"):
+                await getattr(conn, method)()
+
+    async def test_the_caller_is_still_usable_afterwards(self, pair):
+        """The point of the refusal: before it, `conn.close()` closed the
+        connection under the caller and their next statement raised."""
+        db, sa_engine = pair
+        Session = async_sessionmaker(sa_engine)
+        async with Session() as session, session.begin():
+            async with db.connect(bind=session) as conn:
+                with pytest.raises(rf.EngineStateError):
+                    await conn.close()
+            await session.execute(
+                sa.insert(Author.__table__).values(id=7, name="gil", active=True)
+            )
+        assert len(await db.fetch_all(sa.select(Author))) == 2
+
+
 class TestItRefusesWhatItCannotDo:
     async def test_something_that_is_neither(self, pair):
         db, _ = pair

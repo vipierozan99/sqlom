@@ -277,7 +277,7 @@ real `sqlalchemy.Result` built over rowform's hydrated rows, so `.scalars()`,
 | `await conn.stream_scalars(stmt, ...)` | `AsyncScalarResult` |
 | `await conn.exec_driver_sql(sql, parameters=None)` | a literal string on the driver |
 | `conn.begin()` / `conn.begin_nested()` | SQLAlchemy's `AsyncTransaction`, unwrapped |
-| `await conn.commit()` / `await conn.rollback()` / `await conn.close()` | |
+| `await conn.commit()` / `await conn.rollback()` / `await conn.close()` | `EngineStateError` on a `bind=` scope — that transaction is the caller's |
 | `await conn.execution_options(**opts)` | |
 | `conn.in_transaction()` / `conn.in_nested_transaction()` / `conn.closed` | |
 
@@ -369,7 +369,7 @@ All inherit `RowformError`, and each also inherits the builtin it replaced.
 | `UnsupportedError` | `NotImplementedError` | the backend cannot express it at all |
 | `StatementError` | `ValueError` | right statement, wrong method |
 | `PlanError` | `ValueError` | the result's shape and the plan disagree |
-| `EngineStateError` | `RuntimeError` | an engine read inside `connect()`/`begin()` |
+| `EngineStateError` | `RuntimeError` | an engine read inside `connect()`/`begin()`; `commit()`/`rollback()`/`close()` on a `bind=` scope |
 
 Driver exceptions are **not** wrapped.
 
