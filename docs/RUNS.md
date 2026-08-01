@@ -1,9 +1,42 @@
 # Recorded runs
 
-## 2026-08-01 — the published sweep: both tracks, both backends, isolated
+## 2026-08-01 (later) — re-run after two contender fixes
+
+Commit `31974e5`, branch `bench/2026-08-01-contender-fixes` (all eight `run.json`s).
+**This is the sweep [METHODOLOGY.md](METHODOLOGY.md) now publishes**, replacing the one
+below. Same command, same box, same `quotable=False` clause. It was re-taken because
+two contenders were not running the same race as the rest:
+
+* the `MappedAsDataclass` rows built their payload with `dataclasses.asdict()` — a
+  recursive deep copy inside the timed region — where every sibling used a `getattr`
+  comprehension, for byte-identical JSON;
+* the mock table charged the SQLAlchemy contenders a pool checkout inside the timed
+  region while `MockEngine` overrides `_connection` to skip it entirely.
+
+What that changed, and nothing else moved by more than the noise:
+
+| | before | after |
+|---|---|---|
+| ORM (`MappedAsDataclass`), sqlite wide | 17.3702 ms — **4.75x** | 8.8390 ms — **2.18x** |
+| ORM (`MappedAsDataclass`), sqlite flat | 5.1737 ms — 4.31x | 4.6983 ms — 3.61x |
+| Core (positional), mock flat | 0.5467 ms — 2.13x | 0.4214 ms — **1.54x** |
+
+So most of the published `MappedAsDataclass` gap was `asdict()`, not the ORM: with the
+payload builder equalised it lands *level with stock declarative* (2.18x against 2.24x
+on wide), which is the honest reading — the two differ in instrumentation, not in how
+expensive they are to read out. And a fifth of the mock Core ratio was a checkout
+charged to one side only.
+
+**Read the absolutes loosely on this one.** Worst median spread is 12.9% (sqlite),
+30.1% (postgres), 29.2% (mock), against 8.1%/4.5%/7.5% on the sweep below. The die ran
+72–90 °C and this chassis throttles; a first attempt on a hot box reported 32.8% and
+was discarded, and the numbers above are from a re-run after a cooldown with a settle
+gap between groups. The ratios held across all three attempts.
+
+## 2026-08-01 — the first published sweep: both tracks, both backends, isolated
 
 Commit `3757a0d`, branch `bench/2026-08-01-two-tracks` (all eight `run.json`s).
-This is the sweep [METHODOLOGY.md](METHODOLOGY.md) publishes, and the first one that
+This was the sweep METHODOLOGY.md published until the re-run above, and the first one that
 satisfies `Run.quotable`'s isolation clause — `bench micro run` hardcoded
 `isolation="combined"` until this commit's parent, so no run before it could.
 
@@ -23,17 +56,13 @@ done
 uv run python scripts/publish_tables.py benchmarks/results/runs/*_3757a0d/run.json
 ```
 
-**Superseded in one row.** The `SQLAlchemy ORM (MappedAsDataclass)` contender built
-its payload with `dataclasses.asdict()` while every sibling used a `getattr`
-comprehension — a recursive deep copy inside the timed region, ~14 ms of the 17.37 ms
-`wide` cell, for byte-identical JSON. Fixed in `contenders.py`; these cells predate
-the fix and need re-taking on the same pinned box before they are quoted again. No
-other contender used `asdict()`, so no other row moves.
+**Superseded** by the re-run above; kept for the comparison it supports.
 
 200,000 rows (1.2M for join), 1000 per read, 300 timed iterations after 50 warmup,
 **5 trials, one contender per process**, gc off, pinned to cpus 6-9. Worst
-trial-to-trial spread anywhere: **8.1%**. Tables are in METHODOLOGY.md rather than
-duplicated here; what follows is what the run *changed*.
+trial-to-trial spread anywhere: **8.1%** — cleaner than the re-run above, which is why
+its dispersion figures are the ones worth quoting. Its tables are superseded; what
+follows is what the run *changed*.
 
 **Still `quotable=False`, on one clause.** Cpu boost is enabled and
 `/sys/devices/system/cpu/cpufreq/boost` is root-only on this box. Clean tree,

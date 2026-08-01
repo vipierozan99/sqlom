@@ -33,77 +33,62 @@ done
 Medians of the per-trial medians, in milliseconds, lower is better. Ratios come from
 `stats.ratio_with_spread`, so `~` marks a pair the trials do not actually order —
 either the worst-case interval spans 1.0 or the medians are within 5%. Worst
-trial-to-trial spread anywhere below: **8.1%** (sqlite), 4.5% (postgres), 7.5% (mock).
+trial-to-trial spread anywhere below: **12.9%** (sqlite), 30.1% (postgres), 29.2% (mock).
 
 > **These runs report `quotable=False`, on one clause: cpu boost is enabled and cannot
 > be disabled without root on this box.** Every other gate passes — clean tree,
 > equivalence enforced and self-consistent, one contender per process.
 >
 > It shows, and in the place the detectors are for rather than in the medians. Worst
-> single trial anywhere: `p95/p50` **4.11** and `max/p50` **9.47**, both on sqlite,
-> both on SQLAlchemy Core cells rather than rowform's. Against that, the worst
-> *median* moved 8.1% across five trials. So the tail is disturbed and the central
-> value is not, which is what taking a median of per-trial medians is for — but read
-> the ratios, not the absolutes.
+> single trial anywhere: `p95/p50` **1.68** and `max/p50` **6.36**. Against that, the
+> worst *median* moved 12.9% on sqlite and 30% on postgres and mock across five
+> trials. So the tail is disturbed and the central value less so, which is what
+> taking a median of per-trial medians is for — but read the ratios, not the
+> absolutes.
+>
+> **This sweep is noisier than the one it replaces** (which reported 8.1% worst
+> spread). The die sat at 72–90 °C throughout and this chassis throttles: an
+> earlier attempt on a hot box reported 32.8%, and re-running after a cooldown
+> with a settle gap between groups produced what is above. Postgres and mock still
+> carry ~30% on their worst cell. The ratios are stable across all three attempts
+> and the conclusions do not move; the absolutes should be read as ±10% or so.
 
 Runs land in `benchmarks/results/runs/`, which is gitignored on main; chosen ones are
 committed to a dated `bench/` branch by hand and indexed in [RUNS.md](RUNS.md).
-
-> [!WARNING]
-> **The `MappedAsDataclass` row is stale and overstates the ORM's cost.** It built
-> its JSON payload with `dataclasses.asdict()` where every other contender uses a
-> `getattr` comprehension; `asdict()` deep-copies recursively, and on `wide` that
-> was ~14 ms of the 17.37 ms cell for byte-identical output. The contender is
-> fixed, but these cells were measured before the fix and have not been re-taken —
-> a re-run has to happen on the pinned, isolated box this sweep was recorded on,
-> not wherever the fix landed. Every other row is unaffected: none of them ever
-> used `asdict()`. Treat `MappedAsDataclass` as an upper bound until re-run.
 
 ### sqlite
 
 | contender | flat | join | wide | | flat | join | wide |
 |---|---|---|---|---|---|---|---|
-| raw driver → dicts *(floor)* | 0.8075 | 1.3351 | — | | 0.67x | 0.73x | — |
-| raw driver + the same hydrator *(floor)* | 0.9058 | 1.4891 | — | | 0.75x | 0.82x | — |
-| **rowform** `fetch_all()` | **1.2003** | **1.8212** | **3.6604** | | **1.00x** | **1.00x** | **1.00x** |
-| rowform `execute().scalars()` | 1.2368 | — | 3.6992 | | ~1.03x | — | ~1.01x |
-| rowform `execute().all()` | 1.3757 | 2.0185 | — | | 1.15x | 1.11x | — |
-| SQLAlchemy Core (positional) | 1.5163 | 2.1204 | 4.1496 | | 1.26x | 1.16x | 1.13x |
-| SQLAlchemy Core (`.mappings()`) | 3.1747 | — | — | | 2.64x | — | — |
-| SQLAlchemy ORM | 4.2782 | 6.9755 | 7.8641 | | 3.56x | 3.83x | 2.15x |
-| SQLAlchemy ORM (`MappedAsDataclass`) | 5.1737 | 9.0512 | 17.3702 | | 4.31x | 4.97x | 4.75x |
+| raw driver → dicts *(floor)* | 0.9100 | 1.4776 | — | | 0.70x | 0.75x | — |
+| raw driver + the same hydrator *(floor)* | 0.9884 | 1.6000 | — | | 0.76x | 0.81x | — |
+| **rowform** `fetch_all()` | **1.3031** | **1.9788** | **4.0615** | | **1.00x** | **1.00x** | **1.00x** |
+| rowform `execute().scalars()` | 1.3220 | — | 4.1499 | | ~1.01x | — | ~1.02x |
+| rowform `execute().all()` | 1.4881 | 2.1855 | — | | 1.14x | 1.10x | — |
+| SQLAlchemy Core (positional) | 1.6340 | 2.2722 | 4.6956 | | 1.25x | 1.15x | 1.16x |
+| SQLAlchemy Core (`.mappings()`) | 3.4667 | — | — | | 2.66x | — | — |
+| SQLAlchemy ORM | 4.7779 | 7.8465 | 9.0950 | | 3.67x | 3.97x | 2.24x |
+| SQLAlchemy ORM (`MappedAsDataclass`) | 4.6983 | 7.6665 | 8.8390 | | 3.61x | 3.87x | 2.18x |
 
 ### postgres (asyncpg)
 
 | contender | flat | join | wide | | flat | join | wide |
 |---|---|---|---|---|---|---|---|
-| raw driver → dicts *(floor)* | 0.9818 | — | — | | ~0.96x | — | — |
-| **rowform** `fetch_all()` | **1.0215** | **1.7819** | **3.0831** | | **1.00x** | **1.00x** | **1.00x** |
-| rowform `execute().scalars()` | 1.0428 | — | 3.0990 | | ~1.02x | — | ~1.01x |
-| rowform `execute().all()` | 1.1911 | 1.9951 | — | | 1.17x | 1.12x | — |
-| SQLAlchemy Core (positional) | 1.3652 | 2.0904 | 3.6145 | | 1.34x | 1.17x | 1.17x |
-| SQLAlchemy Core (`.mappings()`) | 3.1215 | — | — | | 3.06x | — | — |
-| SQLAlchemy ORM | 4.2030 | 7.2154 | 7.3335 | | 4.11x | 4.05x | 2.38x |
+| raw driver → dicts *(floor)* | 1.0675 | — | — | | ~0.96x | — | — |
+| **rowform** `fetch_all()` | **1.1140** | **1.9214** | **3.1720** | | **1.00x** | **1.00x** | **1.00x** |
+| rowform `execute().scalars()` | 1.1412 | — | 3.2193 | | ~1.02x | — | ~1.01x |
+| rowform `execute().all()` | 1.2748 | 2.0680 | — | | ~1.14x | 1.08x | — |
+| SQLAlchemy Core (positional) | 1.4918 | 2.2743 | 3.8390 | | 1.34x | 1.18x | 1.21x |
+| SQLAlchemy Core (`.mappings()`) | 3.4677 | — | — | | 3.11x | — | — |
+| SQLAlchemy ORM | 4.6385 | 7.6915 | 8.1734 | | 4.16x | 4.00x | 2.58x |
 
 ### Row layer alone (`mock` backend, zero driver cost)
 
 | contender | flat | join | | flat | join |
 |---|---|---|---|---|---|
-| **rowform** | **0.2567** | **0.5227** | | **1.00x** | **1.00x** |
-| SQLAlchemy Core (positional) | 0.5467 | — | | 2.13x | — |
-| SQLAlchemy ORM | 3.1768 | 5.5547 | | 12.38x | 10.63x |
-
-> [!WARNING]
-> **Stale, and it flattered rowform.** `MockEngine` overrides `_connection` so a
-> read never reaches SQLAlchemy's pool — that ~0.4 ms checkout is exactly what
-> this instrument exists to exclude — but the SQLAlchemy contenders were still
-> calling `engine.connect()` *inside* the timed region. So the checkout was
-> excluded on one side and charged to the other, in the one table whose whole
-> point is that nothing but the row layer is being measured. They now hold a
-> hoisted connection too, with a fresh `Session` per request over it so the ORM
-> keeps its per-request identity map. On an unpinned box that moves Core's cell
-> from ~0.58 ms to ~0.46 ms, roughly `2.13x` → `~1.6x`; the ORM row is
-> proportionally much less affected. Re-run on the pinned box before quoting.
+| **rowform** | **0.2734** | **0.5629** | | **1.00x** | **1.00x** |
+| SQLAlchemy Core (positional) | 0.4214 | — | | 1.54x | — |
+| SQLAlchemy ORM | 3.4722 | 5.9427 | | 12.70x | 10.56x |
 
 ### Reading the floors
 
@@ -117,7 +102,7 @@ application already does — and the sqlite gap closes the same way.
 
 Before the row layer moved onto SQLAlchemy's engine, rowform owned a pool with a ~0.09 ms
 checkout and this table read 1.55x/1.16x/1.37x against Core on sqlite. The Core ratios
-narrowing to 1.26x/1.16x/1.13x is that trade, paid deliberately and priced here rather
+narrowing to 1.25x/1.15x/1.16x is that trade, paid deliberately and priced here rather
 than left in a table taken under the old arrangement.
 
 ### The two tracks
@@ -125,14 +110,14 @@ than left in a table taken under the old arrangement.
 `execute()` returns SQLAlchemy's own `Result`; `fetch_all()` returns hydrated objects.
 Taken as `.scalars()`, the compatibility track **ties with the hot one in all four cells
 where both run** — the `Result` is built but no `Row` ever is. Taken as `.all()` it
-costs 11-17%, which is one `Row` per row and the only real difference between the two
+costs 8-14%, which is one `Row` per row and the only real difference between the two
 lines. Both still come in under stock Core on the same statement.
 
 **`wide` is the honest number.** Its columns are
 `DateTime`/`Date`/`Numeric`/`Enum`/`Uuid`/nullable, so per-column type processors
 dominate — and both sides run the *same* processors, leaving proportionally less to
-skip. It is also where the Core gap closes most — 1.13x on sqlite against 1.26x on
-`flat`, and 2.15x rather than 3.56x for the ORM. A suite quoting only `flat` would be
+skip. It is also where the ORM gap closes most — 2.24x against 3.67x on `flat` — while
+the Core gap barely moves (1.16x against 1.25x). A suite quoting only `flat` would be
 quoting its best case without saying so.
 
 ### What the gate proves

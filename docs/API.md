@@ -317,7 +317,7 @@ take from it rather than a flat toll — per 1000 rows, `.scalars().all()` 0.004
 SQLAlchemy is told the source yields scalars, so no `Row` is built at all.
 
 End to end against `fetch_all()` on the same read, one contender per process,
-`.scalars().all()` **ties** with it and `.all()` costs **11-17%**
+`.scalars().all()` **ties** with it and `.all()` costs **8-14%**
 (`docs/METHODOLOGY.md`). Building the `Result` is not free in principle, but it
 does not show above the trial spread; building a `Row` per row does.
 

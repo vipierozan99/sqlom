@@ -106,22 +106,21 @@ and `~` marks a pair the trials do not actually order.
 
 | | flat | join | wide | | flat | join | wide |
 |---|---|---|---|---|---|---|---|
-| raw driver → dicts *(floor)* | 0.8075 | 1.3351 | — | | 0.67x | 0.73x | — |
-| raw driver + the same hydrator *(floor)* | 0.9058 | 1.4891 | — | | 0.75x | 0.82x | — |
-| **rowform** `fetch_all()` | **1.2003** | **1.8212** | **3.6604** | | **1.00x** | **1.00x** | **1.00x** |
-| rowform `execute().scalars()` | 1.2368 | — | 3.6992 | | ~1.03x | — | ~1.01x |
-| rowform `execute().all()` | 1.3757 | 2.0185 | — | | 1.15x | 1.11x | — |
-| SQLAlchemy Core (positional) | 1.5163 | 2.1204 | 4.1496 | | 1.26x | 1.16x | 1.13x |
-| SQLAlchemy Core (`.mappings()`) | 3.1747 | — | — | | 2.64x | — | — |
-| SQLAlchemy ORM | 4.2782 | 6.9755 | 7.8641 | | 3.56x | 3.83x | 2.15x |
-| SQLAlchemy ORM (`MappedAsDataclass`) | 5.1737 | 9.0512 | 17.3702 | | 4.31x | 4.97x | 4.75x |
+| raw driver → dicts *(floor)* | 0.9100 | 1.4776 | — | | 0.70x | 0.75x | — |
+| raw driver + the same hydrator *(floor)* | 0.9884 | 1.6000 | — | | 0.76x | 0.81x | — |
+| **rowform** `fetch_all()` | **1.3031** | **1.9788** | **4.0615** | | **1.00x** | **1.00x** | **1.00x** |
+| rowform `execute().scalars()` | 1.3220 | — | 4.1499 | | ~1.01x | — | ~1.02x |
+| rowform `execute().all()` | 1.4881 | 2.1855 | — | | 1.14x | 1.10x | — |
+| SQLAlchemy Core (positional) | 1.6340 | 2.2722 | 4.6956 | | 1.25x | 1.15x | 1.16x |
+| SQLAlchemy Core (`.mappings()`) | 3.4667 | — | — | | 2.66x | — | — |
+| SQLAlchemy ORM | 4.7779 | 7.8465 | 9.0950 | | 3.67x | 3.97x | 2.24x |
+| SQLAlchemy ORM (`MappedAsDataclass`) | 4.6983 | 7.6665 | 8.8390 | | 3.61x | 3.87x | 2.18x |
 
-**1.1–1.3x SQLAlchemy Core's result layer and 2.1–4.1x its ORM**, on both backends. With
-the driver removed entirely, the row layer alone is **0.26 ms against Core's 0.55 and
-the ORM's 3.18**. Postgres numbers, and the ratios' intervals, are in
-[METHODOLOGY.md](docs/METHODOLOGY.md) — including two cells flagged there as stale and
-pending a re-run: the `MappedAsDataclass` row, and Core's 0.55 above, which was charged
-a pool checkout that rowform's 0.26 was not.
+**1.2–1.3x SQLAlchemy Core's result layer and 2.2–4.2x its ORM**, on both backends. With
+the driver removed entirely, the row layer alone is **0.27 ms against Core's 0.42 and
+the ORM's 3.47**. Postgres numbers, the ratios' intervals, and this run's dispersion —
+noisier than usual, on a chassis that throttles — are in
+[METHODOLOGY.md](docs/METHODOLOGY.md).
 
 Three things matter more than the ratios. **Every contender runs identical SQL**,
 compiled by Core, so what is compared is only what happens to the rows afterwards.
@@ -234,7 +233,7 @@ measured on the accessor alone, per 1000 rows, `.scalars().all()` costs 0.0049 m
 
 End to end that holds up: measured against `fetch_all` on the same 1000-row read,
 one contender per process, `.scalars()` **ties** with it in every cell where both
-run, and `.all()` costs **11-17%** — the `Row` per row, and nothing else. Both are
+run, and `.all()` costs **8-14%** — the `Row` per row, and nothing else. Both are
 still under stock SQLAlchemy Core on the same statement, because what changes
 underneath is `Row`/`CursorResult`, not the idiom above it.
 

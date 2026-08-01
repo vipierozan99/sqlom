@@ -158,7 +158,7 @@ for what you take.
 
 Those are the accessors alone. End to end against `fetch_all()` on the same read,
 one contender per process, `.scalars().all()` **ties** with it and `.all()` costs
-**11-17%** (`docs/METHODOLOGY.md`).
+**8-14%** (`docs/METHODOLOGY.md`).
 
 So the idiomatic ORM-style read is not measurably off the hot path, and only asking
 for actual `Row` objects costs real money. Use `execute()` while porting and where

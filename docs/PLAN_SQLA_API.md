@@ -467,7 +467,7 @@ upstream's inconsistency, and a second internal coupling on top of
 
 End to end this holds, and slightly stronger than "almost nothing": one contender
 per process, `execute().scalars()` **ties** with `fetch_all()` in every cell where
-both run, and `execute().all()` costs 11-17% (METHODOLOGY.md). An in-process run
+both run, and `execute().all()` costs 8-14% (METHODOLOGY.md). An in-process run
 first put `.scalars()` 3-4% above `fetch_all()`, which was the compat contender
 inheriting the allocator state of the one before it — correction 2, in a suite that
 had already written correction 2 down.
