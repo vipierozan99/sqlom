@@ -228,6 +228,50 @@ async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     return target, sa_engine.dispose
 
 
+# rowform ships two tracks over one connection, told apart by name: `fetch_all()`
+# hands back hydrated objects, and `execute()` hands the same objects to
+# SQLAlchemy's own `Result`. Registering both is the only way the "you pay per
+# accessor, not per execute" claim is a measurement rather than an assertion —
+# and the accessor is what varies, so the compat track is registered twice at
+# arity one. Same statement, same hydrator, same one-shot checkout throughout;
+# only the result layer differs, and the equivalence gate holds the payload
+# byte-identical across all three.
+
+
+@contender(
+    "rowform compat (.scalars())",
+    backend="sqlite",
+    shape="flat",
+    description="The compat track: rowform's rows inside SQLAlchemy's Result, taken as scalars.",
+)
+async def flat_rowform_compat_scalars(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(flat_stmt(init.limit))
+
+    async def target() -> bytes:
+        return dumps((await engine.execute(query)).scalars().all())
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform compat (.all())",
+    backend="sqlite",
+    shape="flat",
+    description="The same Result taken as rows — one SQLAlchemy Row built per row.",
+)
+async def flat_rowform_compat_rows(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(flat_stmt(init.limit))
+
+    async def target() -> bytes:
+        return dumps([row[0] for row in (await engine.execute(query)).all()])
+
+    return target, sa_engine.dispose
+
+
 @contender(
     "rowform (mock)",
     backend="mock",
@@ -446,6 +490,26 @@ async def join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
+    "rowform compat (.all())",
+    backend="sqlite",
+    shape="join",
+    description="The compat track at arity two, where a Row is what the accessor returns.",
+)
+async def join_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
+    """`.scalars()` has no meaning here — it would take the `Author` and drop the
+    `Post` — so rows are the idiomatic compat spelling at arity two, and the Row
+    per row is unavoidable rather than opt-in."""
+    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(join_stmt(init.limit))
+
+    async def target() -> bytes:
+        return dumps([(a, p) for a, p in (await engine.execute(query)).all()])
+
+    return target, sa_engine.dispose
+
+
+@contender(
     "rowform (mock)",
     backend="mock",
     shape="join",
@@ -626,6 +690,23 @@ async def wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
+    "rowform compat (.scalars())",
+    backend="sqlite",
+    shape="wide",
+    description="The compat track over the widened shape — same processors, SQLAlchemy's Result.",
+)
+async def wide_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(wide_stmt(init.limit))
+
+    async def target() -> bytes:
+        return dumps((await engine.execute(query)).scalars().all())
+
+    return target, sa_engine.dispose
+
+
+@contender(
     "SQLAlchemy Core (positional)",
     backend="sqlite",
     shape="wide",
@@ -697,6 +778,40 @@ async def pg_flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 
     async def target() -> bytes:
         return dumps(await engine.fetch_all(query))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform compat (.scalars())",
+    backend="postgres",
+    shape="flat",
+    description="The compat track on asyncpg, taken as scalars.",
+)
+async def pg_flat_rowform_compat_scalars(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(flat_stmt(init.limit))
+
+    async def target() -> bytes:
+        return dumps((await engine.execute(query)).scalars().all())
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform compat (.all())",
+    backend="postgres",
+    shape="flat",
+    description="The same Result taken as rows — one SQLAlchemy Row built per row.",
+)
+async def pg_flat_rowform_compat_rows(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(flat_stmt(init.limit))
+
+    async def target() -> bytes:
+        return dumps([row[0] for row in (await engine.execute(query)).all()])
 
     return target, sa_engine.dispose
 
@@ -796,6 +911,23 @@ async def pg_join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
+    "rowform compat (.all())",
+    backend="postgres",
+    shape="join",
+    description="The compat track at arity two on asyncpg — see the sqlite join note.",
+)
+async def pg_join_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(join_stmt(init.limit))
+
+    async def target() -> bytes:
+        return dumps([(a, p) for a, p in (await engine.execute(query)).all()])
+
+    return target, sa_engine.dispose
+
+
+@contender(
     "SQLAlchemy Core (positional)",
     backend="postgres",
     shape="join",
@@ -852,6 +984,23 @@ async def pg_wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 
     async def target() -> bytes:
         return dumps(await engine.fetch_all(query))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform compat (.scalars())",
+    backend="postgres",
+    shape="wide",
+    description="The compat track over the widened shape on asyncpg.",
+)
+async def pg_wide_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(wide_stmt(init.limit))
+
+    async def target() -> bytes:
+        return dumps((await engine.execute(query)).scalars().all())
 
     return target, sa_engine.dispose
 
