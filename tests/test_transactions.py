@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author, Book, Tag, sqlite_db
+from conftest import Author, Book, Tag, seed, sqlite_db
 
 import rowform as rf
 
@@ -73,6 +73,16 @@ class TestConnectIsCommitAsYouGo:
         async with engine.connect() as conn:
             assert conn.in_transaction() is False
             await conn.fetch_all(sa.select(Author))
+            assert conn.in_transaction() is True
+
+    async def test_a_stream_autobegins_like_any_other_first_statement(self, engine):
+        """`fetch_iter` returns its iterator rather than awaiting, so it was the
+        one statement that left the scope untransacted — and a `commit()` after
+        it then had nothing to end."""
+        async with engine.connect() as conn:
+            assert conn.in_transaction() is False
+            async for _row in conn.fetch_iter(sa.select(Author), chunk=2):
+                break
             assert conn.in_transaction() is True
 
 
@@ -202,14 +212,36 @@ class TestTheFootgunGuard:
             with pytest.raises(RuntimeError, match="different pooled connection"):
                 await engine.fetch_all(sa.select(Author))
 
+    @pytest.mark.parametrize("method", ["execute", "scalar", "scalars"])
+    async def test_the_write_one_shots_are_guarded_too(self, engine, method):
+        """Worse than a stale read: these check out on their own and *commit*, so
+        inside a scope they would survive its rollback — and on a pool of one they
+        would deadlock waiting for the connection the scope is holding."""
+        async with engine.begin():
+            with pytest.raises(RuntimeError, match="different pooled connection"):
+                await getattr(engine, method)(sa.select(Author))
+
+    async def test_execute_many_is_guarded_too(self, engine):
+        async with engine.begin():
+            with pytest.raises(RuntimeError, match="different pooled connection"):
+                await engine.execute_many(
+                    sa.insert(Author.__table__), [{"id": 60, "name": "n", "active": True}]
+                )
+
     async def test_the_engine_works_again_after_the_block(self, engine):
         async with engine.begin():
             pass
         assert len(await engine.fetch_all(sa.select(Author))) == 4
 
     async def test_the_guard_is_scoped_to_the_same_engine(self, engine, sqlite_path):
-        async with sqlite_db(sqlite_path) as other, engine.begin():
-            assert await other.fetch_all(sa.select(Author)) is not None
+        """`other` is seeded here rather than relied upon: when `engine` is the
+        postgres parametrisation nothing has touched the sqlite file, so an
+        unseeded read would pass by returning [] whatever the guard did."""
+        async with sqlite_db(sqlite_path) as other:
+            await seed(other)
+            async with engine.begin():
+                rows = await other.fetch_all(sa.select(Author).order_by(Author.id))
+        assert [a.name for a in rows] == ["ada", "brian", "carol", "dan"]
 
     async def test_active_connection_tracks_the_innermost_scope(self, engine):
         assert rf.active_connection() is None

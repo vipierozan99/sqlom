@@ -50,6 +50,22 @@ async def cancel_after(coro_factory, delay: float = 0.25) -> None:
         await task
 
 
+def _idle_connections(pool) -> list[Any]:
+    """The driver connections sitting in a SQLAlchemy pool's queue.
+
+    Absent the fix under test the abandoned connection is one of these: it went
+    back to the pool with its statement still running. SQLAlchemy exposes no
+    public way to enumerate them, so this reaches in and returns nothing if the
+    shape changes — it runs on the failure path only, where the worst outcome is
+    that the failure arrives slowly again.
+    """
+    try:
+        records = list(pool._pool._queue._queue)
+    except AttributeError:
+        return []
+    return [r.driver_connection for r in records if r.driver_connection is not None]
+
+
 async def assert_usable(engine, expected: list[str]) -> None:
     """The pool hands back a working connection, promptly and with the right rows.
 
@@ -62,10 +78,10 @@ async def assert_usable(engine, expected: list[str]) -> None:
         )
     except TimeoutError:
         # Only reached when the fix under test is absent. The abandoned CTE is
-        # still running, so fixture teardown would queue `close()` behind it and
+        # still running, so fixture teardown would queue `dispose()` behind it and
         # the failure would arrive slowly; interrupt first so it arrives now.
         if engine.dialect.name == "sqlite":
-            for conn in engine._require_pool()._all:
+            for conn in _idle_connections(engine.sa_engine.pool):
                 await conn.interrupt()
         raise
     assert [a.name for a in rows] == expected

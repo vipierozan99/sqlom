@@ -218,10 +218,12 @@ def sqlite_url(path: str) -> str:
 def pg_url(dsn: str, driver: str = "asyncpg") -> str:
     """`postgresql://...?sslmode=disable` -> the URL a SQLAlchemy dialect wants.
 
-    The query string goes too: `sslmode` is libpq's spelling, which asyncpg's
-    dialect does not accept as a URL parameter.
+    The query string goes for asyncpg only: `sslmode` is libpq's spelling, which
+    asyncpg's dialect does not accept as a URL parameter. psycopg speaks libpq,
+    so it keeps whatever the DSN asked for.
     """
-    return re.sub(r"^postgresql://", f"postgresql+{driver}://", dsn).split("?")[0]
+    url = re.sub(r"^postgresql://", f"postgresql+{driver}://", dsn)
+    return url.split("?")[0] if driver == "asyncpg" else url
 
 
 @asynccontextmanager

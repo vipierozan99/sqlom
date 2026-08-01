@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author, Book, Wide, seed, sqlite_db
+from conftest import Author, Book, Wide, engine_at, pg_url, seed, sqlite_db
 
 import rowform
 
@@ -195,7 +195,7 @@ class TestStatementsItRefuses:
 
     async def test_returning_streams_on_sqlite_and_asyncpg(self, engine):
         """sqlite has no restriction, and asyncpg opens a portal over the write —
-        both stream what `PsycopgEngine` cannot."""
+        both stream what the psycopg driver cannot."""
         statement = (
             sa.insert(Author.__table__)
             .values(id=8200, name="barbara", active=True)
@@ -208,7 +208,7 @@ class TestStatementsItRefuses:
         """Postgres cannot DECLARE a cursor for a write, so this fails as an
         `UnsupportedError` naming the alternative rather than as a syntax error
         from the server."""
-        async with rowform.PsycopgEngine(pg_dsn) as db:
+        async with engine_at(pg_url(pg_dsn, "psycopg")) as db:
             await seed(db)
             statement = (
                 sa.insert(Author.__table__)
@@ -222,10 +222,10 @@ class TestStatementsItRefuses:
         """Two live streams on the same pinned connection.
 
         Cursor names are per session, so a fixed one made the second stream fail
-        with `DuplicateCursor: cursor "rowform_stream" already exists`. Only
-        `PsycopgEngine` declares a named cursor, so only it can hit this.
+        with `DuplicateCursor: cursor "rowform_stream" already exists`. Only the
+        psycopg driver declares a named cursor, so only it can hit this.
         """
-        async with rowform.PsycopgEngine(pg_dsn) as db:
+        async with engine_at(pg_url(pg_dsn, "psycopg")) as db:
             await seed(db)
             async with db.begin() as conn:
                 outer = conn.fetch_iter(sa.select(Author).order_by(Author.id), chunk=1)
@@ -238,7 +238,7 @@ class TestStatementsItRefuses:
                     await outer.aclose()
 
     async def test_psycopg_streams_a_select(self, pg_dsn):
-        async with rowform.PsycopgEngine(pg_dsn) as db:
+        async with engine_at(pg_url(pg_dsn, "psycopg")) as db:
             await seed(db)
             statement = sa.select(Author).order_by(Author.id)
             streamed = await collect(db.fetch_iter(statement, chunk=2))

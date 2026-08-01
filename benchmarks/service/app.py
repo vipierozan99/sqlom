@@ -63,10 +63,15 @@ def _sa_dsn(path: str) -> str:
 
 def _sa_dsn_pg(dsn: str, driver: str = "asyncpg") -> str:
     """psycopg-style DSN (`postgresql://...?sslmode=disable`) -> the URL a
-    SQLAlchemy dialect wants: swap the driver prefix and drop the query string
-    (the asyncpg dialect forwards query params verbatim to `asyncpg.connect()`,
-    which has no `sslmode` kwarg)."""
-    return dsn.replace("postgresql://", f"postgresql+{driver}://", 1).split("?", 1)[0]
+    SQLAlchemy dialect wants.
+
+    The query string only goes for asyncpg, whose dialect forwards URL params
+    verbatim to `asyncpg.connect()` — which has no `sslmode` kwarg. psycopg
+    speaks libpq, so dropping it there would silently ignore the connection
+    options this contender is meant to run under.
+    """
+    url = dsn.replace("postgresql://", f"postgresql+{driver}://", 1)
+    return url.split("?", 1)[0] if driver == "asyncpg" else url
 
 
 @asynccontextmanager

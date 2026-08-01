@@ -263,6 +263,10 @@ class AsyncpgDriver(Driver):
         return await conn.execute(sql, *(params or ()))
 
     async def execute_many(self, conn, sql, params):
+        """asyncpg's `executemany` reports nothing at all — not even a status
+        tag — so `Result.rowcount` is `-1` here where the other two drivers give
+        a count (`result.rowcount_of`). That is the DBAPI's own "not known", and
+        inventing `len(params)` would claim rows the server never confirmed."""
         return await conn.executemany(sql, params)
 
 

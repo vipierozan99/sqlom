@@ -386,19 +386,27 @@ class Engine:
 
         A statement that returns rows runs without committing; one that does not
         is committed, because a write on a connection the pool resets would
-        otherwise be discarded on two of the three drivers.
+        otherwise be discarded on two of the three drivers. A sequence of
+        parameter sets takes the executemany path, which reports rather than
+        returns rows however the statement was written, so it commits too —
+        `insert(...).returning(...)` with a list of dicts would otherwise be
+        rolled back on release.
         """
+        self._reject_if_in_transaction("execute")
         query, _ = self._query_for(statement)
-        async with self._scope(commit=not query.returns_rows) as conn:
+        many = isinstance(parameters, (list, tuple))
+        async with self._scope(commit=many or not query.returns_rows) as conn:
             return await conn.execute(statement, parameters, **params)
 
     async def scalar(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
         """`execute(...).scalar()`, in a scope of its own."""
+        self._reject_if_in_transaction("scalar")
         return (await self.execute(statement, parameters, **params)).scalar()
 
     async def scalars(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
         """`execute(...).scalars()`, in a scope of its own. The rows are already
         buffered, so the `ScalarResult` outlives the connection."""
+        self._reject_if_in_transaction("scalars")
         return (await self.execute(statement, parameters, **params)).scalars()
 
     async def execute_many(self, statement: Any, params: Sequence[dict[str, Any]]) -> Any:
@@ -407,6 +415,7 @@ class Engine:
         rowform's own: returns the driver's report rather than a `Result`. The
         SQLAlchemy spelling of the same thing is `execute(stmt, [ ... ])`.
         """
+        self._reject_if_in_transaction("execute_many")
         async with self._scope(commit=True) as conn:
             return await conn.execute_many(statement, params)
 
@@ -667,7 +676,9 @@ class Engine:
         """Inside `connect()` or `begin()` this method would take a *different*
         pooled connection, so it would not see the scope's uncommitted writes and
         would not roll back with it. Fail loudly rather than return plausible
-        wrong results."""
+        wrong results — or, for the one-shots that commit, leave a write behind
+        after the surrounding block rolled back. A fixed `pool_size=1` engine
+        turns the same mistake into a deadlock instead."""
         active = _ACTIVE.get()
         if active is not None and active._engine is self:
             raise EngineStateError(

@@ -1,8 +1,8 @@
 """Ephemeral sqlite backend: a temp-file database, DDL, and seed data.
 
-Independent of rowform's own `SqliteEngine` (`rowform/sqlite_engine.py`) — this
-provisions the on-disk database that *any* contender (rowform, raw sqlite3,
-SQLAlchemy) reads from, so every contender runs against a real driver.
+Independent of any contender's connection code — this provisions the on-disk
+database that *any* of them (rowform, raw sqlite3, SQLAlchemy) reads from, so
+every contender runs against a real driver.
 """
 
 from __future__ import annotations

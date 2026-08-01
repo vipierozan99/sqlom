@@ -1,10 +1,9 @@
 """The compatibility track: `conn.execute()` returns a real SQLAlchemy `Result`.
 
-The claim is not "close enough" but "the same object". rowform hydrates the rows,
-wraps a single selected entity in the 1-tuple SQLAlchemy would have produced, and
-hands the list to `IteratorResult` — so what is asserted below is that every
-accessor behaves as it does upstream, including the ones nothing in rowform
-implements.
+The claim is not "close enough" but "the same object". rowform hydrates the rows
+and hands the list to `IteratorResult` — which builds a `Row` only if one is
+asked for — so what is asserted below is that every accessor behaves as it does
+upstream, including the ones nothing in rowform implements.
 
 The matrix is deliberate: one entity, one scalar column, two entities, two scalar
 columns, an entity beside a scalar, and a statement with no result set. Those are
@@ -259,6 +258,34 @@ class TestTheEngineOneShots:
         statement = sa.select(Author).where(Author.id > sa.bindparam("floor"))
         assert len((await engine.execute(statement, {"floor": 2})).all()) == 2
         assert len((await engine.execute(statement, floor=0)).all()) == 4
+
+    async def test_a_returning_write_with_many_parameter_sets_is_committed(self, pg_engine):
+        """A list of parameter sets takes the executemany path, which reports
+        rather than returns rows. Deciding to commit from `returns_rows` alone
+        left this one uncommitted, and the pool's rollback on release discarded
+        it — silently, because the executemany path returns no rows to miss.
+
+        postgres only: sqlite3 refuses `executemany` on a statement that returns
+        rows at all (`InterfaceError`), so the combination cannot get far enough
+        there to be discarded.
+        """
+        await pg_engine.execute(
+            sa.insert(Author.__table__).returning(Author.__table__.c.id),
+            [
+                {"id": 70, "name": "grace", "active": True},
+                {"id": 71, "name": "edsger", "active": True},
+            ],
+        )
+        count = sa.select(sa.func.count()).select_from(Author)
+        assert await pg_engine.fetch_value(count) == 6
+
+    async def test_params_cannot_be_mixed_with_many_parameter_sets(self, engine):
+        with pytest.raises(rf.StatementError, match="cannot be combined"):
+            await engine.execute(
+                sa.insert(Author.__table__),
+                [{"id": 72, "name": "z"}],
+                active=True,
+            )
 
 
 class TestBothTracksAgree:

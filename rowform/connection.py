@@ -42,6 +42,7 @@ from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncResult, AsyncScalarResult
 
 from . import result as _result
+from .errors import StatementError
 from .query import CoreQuery
 
 if TYPE_CHECKING:
@@ -156,7 +157,9 @@ class Connection:
 
         `parameters` is a dict, or a list of dicts for an executemany — the
         signature `AsyncConnection.execute` has. `**params` is rowform's
-        extension, and merges into it.
+        extension, and merges into it, except on the executemany path where
+        there is no one set to merge into: passing both there is refused rather
+        than silently dropped.
 
         A statement with no result set returns a closed `Result`: `.rowcount`
         works, and `.all()` raises `ResourceClosedError`, which is what
@@ -166,6 +169,12 @@ class Connection:
         engine = self._engine
         await self._autobegin()
         if isinstance(parameters, (list, tuple)):
+            if params:
+                raise StatementError(
+                    "**params cannot be combined with a sequence of parameter sets; "
+                    "each set is its own, so there is nothing for them to merge into. "
+                    f"Put {', '.join(sorted(params))} in every dict instead."
+                )
             return _result.no_rows(await self.execute_many(statement, parameters))
         bound = {**(parameters or {}), **params}
         query, extracted = engine._query_for(statement)
@@ -305,7 +314,18 @@ class Connection:
     def fetch_iter(self, statement: Any, *, chunk: int = 1000, **params: Any) -> Any:
         """`Engine.fetch_iter` on this connection: the same rows `fetch_all`
         gives, `chunk` at a time, without a `Result`."""
-        return self._engine._iterate(statement, chunk, params, self._pinned)
+        return self._fetch_iter(statement, chunk, params)
+
+    async def _fetch_iter(
+        self, statement: Any, chunk: int, params: dict[str, Any]
+    ) -> AsyncIterator[Any]:
+        """Autobegin, then delegate. Written out rather than returned directly so
+        the stream counts as this scope's first statement like every other one —
+        otherwise a `connect()` that opens with `fetch_iter` is not in a
+        transaction, and the `commit()` after it ends nothing."""
+        await self._autobegin()
+        async for row in self._engine._iterate(statement, chunk, params, self._pinned):
+            yield row
 
     async def execute_many(self, statement: Any, params: Sequence[dict[str, Any]]) -> Any:
         """One compiled statement, many parameter sets, one round trip. Returns

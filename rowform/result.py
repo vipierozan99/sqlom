@@ -5,8 +5,7 @@ Two ways to read, told apart by name rather than by semantics:
     users = await conn.fetch_all(sa.select(User))          # list[User] — the hot path
     users = (await conn.execute(sa.select(User))).scalars().all()   # SQLAlchemy, exactly
 
-The second is not an imitation. rowform hydrates the rows, wraps a single selected
-entity in the 1-tuple SQLAlchemy would have produced, and hands the list to
+The second is not an imitation. rowform hydrates the rows and hands the list to
 SQLAlchemy's own `IteratorResult` — so `.scalars()`, `.tuples()`, `.mappings()`,
 `.unique()`, `.partitions()`, `Row` attribute access, `NoResultFound` and
 everything added upstream later are the real implementations, not reimplementations

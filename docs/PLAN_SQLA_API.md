@@ -177,16 +177,20 @@ users = await db.fetch_all(sa.select(User).where(User.name.like("a%")))
 # inside somebody else's transaction — the point of the whole exercise
 async with Session() as session, session.begin():
     session.add(OrmAuditRow(...))                       # their ORM, their write
-    hot = await (await db.using(session)).fetch_all(sa.select(User))
+    async with db.connect(bind=session) as conn:
+        hot = await conn.fetch_all(sa.select(User))
 
 # streaming, still a real server-side cursor
 async for user in db.fetch_iter(sa.select(User), chunk=500):
     ...
 ```
 
-`using()` accepts an `AsyncConnection` or an `AsyncSession` (via
+`bind=` accepts an `AsyncConnection` or an `AsyncSession` (via
 `await session.connection()`). Which driver is in play comes from
 `dialect.driver` — a dict lookup replacing the three engine classes.
+
+(This section was written as a proposal and is kept as one; where it sketched
+`db.using(session)`, what shipped is `db.connect(bind=session)`.)
 
 ### What survives, unchanged
 
