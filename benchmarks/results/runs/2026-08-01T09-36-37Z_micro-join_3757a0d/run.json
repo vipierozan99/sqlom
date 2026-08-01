@@ -1,0 +1,545 @@
+{
+  "run_id": "2026-08-01T09-36-37Z_micro-join_3757a0d",
+  "suite": "micro-join",
+  "started_at": "2026-08-01T09:35:52.207981+00:00",
+  "finished_at": "2026-08-01T09:36:37.552635+00:00",
+  "invocation": {
+    "argv": [
+      "/home/vipierozan99/code/sqlom/benchmarks/__main__.py",
+      "micro",
+      "run",
+      "--shape",
+      "join",
+      "--backend",
+      "postgres",
+      "--iterations",
+      "300",
+      "--warmup",
+      "50",
+      "--trials",
+      "5",
+      "--isolate",
+      "--pg-dsn",
+      "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable",
+      "--record"
+    ]
+  },
+  "git": {
+    "sha": "3757a0d85316115f3025c6e2f8b27cc569b21080",
+    "branch": "claude/sqlalchemy-api-alignment-624095",
+    "dirty": false
+  },
+  "env": {
+    "host": "g14linux",
+    "kernel": "7.1.5-101.fc43.x86_64",
+    "distro": "Fedora Linux 43 (Workstation Edition)",
+    "cpu": {
+      "model": "AMD Ryzen 9 5900HS with Radeon Graphics",
+      "physical_cores": 8,
+      "threads": 16,
+      "smt_siblings": {
+        "0:0": [
+          0,
+          1
+        ],
+        "0:1": [
+          2,
+          3
+        ],
+        "0:2": [
+          4,
+          5
+        ],
+        "0:3": [
+          6,
+          7
+        ],
+        "0:4": [
+          8,
+          9
+        ],
+        "0:5": [
+          10,
+          11
+        ],
+        "0:6": [
+          12,
+          13
+        ],
+        "0:7": [
+          14,
+          15
+        ]
+      },
+      "governor": [
+        "performance"
+      ],
+      "boost": true,
+      "mhz": [
+        3685.647,
+        1100.334,
+        1100.334,
+        1100.334,
+        3507.592,
+        3511.355,
+        3502.636,
+        1100.334,
+        3531.494,
+        1100.334,
+        3730.966,
+        4278.203,
+        3506.741,
+        1100.334,
+        4391.458,
+        4391.19
+      ],
+      "throttle_count": 0
+    },
+    "mem_total_kb": 15743784,
+    "loadavg": [
+      1.07,
+      1.29,
+      1.05
+    ],
+    "python": {
+      "version": "3.13.9",
+      "impl": "cpython",
+      "gil_disabled": false
+    },
+    "packages": {
+      "rowform": "0.1.0",
+      "sqlalchemy": "2.0.51",
+      "asyncpg": "0.31.0",
+      "psycopg": "3.3.4",
+      "orjson": "3.11.9",
+      "fastapi": "0.141.1",
+      "uvicorn": "0.52.0",
+      "uvloop": "0.22.1",
+      "aiosqlite": "0.22.1",
+      "locust": "2.46.2",
+      "httptools": "0.8.0"
+    },
+    "git": {
+      "sha": "3757a0d85316115f3025c6e2f8b27cc569b21080",
+      "branch": "claude/sqlalchemy-api-alignment-624095",
+      "dirty": false
+    }
+  },
+  "plan": {
+    "isolation": "one_contender_per_process",
+    "bottleneck": "cpu"
+  },
+  "config": {
+    "shape": "join",
+    "rows": 200000,
+    "limit": 1000,
+    "iterations": 300,
+    "warmup": 50,
+    "trials": 5,
+    "gc": [
+      "off"
+    ],
+    "only": null,
+    "backend": "postgres",
+    "pin_requested": [
+      6,
+      7,
+      8,
+      9
+    ],
+    "pin_actual": [
+      6,
+      7,
+      8,
+      9
+    ]
+  },
+  "equivalence": {
+    "enforced": true,
+    "reference": "rowform",
+    "payload_sha256": "38f5daabf2742d539bc121f68051db893e1e94378bfd3f89c5c4db57854be8cd",
+    "payload_bytes": 157184,
+    "self_consistent": true,
+    "backend": "postgres"
+  },
+  "cells": [
+    {
+      "contender": "rowform",
+      "shipped": true,
+      "params": {
+        "backend": "postgres",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 1.7819100030465052,
+            "iqr_pct": 6.733673345415735,
+            "p95_over_p50": 1.184706294894201,
+            "outliers_mild": 11,
+            "outliers_severe": 9,
+            "max_over_p50": 1.6758579283397617,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 1.7829575008363463,
+            "iqr_pct": 5.323459058987807,
+            "p95_over_p50": 1.0837302596126415,
+            "outliers_mild": 5,
+            "outliers_severe": 3,
+            "max_over_p50": 1.3496681767978072,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 1.7811065008572768,
+            "iqr_pct": 6.815145375633238,
+            "p95_over_p50": 1.2010039845291833,
+            "outliers_mild": 6,
+            "outliers_severe": 12,
+            "max_over_p50": 1.4633364144824101,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 3,
+          "metrics": {
+            "median_ms": 1.8037705012829974,
+            "iqr_pct": 9.652835788131847,
+            "p95_over_p50": 1.3342113070585406,
+            "outliers_mild": 26,
+            "outliers_severe": 9,
+            "max_over_p50": 1.5047335561495654,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 4,
+          "metrics": {
+            "median_ms": 1.7800240020733327,
+            "iqr_pct": 6.211152326266413,
+            "p95_over_p50": 1.1045851052299385,
+            "outliers_mild": 4,
+            "outliers_severe": 5,
+            "max_over_p50": 1.4813333941235483,
+            "iterations": 300
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 1.7819100030465052,
+          "min": 1.7800240020733327,
+          "max": 1.8037705012829974,
+          "spread_pct": 1.332643016149285
+        },
+        "iqr_pct": {
+          "median": 6.733673345415735,
+          "min": 5.323459058987807,
+          "max": 9.652835788131847,
+          "spread_pct": 64.29442752953656
+        }
+      }
+    },
+    {
+      "contender": "rowform compat (.all())",
+      "shipped": true,
+      "params": {
+        "backend": "postgres",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 1.9868959971063305,
+            "iqr_pct": 9.079538917363559,
+            "p95_over_p50": 1.1855809308430114,
+            "outliers_mild": 11,
+            "outliers_severe": 2,
+            "max_over_p50": 1.3731126363114854,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 1.952184502442833,
+            "iqr_pct": 7.613163758667592,
+            "p95_over_p50": 1.1404751947676794,
+            "outliers_mild": 5,
+            "outliers_severe": 5,
+            "max_over_p50": 1.6989428999207417,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 2.0099090033909306,
+            "iqr_pct": 7.686417659092486,
+            "p95_over_p50": 1.1742302765289534,
+            "outliers_mild": 12,
+            "outliers_severe": 6,
+            "max_over_p50": 1.311383247865921,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 3,
+          "metrics": {
+            "median_ms": 1.995066999370465,
+            "iqr_pct": 6.812402777483665,
+            "p95_over_p50": 1.0560642813898993,
+            "outliers_mild": 2,
+            "outliers_severe": 1,
+            "max_over_p50": 1.2764353263187762,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 4,
+          "metrics": {
+            "median_ms": 2.01106050008093,
+            "iqr_pct": 7.081239163805172,
+            "p95_over_p50": 1.0760392320495038,
+            "outliers_mild": 5,
+            "outliers_severe": 2,
+            "max_over_p50": 1.2972270113750315,
+            "iterations": 300
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 1.995066999370465,
+          "min": 1.952184502442833,
+          "max": 2.01106050008093,
+          "spread_pct": 2.951078718492918
+        },
+        "iqr_pct": {
+          "median": 7.613163758667592,
+          "min": 6.812402777483665,
+          "max": 9.079538917363559,
+          "spread_pct": 29.779158990226083
+        }
+      }
+    },
+    {
+      "contender": "SQLAlchemy Core (positional)",
+      "shipped": true,
+      "params": {
+        "backend": "postgres",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 2.0799249978153966,
+            "iqr_pct": 5.953531925280987,
+            "p95_over_p50": 1.122446241371492,
+            "outliers_mild": 7,
+            "outliers_severe": 7,
+            "max_over_p50": 1.3406425703331055,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 2.0904365010210313,
+            "iqr_pct": 6.124079885793407,
+            "p95_over_p50": 1.1420265551456983,
+            "outliers_mild": 9,
+            "outliers_severe": 7,
+            "max_over_p50": 1.324045480136511,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 2.0966525007679593,
+            "iqr_pct": 8.237845938356585,
+            "p95_over_p50": 1.2336441051745437,
+            "outliers_mild": 9,
+            "outliers_severe": 8,
+            "max_over_p50": 1.547135256170584,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 3,
+          "metrics": {
+            "median_ms": 2.091169499180978,
+            "iqr_pct": 7.207402497175207,
+            "p95_over_p50": 1.1965668022685405,
+            "outliers_mild": 13,
+            "outliers_severe": 11,
+            "max_over_p50": 1.3842660775648332,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 4,
+          "metrics": {
+            "median_ms": 2.0838364980590995,
+            "iqr_pct": 5.969182138535238,
+            "p95_over_p50": 1.1291538470153353,
+            "outliers_mild": 9,
+            "outliers_severe": 4,
+            "max_over_p50": 1.4420929872779553,
+            "iterations": 300
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 2.0904365010210313,
+          "min": 2.0799249978153966,
+          "max": 2.0966525007679593,
+          "spread_pct": 0.8001918711423396
+        },
+        "iqr_pct": {
+          "median": 6.124079885793407,
+          "min": 5.953531925280987,
+          "max": 8.237845938356585,
+          "spread_pct": 37.300526049223045
+        }
+      }
+    },
+    {
+      "contender": "SQLAlchemy ORM",
+      "shipped": true,
+      "params": {
+        "backend": "postgres",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 7.149640001443913,
+            "iqr_pct": 6.112209935253646,
+            "p95_over_p50": 1.1361155247485972,
+            "outliers_mild": 17,
+            "outliers_severe": 0,
+            "max_over_p50": 1.2066348794805848,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 7.1683930000290275,
+            "iqr_pct": 4.305441994495682,
+            "p95_over_p50": 1.0911995203100713,
+            "outliers_mild": 16,
+            "outliers_severe": 5,
+            "max_over_p50": 1.35769090785932,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 7.268231500347611,
+            "iqr_pct": 5.160141093863199,
+            "p95_over_p50": 1.1123218901331537,
+            "outliers_mild": 11,
+            "outliers_severe": 7,
+            "max_over_p50": 1.4384867905297731,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 3,
+          "metrics": {
+            "median_ms": 7.303571499505779,
+            "iqr_pct": 5.412475346372277,
+            "p95_over_p50": 1.0961052416284984,
+            "outliers_mild": 7,
+            "outliers_severe": 5,
+            "max_over_p50": 1.9951612720540106,
+            "iterations": 300
+          }
+        },
+        {
+          "trial": 4,
+          "metrics": {
+            "median_ms": 7.215361500129802,
+            "iqr_pct": 5.466074021156921,
+            "p95_over_p50": 1.0767011470938532,
+            "outliers_mild": 2,
+            "outliers_severe": 0,
+            "max_over_p50": 1.132165311435692,
+            "iterations": 300
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 7.215361500129802,
+          "min": 7.149640001443913,
+          "max": 7.303571499505779,
+          "spread_pct": 2.1333858055358195
+        },
+        "iqr_pct": {
+          "median": 5.412475346372277,
+          "min": 4.305441994495682,
+          "max": 6.112209935253646,
+          "spread_pct": 33.38154587565842
+        }
+      }
+    }
+  ],
+  "ratios": [
+    {
+      "contender": "rowform compat (.all())",
+      "against": "rowform",
+      "gc": "off",
+      "value": 1.119622762069649,
+      "low": 1.082279869337186,
+      "high": 1.1297940352144078,
+      "spread_pct": 4.243765622395059,
+      "tie": false
+    },
+    {
+      "contender": "SQLAlchemy Core (positional)",
+      "against": "rowform",
+      "gc": "off",
+      "value": 1.1731437039171693,
+      "low": 1.1530984658724457,
+      "high": 1.1778787804691537,
+      "spread_pct": 2.112300011837056,
+      "tie": false
+    },
+    {
+      "contender": "SQLAlchemy ORM",
+      "against": "rowform",
+      "gc": "off",
+      "value": 4.049228910435322,
+      "low": 3.963719329237545,
+      "high": 4.103074728766994,
+      "spread_pct": 3.441529303772234,
+      "tie": false
+    }
+  ],
+  "warnings": [
+    "cpu boost enabled \u2014 a live noise source"
+  ],
+  "notes": "",
+  "schema_version": 1,
+  "quotable": false
+}
