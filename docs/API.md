@@ -131,8 +131,10 @@ for a `SAVEPOINT` but does for the DML after it.
 | `engine.observer` | see [Observer](#rowformobserver); reassignable at any time |
 | `engine.cached_statements` | how many compiled statements are held, of at most `cache_size` |
 
-There is no `connect()`, `close()` or `pool_stats()`: the pool is SQLAlchemy's, so
-`engine.sa_engine.pool.status()` is where its counters live.
+There is no `close()` or `pool_stats()`: the pool is SQLAlchemy's, so
+`engine.sa_engine.pool.status()` is where its counters live, and disposing the
+engine is the caller's business. `connect()` does exist — it opens a scope rather
+than the engine; see [below](#async-with-engineconnectbindnone-execution_options).
 
 ### Reading
 
@@ -226,9 +228,18 @@ refused: the compiled SQL carries one paramstyle.
 ```python
 async with Session() as session, session.begin():
     session.add(AuditRow(...))                            # their ORM write
+    await session.flush()                                 # rowform will not
     async with db.connect(bind=session) as conn:
         hot = await conn.fetch_all(sa.select(User))
 ```
+
+**Flush before you read.** "Uncommitted" means uncommitted *in the database*.
+rowform reads the connection under the session, not the session, so nothing it
+does triggers autoflush — a `session.add()` that has not been flushed is still
+pending in the identity map, and the read will not see it. Flushing is left to
+you deliberately: a read that silently flushed somebody else's session would
+reorder their writes. Binding to an `AsyncConnection` has no such state and needs
+no flush.
 
 #### `async with engine.begin(**execution_options) as conn:`
 

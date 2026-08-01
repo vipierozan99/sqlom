@@ -16,6 +16,7 @@ import pytest
 import sqlalchemy as sa
 from conftest import Author, Base, pg_url, sqlite_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
 
 import rowform as rf
 
@@ -24,20 +25,34 @@ class Boom(Exception):
     pass
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+class OrmBase(DeclarativeBase):
+    pass
+
+
+class AuthorORM(OrmBase):
+    """A stock ORM mapping over the *same* `Table` the rowform model declares —
+    the shape of an application migrating one query at a time, and the only way
+    to exercise `session.add()`, which rowform models do not support."""
+
+    __table__ = Author.__table__
+
+
+@pytest.fixture(params=["sqlite", "asyncpg", "psycopg"])
 async def pair(request, tmp_path):
     """One `AsyncEngine`, wrapped — the shape a migrating application is in.
 
-    Both backends, because "the same transaction" is three different mechanisms
-    underneath: psycopg's connection is transactional in its own right, sqlite
-    gets an explicit BEGIN from `SqliteDriver.configure`, and asyncpg has none
-    until `AsyncpgDriver.enter_transaction` puts it in one. Asserting the goal on
-    sqlite alone is how the asyncpg case came to be written and stay broken.
+    All three drivers, because "the same transaction" is three different
+    mechanisms underneath: psycopg's connection is transactional in its own
+    right, sqlite gets an explicit BEGIN from `SqliteDriver.configure`, and
+    asyncpg has none until `AsyncpgDriver.enter_transaction` puts it in one.
+    Asserting the goal on sqlite alone is how the asyncpg case came to be written
+    and stay broken — so naming psycopg here and then not running it was the same
+    mistake one driver over.
     """
     if request.param == "sqlite":
         url = sqlite_url(str(tmp_path / "bind.sqlite3"))
     else:
-        url = pg_url(request.getfixturevalue("pg_dsn"))
+        url = pg_url(request.getfixturevalue("pg_dsn"), request.param)
     sa_engine = create_async_engine(url)
     db = rf.Engine(sa_engine)
     await db.drop_all(Base.metadata)
@@ -108,6 +123,28 @@ class TestOnASession:
             async with db.connect(bind=session) as conn:
                 rows = await conn.fetch_all(sa.select(Author))
             assert sorted(a.name for a in rows) == ["ada", "di"]
+
+    async def test_a_pending_add_is_not_visible_until_it_is_flushed(self, pair):
+        """rowform reads the connection under the session, not the session.
+
+        So nothing it does triggers autoflush, and a `session.add()` still
+        pending in the identity map is not in the database for rowform to find.
+        `Engine.connect` documents the flush as the caller's; this pins both
+        halves so the documented rule cannot quietly stop being true.
+        """
+        db, sa_engine = pair
+        Session = async_sessionmaker(sa_engine)
+        async with Session() as session, session.begin():
+            session.add(AuthorORM(id=6, name="fran", active=True))
+
+            async with db.connect(bind=session) as conn:
+                before = await conn.fetch_all(sa.select(Author))
+            assert [a.name for a in before] == ["ada"]
+
+            await session.flush()
+            async with db.connect(bind=session) as conn:
+                after = await conn.fetch_all(sa.select(Author))
+            assert sorted(a.name for a in after) == ["ada", "fran"]
 
     async def test_a_session_rollback_takes_rowforms_reads_with_it(self, pair):
         db, sa_engine = pair

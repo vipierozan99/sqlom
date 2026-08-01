@@ -620,8 +620,18 @@ class Engine:
 
             async with Session() as session, session.begin():
                 session.add(AuditRow(...))
+                await session.flush()          # see below — rowform will not
                 async with db.connect(bind=session) as conn:
                     hot = await conn.fetch_all(sa.select(User))
+
+        **Flush before you read.** "Uncommitted" means uncommitted *in the
+        database*. rowform reads the connection under the session, not the
+        session, so nothing it does triggers autoflush — a `session.add()` that
+        has not been flushed is still pending in the identity map, and a rowform
+        read will not see it. Flushing is the caller's because the alternative is
+        worse: a read that silently flushes somebody else's session reorders their
+        writes, and rowform has no way to know that is wanted. An
+        `AsyncConnection` has no such state, so this applies to sessions only.
 
         `execution_options` reach `AsyncConnection.execution_options()`, so
         isolation is spelled the way SQLAlchemy spells it —

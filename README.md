@@ -317,12 +317,18 @@ writes, rolling back with it:
 ```python
 async with Session() as session, session.begin():
     session.add(AuditRow(...))                        # their ORM write
+    await session.flush()                             # rowform will not
     async with db.connect(bind=session) as conn:
         hot = await conn.fetch_all(sa.select(User))   # our rows, their transaction
 ```
 
 That is what makes adoption incremental: an application keeps its engine, its sessions
 and its migrations, and moves one query at a time.
+
+Flush first when binding to a session: rowform reads the connection under it, not the
+session, so a pending `add()` is not in the database yet and nothing rowform does will
+autoflush it. [API.md](docs/API.md#async-with-engineconnectbindnone-execution_options)
+says why that is left to you.
 
 ### Schema and migrations
 
