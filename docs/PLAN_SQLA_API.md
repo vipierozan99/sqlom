@@ -5,8 +5,9 @@ Status: **implemented**. rowform no longer pools — `rf.Engine` wraps an
 both a SQLAlchemy-shaped track and rowform's own (§6). §8 is what building it
 turned up, including two silent-wrongness bugs and one retracted claim.
 
-What is left: §5.1, the whole postgres arm, unrun for want of a server; and §5.3,
-the benchmark table, which predates the pool change and has not been re-measured.
+The postgres arm has since been run — see §5.1 and §8d, which is the bug it
+found. What is left is §2's *ablation* (the per-checkout cost), still sqlite-only,
+and §5.3's published table, which predates the pool change.
 
 ## 0. The goal
 
@@ -239,28 +240,36 @@ this box. It is §5.1's first item.
 
 ## 5. Open questions and sharp edges
 
-1. **Everything in §2 is sqlite.** The per-checkout tax, the transaction sharing,
-   and §4's reset claim all need the same ablation against
-   `postgresql+asyncpg` and `postgresql+psycopg` before any of it is published.
-   Postgres is where the round trip dominates, which cuts both ways: the fixed
-   ~0.3 ms checkout matters proportionally less, and any *extra round trip*
-   matters far more.
+1. **§2's ablation is still sqlite.** *Partly closed.* The suite now runs green
+   against both postgres drivers (`--pg-required`, 558 tests), which is what
+   turned §5.2 from a prediction into §8d — and the micro benchmarks have a
+   postgres arm (`docs/RUNS.md`, 2026-08-01). What has *not* been re-measured on
+   postgres is the thing §2 is about: the per-checkout tax, and with it §4's
+   reset claim. Postgres is where the round trip dominates, which cuts both ways:
+   the fixed ~0.3 ms checkout matters proportionally less, and any *extra round
+   trip* matters far more.
 
-2. **Autocommit semantics diverge across drivers when there is no explicit
-   transaction.** Executing on `driver_connection` outside a SQLAlchemy
-   transaction means the adapter never starts its emulated one. On asyncpg that
-   is autocommit — a write commits. On psycopg the driver connection is
-   transactional in its own right, so the same write would be rolled back by the
-   pool's reset on release. Reads are unaffected either way. This needs pinning
-   down and probably needs rowform to refuse writes outside an explicit
-   transaction rather than behave differently per driver.
+2. **Autocommit semantics diverge across drivers.** *Closed for scopes, by §8d,
+   and it was worse than this entry guessed.* The prediction was about statements
+   run with no transaction open. The real case was statements run with one open:
+   SQLAlchemy's asyncpg adapter starts its transaction lazily on the first
+   statement through *its own cursor*, which rowform never uses, so `begin()`
+   left the driver in autocommit and a rollback discarded nothing.
+   `AsyncpgDriver.enter_transaction` drives that lazy start. psycopg was fine as
+   this entry reasoned, and sqlite by way of §8b's recipe.
+
+   Still open, narrowly: a *write* issued with no scope at all, where asyncpg
+   commits and psycopg does not. Refusing it uniformly is still the likely
+   answer.
 
 3. **The per-request tax is real and the benchmark story must say so.** The
    published "1.2–1.6x SQLAlchemy Core" figure is a per-request-acquire
    comparison on *rowform's* pool. On SQLAlchemy's pool the same comparison
    narrows, because both sides now pay the same checkout. The honest fix is to
    report both connection sources rather than to quietly keep quoting the
-   favourable one.
+   favourable one. `docs/RUNS.md` (2026-08-01) is the first re-measurement, on
+   both backends and with the compatibility track priced beside the hot one; the
+   published tables are deliberately still untouched.
 
 4. **Which suggests keeping rowform's pool as an option, not a default.** If the
    row API is `rf.fetch_all(conn, stmt)`, then rowform's pool does not need an
@@ -320,9 +329,10 @@ its own piece of work with its own cost to measure (§5.6).
 ---
 ## 7. Phasing
 
-1. ~~Port §2's ablation to postgres~~ — **not done**, no server available. §5.1
-   stands open and is the first thing to run where one exists; every number in
-   this document is sqlite.
+1. Port §2's ablation to postgres — **still not done**. A server has since been
+   available and was used for the suite (§8d) and for the micro benchmarks
+   (`docs/RUNS.md`), but not for re-running the checkout ablation itself: every
+   number in *this document* is sqlite.
 2. **Done.** `rf.Engine(sa_engine)`, driver dispatched from the dialect,
    `connect(bind=...)` for a caller's connection or session. `tests/test_bind.py`
    asserts the point: reads inside `conn.begin()` and inside an `AsyncSession`
@@ -335,6 +345,9 @@ its own piece of work with its own cost to measure (§5.6).
    worth the deletion.
 5. Docs done. **Benchmarks re-run but not re-published**: the README table
    predates this, and its rowform arms now pay SQLAlchemy's checkout. §5.3 stands.
+   `bench micro` now carries the compatibility track alongside the hot one, on
+   every shape and backend, so "you pay per accessor" is a measurement rather
+   than an assertion — `docs/RUNS.md`, 2026-08-01.
 
 ---
 
@@ -367,6 +380,40 @@ default.
 Both are the concrete form of §5.2, which predicted the *direction* — "autocommit
 semantics diverge across drivers" — and named psycopg. It did not predict that
 sqlite was affected too, or that savepoints were a second, separate case.
+
+**8d. A rowform scope gave no atomicity at all on asyncpg** — and this one was
+not caught by the suite, because the suite had never been run. The first
+`--pg-required` run failed four transaction tests, each saying the same thing: a
+rollback kept the write.
+
+asyncpg has no implicit transaction, and SQLAlchemy's adapter opens its
+`asyncpg.Transaction` **lazily, on the first statement executed through its own
+cursor**. rowform runs on the driver connection and never touches that cursor, so
+`begin()` marked the SQLAlchemy connection as in a transaction while asyncpg
+stayed in autocommit. Statements committed as they were issued; `rollback()`
+found `_started` false and discarded nothing. `begin_nested()` had nothing to
+nest inside.
+
+`AsyncpgDriver.enter_transaction` drives the adapter's own lazy start rather than
+opening a transaction directly on the asyncpg connection — which is what keeps
+SQLAlchemy's `commit()`/`rollback()` in charge of ending it, both being gated on
+the same flag. `Connection._autobegin` calls it whenever the connection is in a
+transaction rather than only when rowform opened one, because the caller's
+`conn.begin()` and a session bound with `bind=` reach the driver by the same
+route.
+
+Three things worth keeping from it:
+
+* **This was the goal failing on the backend it matters most on.** §0's claim is
+  "rowform reads inside somebody else's transaction"; on asyncpg, rowform's
+  *writes* were escaping it.
+* **`tests/test_bind.py` was sqlite-only** — the file whose whole purpose is to
+  prove §0. Parametrised over both backends now, and two of its cases fail
+  without the fix. A test that asserts the headline goal on one backend is a test
+  that will let the headline goal ship broken on the other.
+* **§5.2 had the direction and the wrong case.** It reasoned about statements
+  outside a transaction and named the driver that turned out to be fine. Writing
+  the hazard down was still what made the failure legible in seconds.
 
 One thing had to be kept rather than inherited: **cancellation**. A cancelled
 aiosqlite read leaves its statement running in a worker thread, and SQLAlchemy's

@@ -287,10 +287,14 @@ real `sqlalchemy.Result` built over rowform's hydrated rows, so `.scalars()`,
 `execute().all()` gives `[Row(User,)]` and `fetch_all()` gives `[User]`. At two or
 more the hydrator already produces tuples and the two agree.
 
-Nothing is wrapped on the way in, so the compatibility track costs what you take
-from it rather than a flat toll — per 1000 rows, `.scalars().all()` 0.0049 ms,
+Nothing is wrapped on the way in, so the compatibility track costs mostly what you
+take from it rather than a flat toll — per 1000 rows, `.scalars().all()` 0.0049 ms,
 `.all()` 0.168 ms, `.mappings().all()` 0.471 ms. `.scalars()` is the cheap one:
 SQLAlchemy is told the source yields scalars, so no `Row` is built at all.
+
+"Mostly", because the `Result` is not free to build even when nothing is taken
+from it: end to end against `fetch_all()` on the same read, `.scalars().all()`
+costs +3-4% and `.all()` +9-18% (`docs/RUNS.md`, 2026-08-01).
 
 ### `async with conn.pipeline():`
 

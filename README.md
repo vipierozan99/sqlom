@@ -216,9 +216,16 @@ async with db.connect() as conn:
 `.scalars()`, `.mappings()`, `.tuples()`, `.unique()`, `.partitions()`, `row.name`,
 `NoResultFound` — all of it behaves as it does upstream, which is what lets code move
 over a query at a time. Nothing is wrapped on the way in, so you pay for what you take:
-per 1000 rows `.scalars().all()` costs 0.0049 ms, `.all()` 0.168 ms and
-`.mappings().all()` 0.471 ms. The idiomatic ORM-style read is within noise of
-`fetch_all`; only asking for actual `Row` objects builds any.
+measured on the accessor alone, per 1000 rows, `.scalars().all()` costs 0.0049 ms,
+`.all()` 0.168 ms and `.mappings().all()` 0.471 ms.
+
+End to end the picture is the same with one addition — the `Result` itself is not
+quite free. Against `fetch_all` on the same 1000-row read
+(`docs/RUNS.md`, 2026-08-01), `.scalars().all()` costs **+3-4%** and `.all()`
+**+9-18%**; the gap between those two is the `Row` per row, and the 3-4% floor
+under both is building the `Result`. Both are still ahead of stock SQLAlchemy
+Core on the same statement — 1.21x on sqlite, 1.33x on postgres — because what
+changes underneath is `Row`/`CursorResult`, not the idiom above it.
 
 ### Aliases and self-joins
 

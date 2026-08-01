@@ -1,5 +1,75 @@
 # Recorded runs
 
+## 2026-08-01 — the two tracks, priced against each other and against Core
+
+Commit `9452819`, branch `bench/2026-08-01-two-tracks` (the three `run.json`s).
+Reference box, 200,000 rows (1.2M for join), 1000 per read, 300 timed iterations
+after 50 warmup, gc off, pinned to cpus 6-9, postgres from `bench db up`:
+
+```
+just bench db up
+just bench micro run --shape {flat,join,wide} --iterations 300 --warmup 50 \
+  --pg-dsn "postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable" --record
+```
+
+The question this answers: **what does the compatibility track cost?** `execute()`
+returns SQLAlchemy's own `Result`, so it can be measured against `fetch_all()` on
+the same statement, the same hydrator and the same one-shot checkout — only the
+result layer differs, and the equivalence gate held the payload byte-identical
+across all of them.
+
+Medians in ms, lower is better. First postgres numbers this library has; a server
+was not available when the two-track work was written.
+
+| contender | flat/sqlite | join/sqlite | wide/sqlite | flat/pg | join/pg | wide/pg |
+|---|---|---|---|---|---|---|
+| raw driver → dicts *(floor)* | 0.8265 | 1.3804 | — | 1.0061 | — | — |
+| raw driver + same hydrator *(floor)* | 0.9277 | 1.5363 | — | — | — | — |
+| **rowform `fetch_all()`** | **1.2304** | **1.8378** | **3.7637** | **1.0241** | **1.8242** | **3.1215** |
+| **rowform `execute().scalars()`** | **1.2751** | — | **3.7937** | **1.0681** | — | **3.1511** |
+| **rowform `execute().all()`** | **1.4167** | **2.0265** | — | **1.2069** | **1.9905** | — |
+| SQLAlchemy Core (positional) | 1.5437 | 2.1316 | 4.2761 | 1.4235 | 2.1689 | 3.6162 |
+| SQLAlchemy Core (`.mappings()`) | 3.2794 | — | — | 3.1255 | — | — |
+| SQLAlchemy ORM | 4.3326 | 6.8642 | 7.8108 | 4.1459 | 7.3483 | 7.4559 |
+| SQLAlchemy ORM (`MappedAsDataclass`) | 5.1281 | 8.8247 | 17.2617 | — | — | — |
+
+`.scalars()` is not registered at arity two — it would drop an entity — and
+`.all()` is not registered for wide, whose single entity makes it the same
+measurement as flat's.
+
+**What it says.**
+
+1. **`.scalars()` costs 1-4%**: +0.045 ms on flat/sqlite, +0.044 on flat/pg,
+   +0.03 on wide. Taking the hydrated objects straight out of the `Result` is
+   near-free, which is what handing them over unwrapped bought (§8c).
+2. **`.all()` costs 9-18%** — +0.186 ms per 1000 rows on flat/sqlite, and the
+   same order everywhere. That is one `Row` built per row, and it is the whole
+   difference between the two lines.
+3. **The compatibility track still beats stock Core**: 1.2751 against 1.5437 on
+   flat/sqlite (**1.21x**), 1.0681 against 1.4235 on flat/pg (**1.33x**). Same
+   `execute()`, same `Result`, same accessors — the hydrator replaces
+   `Row`/`CursorResult` underneath and the idiom above it does not change. Even
+   the `.all()` line, which pays for a `Row` per row, comes out ahead (1.4167 vs
+   1.5437).
+
+**Two caveats, both the box's.**
+
+`quotable=False` on all three runs. Not a judgement on these numbers in
+particular: `bench micro run` hardcodes `isolation="combined"`, which the gate
+refuses for any multi-cell run, so no invocation of that command can be quotable
+today. Cpu boost was also enabled. Ratios, not absolutes.
+
+With **gc off**, the wide compat arm alone shows a long tail — p95/p50 2.4-2.7
+and ~28 severe outliers, reproducibly, across two runs. It is the GC: rerun with
+`--gc on` and it is p95/p50 1.03 with one outlier, medians 3.8314 against 3.8671.
+`Result`/`ScalarResult` allocate reference cycles that only the collector
+reclaims, so a gc-off benchmark overstates the compat track's tail specifically.
+The medians are unaffected either way.
+
+**Not comparable to the published tables** in METHODOLOGY.md: those were taken
+when rowform owned its pool, and every rowform arm here pays SQLAlchemy's
+checkout instead (PLAN_SQLA_API.md §2b, §5.3). Read this table against itself.
+
 ## 2026-07-29 — SQLAlchemy mock-engine micro benchmarks (flat + join)
 
 Two `bench micro run` sweeps (in-process, not load test) — default flat
