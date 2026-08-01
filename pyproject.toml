@@ -33,7 +33,18 @@ classifiers = [
 # and calls `_disable_asyncpg_inet_codecs`, and neither exists before then — the
 # whole suite errors on 2.0.17 and passes on 2.0.18. CI resolves to this floor on
 # every PR so the number stays a fact.
-dependencies = ["sqlalchemy>=2.0.18"]
+#
+# The ceiling is because this library reads SQLAlchemy's *private* surface, and
+# does so deliberately: `_generate_cache_key`, `CacheKey.bindparams`,
+# `compiled._bind_processors`, `escaped_bind_names`,
+# `_process_parameters_for_postcompile`, `positiontup`, `_limit_clause`,
+# `_returning`, `SimpleResultMetaData`, `IteratorResult._source_supports_scalars`,
+# `util.await_only`, and the asyncpg adapter's `_started`/`_start_transaction`.
+# Those are the compiler and result internals — none of them carry a
+# compatibility promise across a minor release, and a caller resolving to 2.1
+# would find out at runtime rather than at install. Raise it deliberately, with
+# the suite green, rather than by leaving it open.
+dependencies = ["sqlalchemy>=2.0.18,<2.1"]
 
 [project.urls]
 Homepage = "https://github.com/vipierozan99/sqlom"

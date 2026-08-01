@@ -195,6 +195,19 @@ it returns the driver's report rather than a `Result`. The SQLAlchemy spelling o
 the same thing is `execute(stmt, [ ... ])`. An empty sequence returns `None`
 without touching the database.
 
+#### `await engine.copy_in(table, rows, *, columns=None) -> int`
+
+Bulk-load through the server's COPY path, in a scope of its own. postgres only;
+the others raise `UnsupportedError` naming `execute_many()` instead. `columns`
+defaults to every column of the table — name a subset to let server defaults fill
+the rest, and every row must carry each name.
+
+Values go through the same bind processors a parameterised INSERT uses, because
+COPY bypasses the statement path where those normally run. Refused inside a scope
+(`EngineStateError`): it would take a different connection and commit on its own,
+so a rollback of the surrounding block would leave the loaded rows behind. Use
+`conn.copy_in()` there.
+
 ### Schema
 
 #### `await engine.create_all(metadata)` / `await engine.drop_all(metadata, *, ignore_missing=True)`
@@ -290,7 +303,7 @@ real `sqlalchemy.Result` built over rowform's hydrated rows, so `.scalars()`,
 | `await conn.fetch_value(stmt, **params)` | |
 | `conn.fetch_iter(stmt, *, chunk=1000, **params)` | `AsyncIterator[T]` |
 | `await conn.execute_many(stmt, params)` | the driver's report, not a `Result` |
-| `await conn.copy_in(table, rows, columns=None)` | postgres only |
+| `await conn.copy_in(table, rows, *, columns=None)` | postgres only |
 | `conn.pipeline()` | psycopg only — see below |
 | `conn.connection` / `conn.sa_connection` | the driver connection, and SQLAlchemy's |
 
@@ -315,7 +328,7 @@ the block exits. Worth it only where the round trip is the cost: over 200 update
 it is slightly *slower* on loopback (56 ms against 44 ms) and **13.5x** faster at
 1 ms of network latency (42 ms against 564 ms).
 
-It is on the transaction because a pipeline belongs to one connection. Two
+It is on the connection because a pipeline belongs to one. Two
 inherent consequences: a statement's result is unavailable while the block is
 open (psycopg reports a rowcount of -1), and an error raises when the pipeline
 synchronises rather than at the statement that caused it — it does still raise,
@@ -365,7 +378,7 @@ All inherit `RowformError`, and each also inherits the builtin it replaced.
 |---|---|---|
 | `RowformError` | `Exception` | base for everything below |
 | `DeclarationError` | `TypeError` | a model that cannot become a table; raised at class creation |
-| `ConfigurationError` | `TypeError`, `ValueError` | an engine or transaction option it cannot honour |
+| `ConfigurationError` | `TypeError`, `ValueError` | an engine or scope option it cannot honour |
 | `UnsupportedError` | `NotImplementedError` | the backend cannot express it at all |
 | `StatementError` | `ValueError` | right statement, wrong method |
 | `PlanError` | `ValueError` | the result's shape and the plan disagree |

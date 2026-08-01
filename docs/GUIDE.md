@@ -8,6 +8,7 @@ Every snippet here was run against a real database before being written down.
 - [Getting started](#getting-started)
 - [Declaring models](#declaring-models)
 - [Reading](#reading)
+- [Aliases and self-joins](#aliases-and-self-joins)
 - [Pagination](#pagination)
 - [Streaming a large result](#streaming-a-large-result)
 - [Writing and transactions](#writing-and-transactions)
@@ -37,6 +38,7 @@ owns the schema.
 
 ```python
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import Mapped
 import rowform
 
@@ -366,11 +368,11 @@ except rowform.RowformError:
 | | |
 |---|---|
 | `DeclarationError` | a model that cannot become a table — raised at import |
-| `ConfigurationError` | an engine or transaction option it cannot honour |
-| `UnsupportedError` | the backend cannot express it (sqlite isolation levels) |
+| `ConfigurationError` | an engine or scope option it cannot honour |
+| `UnsupportedError` | the driver has no such capability (COPY, pipelining, streaming a write) |
 | `StatementError` | `execute()` given rows, or `fetch_all()` given none |
 | `PlanError` | the result's shape and the plan disagree |
-| `EngineStateError` | not connected, or an engine read inside a transaction |
+| `EngineStateError` | an engine read inside a scope, or ending a `bind=` transaction |
 
 **Driver errors are not wrapped.** A unique-violation is asyncpg's or psycopg's own
 exception, because renaming it would hide which server refused what:
@@ -393,6 +395,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
+from sqlalchemy.ext.asyncio import create_async_engine
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -464,7 +467,7 @@ def slow_queries(sql: str, seconds: float, rows: int | None) -> None:
 engine = rowform.Engine(sa_engine, observer=slow_queries)
 ```
 
-The observer is called after every statement — engine or transaction, read or
+The observer is called after every statement — one-shot or scope, read or
 write. `rows` is `None` for a statement that returns none, and for `fetch_iter` it
 is the total, timed over the whole iteration. Leaving it `None` costs one
 attribute load per statement and nothing per row. Exceptions raised inside it are
@@ -488,10 +491,11 @@ log.info("pool %s", pool.status())
 Saturation and a slow database look the same from outside and are fixed
 differently, so it is worth exporting both.
 
-`logging.getLogger("rowform")` emits at DEBUG and nowhere else: one line per
-statement compiled — per compile, not per execute, so it also tells you whether
-the cache is working — one per hydrator built, carrying the generated source, and
-one per pool open and close.
+`logging.getLogger("rowform")` emits at DEBUG and nowhere else, on two occasions:
+one line per statement compiled — per compile, not per execute, so it also tells
+you whether the cache is working — and one per hydrator built, carrying the
+generated source. The pool is SQLAlchemy's, so its own `sqlalchemy.pool` logger is
+where checkouts and returns are.
 
 ## Timeouts and cancellation
 

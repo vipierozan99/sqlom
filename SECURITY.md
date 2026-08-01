@@ -54,6 +54,9 @@ as parameterised queries, with values bound through the driver — so the usual
 guidance applies unchanged: keep user input in bind parameters and out of
 `sa.text()` fragments and identifiers you interpolate yourself.
 
-One rowform-specific note: `Transaction.execute()` also accepts a raw SQL string,
-for the DDL and session state a statement object cannot express. That path has no
-parameters and no escaping. Do not build those strings out of untrusted input.
+One rowform-specific note: `Connection.exec_driver_sql()` takes a raw SQL string,
+for the DDL and session state a statement object cannot express. It is not
+compiled and its `parameters` go to the driver as-is, so anything you interpolate
+into the string itself is unescaped. Do not build those strings out of untrusted
+input. `execute()` and the `fetch_*` methods take statement objects, not strings,
+and are not a route to this.

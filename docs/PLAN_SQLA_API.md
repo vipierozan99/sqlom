@@ -340,9 +340,13 @@ its own piece of work with its own cost to measure (§5.6).
 3. **Done.** `execute()`/`scalar()`/`scalars()`/`stream()`/`stream_scalars()`/
    `exec_driver_sql()` over real SQLAlchemy `Result` and `AsyncResult` objects,
    plus the lifecycle renames. `tests/test_result.py` walks the shape matrix.
-4. **Done.** §3's deletion table is applied. §5.4's "keep the pool as an opt-in
-   provider" was *not* taken, on the explicit call that the checkout cost is
-   worth the deletion.
+4. **Mostly.** §3's deletion table is applied except for three rows kept
+   deliberately: `connect()` (it names a scope now, not the engine's state),
+   `create_all`/`drop_all`, and `_ACTIVE` + `_reject_if_in_transaction` — that
+   last against §3's own rationale that "you cannot call a connection you were
+   not handed", which the one-shots on `Engine` make untrue. §5.4's "keep the
+   pool as an opt-in provider" was *not* taken, on the explicit call that the
+   checkout cost is worth the deletion.
 5. **Done.** Benchmarks re-run *and* re-published. `bench micro` carries the
    compatibility track alongside the hot one on every shape and backend, and
    `bench micro run --isolate --trials N` makes a run that satisfies the
@@ -367,6 +371,20 @@ this could not happen before.
 
 Fixed by running writes through `sa_engine.begin()`
 (`Engine._checkout(commit=True)`), so all three agree, on the safe answer.
+
+That fix keyed on `returns_rows`, and **it took two further passes to find that
+the property was wrong**. A write with `RETURNING` returns rows and is still a
+write, so it kept taking the read's checkout. The executemany branch was caught
+first and patched in isolation; the single-parameter-set one — `db.execute()`,
+`db.fetch_all()` and `db.fetch_iter()` on `insert(...).returning(...)` — was
+found only when the suite was finally run against psycopg. `is_select` is the
+property that was meant throughout, and `Engine._acquire_for` is now the one
+place that decides.
+
+The lesson is the same one as §8d: sqlite and asyncpg both commit such a write by
+accident — one is put in autocommit by `SqliteDriver.configure`, the other has no
+implicit transaction — so psycopg was the only driver that could show it, and the
+`engine` fixture did not cover psycopg. It does now, and so does `test_bind.py`.
 
 **8b. Savepoints were silently wrong on sqlite.** pysqlite opens a transaction
 before DML but not before a `SAVEPOINT`, so the savepoint SQLAlchemy issues for
