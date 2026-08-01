@@ -18,8 +18,15 @@ process**, GC off, pinned to cpus 6-9:
 
 ```
 just bench db up
-just bench micro run --shape {flat,join,wide} --backend {sqlite,postgres,mock} \
-  --iterations 300 --warmup 50 --trials 5 --isolate --pg-dsn "$DSN" --record
+
+for shape in flat join wide; do
+  for backend in sqlite postgres mock; do
+    # wide has no mock contenders, and an empty selection is an error
+    if [ "$backend" = mock ] && [ "$shape" = wide ]; then continue; fi
+    just bench micro run --shape "$shape" --backend "$backend" \
+      --iterations 300 --warmup 50 --trials 5 --isolate --pg-dsn "$DSN" --record
+  done
+done
 ```
 
 Medians of the per-trial medians, in milliseconds, lower is better. Ratios come from

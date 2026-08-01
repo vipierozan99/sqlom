@@ -9,8 +9,15 @@ satisfies `Run.quotable`'s isolation clause — `bench micro run` hardcoded
 
 ```
 just bench db up
-just bench micro run --shape {flat,join,wide} --backend {sqlite,postgres,mock} \
-  --iterations 300 --warmup 50 --trials 5 --isolate --pg-dsn "$DSN" --record
+
+for shape in flat join wide; do
+  for backend in sqlite postgres mock; do
+    # wide has no mock contenders, and an empty selection is an error
+    if [ "$backend" = mock ] && [ "$shape" = wide ]; then continue; fi
+    just bench micro run --shape "$shape" --backend "$backend" \
+      --iterations 300 --warmup 50 --trials 5 --isolate --pg-dsn "$DSN" --record
+  done
+done
 
 uv run python scripts/publish_tables.py benchmarks/results/runs/*_3757a0d/run.json
 ```
