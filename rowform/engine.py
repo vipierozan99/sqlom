@@ -254,13 +254,15 @@ class Engine:
         `Select[Tuple[str]]`. Past four selected entities the row degrades to
         `list[Any]`.
 
-        Takes a connection from the pool for this one statement and does not open
-        a transaction. To run several statements together — or inside anyone
-        else's transaction — use `connect()` or `begin()`.
+        Takes a connection from the pool for this one statement. A SELECT does not
+        open a transaction; a write with `RETURNING` does and commits, or the
+        pool's rollback on release would discard it (`_acquire_for`). To run
+        several statements together — or inside anyone else's transaction — use
+        `connect()` or `begin()`.
         """
         self._reject_if_in_transaction("fetch_all")
         query, extracted = self._require_rows(statement)
-        rows, hydrate = await self._run(query, params, self._connection, extracted)
+        rows, hydrate = await self._run(query, params, self._acquire_for(query), extracted)
         return hydrate(rows)
 
     @overload
@@ -317,17 +319,21 @@ class Engine:
         portal, and sqlite streams anything.
         """
         self._reject_if_in_transaction("fetch_iter")
-        return self._iterate(statement, chunk, params, self._connection)
+        return self._iterate(statement, chunk, params, None)
 
     async def _iterate(
         self, statement: Any, chunk: int, params: dict[str, Any], acquire: Any
     ) -> AsyncIterator[Any]:
         """Shared by `Engine.fetch_iter` and `Connection.fetch_iter`; the only
         difference is whether the connection comes from the pool or is the
-        transaction's own."""
+        transaction's own. `acquire=None` means the former, and is resolved once
+        the statement is compiled — a `RETURNING` write needs the committing
+        checkout (`_acquire_for`)."""
         if chunk < 1:
             raise ConfigurationError(f"chunk must be at least 1, got {chunk}")
         query, extracted = self._require_rows(statement)
+        if acquire is None:
+            acquire = self._acquire_for(query)
         sql, bound = query.bind(params, extracted)
         start = perf_counter() if self.observer is not None else 0.0
         total = 0
@@ -384,18 +390,18 @@ class Engine:
         executemany, exactly as `AsyncConnection.execute` takes it; `**params` is
         rowform's extension and merges into it.
 
-        A statement that returns rows runs without committing; one that does not
-        is committed, because a write on a connection the pool resets would
-        otherwise be discarded on two of the three drivers. A sequence of
-        parameter sets takes the executemany path, which reports rather than
-        returns rows however the statement was written, so it commits too —
-        `insert(...).returning(...)` with a list of dicts would otherwise be
-        rolled back on release.
+        A SELECT runs without committing; anything else is committed, because a
+        write on a connection the pool resets would otherwise be discarded. The
+        test is `is_select` rather than "returns rows": `insert(...).returning(...)`
+        does return rows and is still a write, and treating it as a read is how
+        the discard survived §8a's fix. A sequence of parameter sets takes the
+        executemany path, which is a write however the statement was written, so
+        it commits too.
         """
         self._reject_if_in_transaction("execute")
         query, _ = self._query_for(statement)
         many = isinstance(parameters, (list, tuple))
-        async with self._scope(commit=many or not query.returns_rows) as conn:
+        async with self._scope(commit=many or not query.is_select) as conn:
             return await conn.execute(statement, parameters, **params)
 
     async def scalar(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
@@ -563,6 +569,18 @@ class Engine:
         """`_connection()`, committed on the way out. See `_checkout`."""
         async with self._checkout(commit=True) as (_, driver_conn):
             yield driver_conn
+
+    def _acquire_for(self, query: CoreQuery[Any]) -> Any:
+        """Which checkout a one-shot read should take.
+
+        Keyed on `is_select`, not on `returns_rows`: a write with `RETURNING`
+        does both, and taking the non-committing checkout for it is the silent
+        discard of `docs/PLAN_SQLA_API.md` §8a reached by the other branch. Only
+        psycopg shows it — sqlite is put in autocommit by `SqliteDriver.configure`
+        and asyncpg has no implicit transaction — which is why it survived a suite
+        that runs the write matrix on sqlite and asyncpg alone.
+        """
+        return self._connection if query.is_select else self._write_connection
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[Any]:

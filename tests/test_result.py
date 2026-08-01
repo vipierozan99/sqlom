@@ -279,6 +279,46 @@ class TestTheEngineOneShots:
         count = sa.select(sa.func.count()).select_from(Author)
         assert await pg_engine.fetch_value(count) == 6
 
+    async def test_a_one_shot_returning_write_is_committed(self, engine):
+        """The other half of the bug above: a *single* parameter set.
+
+        `insert(...).returning(...)` returns rows and is still a write, so
+        deciding from `returns_rows` sent it to the non-committing checkout and
+        the pool's rollback on release discarded it. `execute()` reaches that
+        checkout through `_scope` and `fetch_all()` through `_acquire_for`, so
+        both are asserted.
+
+        The rows come back either way, so only persistence can catch this — and
+        only on psycopg, whose connection is transactional in its own right.
+        """
+        table = Author.__table__
+        await engine.execute(
+            sa.insert(table).values(id=80, name="ada l", active=True).returning(table.c.id)
+        )
+        await engine.fetch_all(
+            sa.insert(table).values(id=81, name="grace h", active=True).returning(table)
+        )
+        landed = await engine.fetch_all(
+            sa.select(Author.id).where(Author.id >= 80).order_by(Author.id)
+        )
+        assert landed == [80, 81]
+
+    async def test_a_streamed_returning_write_is_committed(self, streamable_engine):
+        """`fetch_iter` takes the same checkout and needed the same fix.
+
+        Not on psycopg: postgres will not `DECLARE` a cursor for a write with
+        RETURNING, so the statement is refused before it can be discarded
+        (`PsycopgDriver.stream`).
+        """
+        table = Author.__table__
+        streamed = streamable_engine.fetch_iter(
+            sa.insert(table).values(id=83, name="edsger d", active=True).returning(table)
+        )
+        assert len([row async for row in streamed]) == 1
+        assert await streamable_engine.fetch_value(
+            sa.select(Author.name).where(Author.id == 83)
+        ) == "edsger d"
+
     async def test_params_cannot_be_mixed_with_many_parameter_sets(self, engine):
         with pytest.raises(rf.StatementError, match="cannot be combined"):
             await engine.execute(

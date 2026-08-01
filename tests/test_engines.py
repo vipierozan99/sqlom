@@ -70,12 +70,20 @@ class TestFetchAll:
     async def test_limit_binds_from_positiontup_not_from_the_caller(self, engine):
         """Core supplies parameters nobody asked for — on sqlite a bare `.limit()`
         emits `LIMIT ? OFFSET ?` with an OFFSET of 0 — so the positional tuple has
-        to be built from `positiontup` rather than from what was passed."""
+        to be built from `positiontup` rather than from what was passed.
+
+        The tuple is what `positiontup` describes only for a positional
+        paramstyle; psycopg is named, so `bind()` hands over a dict there and
+        there is no order to get wrong (`CoreQuery._shape`).
+        """
         query = engine.prepare(sa.select(Author).order_by(Author.id).limit(2))
         _, params = query.bind()
-        assert len(params) == len(query._keys)
-        if "OFFSET" in query.sql.upper():
-            assert params == (2, 0)
+        if engine.dialect.positional:
+            assert len(params) == len(query._keys)
+            if "OFFSET" in query.sql.upper():
+                assert params == (2, 0)
+        else:
+            assert set(params.values()) >= {2}
         assert [a.id for a in await engine.fetch_all(query)] == [1, 2]
 
     async def test_empty_result(self, engine):

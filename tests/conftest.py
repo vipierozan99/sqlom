@@ -255,17 +255,41 @@ async def seeded(url: str):
         yield db
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture(params=["sqlite", "asyncpg", "psycopg"])
 async def engine(request):
-    """A seeded engine — once per backend.
+    """A seeded engine — once per driver.
 
     Parametrised rather than duplicated so a behaviour asserted here is asserted
     on a driver that decodes types natively *and* on one that does not.
+
+    **All three drivers, not two.** The three disagree about what happens to a
+    statement run on the driver connection outside a transaction SQLAlchemy
+    opened: sqlite is put in autocommit by `SqliteDriver.configure`, asyncpg has
+    no implicit transaction, and psycopg's connection is transactional in its own
+    right — so psycopg is the only one where such a write is rolled back on
+    release. Running the matrix on the first two alone is how a discarded
+    `RETURNING` write survived (`docs/PLAN_SQLA_API.md` §8a).
     """
     if request.param == "sqlite":
         url = sqlite_url(request.getfixturevalue("sqlite_path"))
     else:
-        url = pg_url(request.getfixturevalue("pg_dsn"))
+        url = pg_url(request.getfixturevalue("pg_dsn"), request.param)
+    async with seeded(url) as db:
+        yield db
+
+
+@pytest.fixture(params=["sqlite", "asyncpg"])
+async def streamable_engine(request):
+    """`engine`, minus the driver that cannot stream a write with RETURNING.
+
+    postgres will not `DECLARE` a server-side cursor for one, which is psycopg's
+    only streaming primitive (`PsycopgDriver.stream`); asyncpg uses a portal and
+    sqlite a plain cursor, so both manage it.
+    """
+    if request.param == "sqlite":
+        url = sqlite_url(request.getfixturevalue("sqlite_path"))
+    else:
+        url = pg_url(request.getfixturevalue("pg_dsn"), request.param)
     async with seeded(url) as db:
         yield db
 

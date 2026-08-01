@@ -193,15 +193,16 @@ class TestStatementsItRefuses:
         with pytest.raises(rowform.StatementError, match="produces no rows"):
             await collect(engine.fetch_iter(statement))
 
-    async def test_returning_streams_on_sqlite_and_asyncpg(self, engine):
+    async def test_returning_streams_on_sqlite_and_asyncpg(self, streamable_engine):
         """sqlite has no restriction, and asyncpg opens a portal over the write —
-        both stream what the psycopg driver cannot."""
+        both stream what the psycopg driver cannot. psycopg's half of this is
+        `test_psycopg_refuses_returning_with_a_reason` below."""
         statement = (
             sa.insert(Author.__table__)
             .values(id=8200, name="barbara", active=True)
             .returning(Author.__table__)
         )
-        streamed = await collect(engine.fetch_iter(statement, chunk=1))
+        streamed = await collect(streamable_engine.fetch_iter(statement, chunk=1))
         assert [a.name for a in streamed] == ["barbara"]
 
     async def test_psycopg_refuses_returning_with_a_reason(self, pg_dsn):
