@@ -155,12 +155,20 @@ await it. Same arity overloads. Raises `EngineStateError` inside a scope (use
 
 #### `await engine.fetch_one(statement, **params) -> T | None`
 
-The first row, or `None`.
+The first row, or `None`, shaped exactly as `fetch_all` shapes a row — the same
+arity overloads, so `select(User, Post)` gives `tuple[User, Post] | None`. The
+statement is narrowed to `LIMIT 1` where that is safe to do.
 
-#### `await engine.fetch_value(statement, **params) -> Any`
+#### `await engine.fetch_value(statement, **params) -> T | None`
 
-The first column of the first row, or `None`. Differs from `fetch_one` only for a
-multi-entity statement.
+The first column of the first row, or `None` — the hot track's `scalar()`.
+Differs from `fetch_one` only for a multi-entity statement, since a single
+selected entity already arrives unwrapped.
+
+It returns only the first selected entity, so its overload names that one and
+discards the rest with a variadic. One consequence is worth knowing: it stays
+exact past the four entities at which `fetch_all` and `fetch_one` degrade to
+`Any`, because the types it drops never needed names.
 
 ### Writing
 
@@ -299,8 +307,8 @@ real `sqlalchemy.Result` built over rowform's hydrated rows, so `.scalars()`,
 | | |
 |---|---|
 | `await conn.fetch_all(stmt, **params)` | `list[T]`, arity-overloaded as on `Engine` |
-| `await conn.fetch_one(stmt, **params)` | plus the `LIMIT 1` |
-| `await conn.fetch_value(stmt, **params)` | |
+| `await conn.fetch_one(stmt, **params)` | `T \| None`, same overloads, plus the `LIMIT 1` |
+| `await conn.fetch_value(stmt, **params)` | `T \| None`, the first column of that row |
 | `conn.fetch_iter(stmt, *, chunk=1000, **params)` | `AsyncIterator[T]` |
 | `await conn.execute_many(stmt, params)` | the driver's report, not a `Result` |
 | `await conn.copy_in(table, rows, *, columns=None)` | postgres only |

@@ -32,7 +32,7 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from time import perf_counter
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar, TypeVarTuple, overload
 
 import sqlalchemy as sa
 from sqlalchemy import Select
@@ -96,6 +96,11 @@ R = TypeVar("R")
 R2 = TypeVar("R2")
 R3 = TypeVar("R3")
 R4 = TypeVar("R4")
+
+# `fetch_value` is the exception: it returns the *first* selected entity and
+# discards the rest, so it needs no name for them and a variadic says so in one
+# overload — including past the arity four where the others give up.
+Rest = TypeVarTuple("Rest")
 
 
 class Engine:
@@ -366,28 +371,58 @@ class Engine:
     async def fetch_one(self, statement: Select[tuple[R]], **params: Any) -> R | None: ...
 
     @overload
+    async def fetch_one(
+        self, statement: Select[tuple[R, R2]], **params: Any
+    ) -> tuple[R, R2] | None: ...
+
+    @overload
+    async def fetch_one(
+        self, statement: Select[tuple[R, R2, R3]], **params: Any
+    ) -> tuple[R, R2, R3] | None: ...
+
+    @overload
+    async def fetch_one(
+        self, statement: Select[tuple[R, R2, R3, R4]], **params: Any
+    ) -> tuple[R, R2, R3, R4] | None: ...
+
+    @overload
     async def fetch_one(self, statement: Any, **params: Any) -> Any: ...
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
-        """The first row, or None.
+        """The first row, or None. The row is shaped as `fetch_all` shapes it.
 
         The statement is narrowed to one row where that is safe (`_one_row`), so
         this is a `LIMIT 1` rather than a whole result set with everything after
         the first discarded.
         """
-        rows = await self.fetch_all(_one_row(statement), **params)
-        return rows[0] if rows else None
+        row, _ = await self._first(statement, params, "fetch_one")
+        return row
+
+    @overload
+    async def fetch_value(
+        self, statement: CoreQuery[tuple[R, *Rest]], **params: Any
+    ) -> R | None: ...
+
+    @overload
+    async def fetch_value(self, statement: CoreQuery[R], **params: Any) -> R | None: ...
+
+    @overload
+    async def fetch_value(
+        self, statement: Select[tuple[R, *Rest]], **params: Any
+    ) -> R | None: ...
+
+    @overload
+    async def fetch_value(self, statement: Any, **params: Any) -> Any: ...
 
     async def fetch_value(self, statement: Any, **params: Any) -> Any:
         """The first column of the first row, or None.
 
-        Distinct from `fetch_one` only for a multi-entity statement, since a
-        single selected entity already arrives unwrapped.
+        The hot track's `scalar()` (`docs/PLAN_SQLA_API.md`). Distinct from
+        `fetch_one` only for a multi-entity statement, since a single selected
+        entity already arrives unwrapped.
         """
-        row = await self.fetch_one(statement, **params)
-        if row is None:
-            return None
-        return row[0] if isinstance(row, tuple) else row
+        row, wrap = await self._first(statement, params, "fetch_value")
+        return row[0] if wrap else row
 
     # --- writes -------------------------------------------------------------
 
@@ -741,6 +776,28 @@ class Engine:
                 "returning(...)."
             )
         return query, extracted
+
+    async def _first(
+        self, statement: Any, params: dict[str, Any], method: str
+    ) -> tuple[Any, bool]:
+        """The first hydrated row and whether it is a tuple, or `(None, False)`.
+
+        `fetch_one` and `fetch_value` differ only in what they do with that pair,
+        so the shape comes from `Plan.wrap` rather than `isinstance(row, tuple)`.
+        The runtime test cannot tell the two apart at arity one, where the row
+        *is* the value and the value may itself be a tuple — a psycopg composite
+        hydrates to a namedtuple — and plucking `row[0]` out of one is the same
+        silent wrongness `row[0]` on a `str` was (`docs/PLAN_SQLA_API.md`).
+        """
+        self._reject_if_in_transaction(method)
+        query, extracted = self._require_rows(_one_row(statement))
+        rows, hydrate = await self._run(query, params, self._acquire_for(query), extracted)
+        hydrated = hydrate(rows)
+        if not hydrated:
+            return None, False
+        plan = query.entities
+        assert plan is not None  # _require_rows guarantees it
+        return hydrated[0], plan.wrap
 
     async def _run(
         self, query: CoreQuery[Any], params: dict[str, Any], acquire: Any, extracted: Any = None

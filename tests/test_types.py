@@ -111,6 +111,37 @@ async def test_scalar_selects_convert_too(engine):
     assert colour is Colour.RED
 
 
+class _Pair(sa.TypeDecorator):
+    """A column whose Python value is itself a tuple, as a psycopg composite is."""
+
+    impl = sa.String
+    cache_ok = True
+
+    def process_result_value(self, value, dialect):
+        return None if value is None else (value, value)
+
+
+async def test_fetch_value_does_not_unpack_a_value_that_is_a_tuple(engine):
+    """`fetch_value` returns the first *column*, which at arity one is the whole
+    value — even when that value is a tuple. Testing `isinstance(row, tuple)`
+    instead of the plan plucked a field out of it, the same silent wrongness
+    `row[0]` on a `str` was (docs/PLAN_SQLA_API.md)."""
+    await engine.execute(sa.update(Wide.__table__).where(Wide.id == 1).values(note="x"))
+    statement = sa.select(sa.type_coerce(Wide.note, _Pair)).where(Wide.id == 1)
+
+    assert await engine.fetch_value(statement) == ("x", "x")
+    assert await engine.fetch_one(statement) == ("x", "x")
+
+
+async def test_fetch_value_still_takes_the_first_of_a_real_multi_column_row(engine):
+    """The other half: past arity one the row *is* a tuple the planner built, and
+    `fetch_value` is the only thing that unwraps it."""
+    statement = sa.select(Wide.id, Wide.ratio).where(Wide.id == 1)
+
+    assert await engine.fetch_value(statement) == 1
+    assert await engine.fetch_one(statement) == (1, 1.5)
+
+
 async def test_a_nullable_column_still_converts_when_present(engine):
     """The converter table this replaced was keyed by exact Python type, so
     `bool | None` never matched `bool` and a nullable column silently skipped its

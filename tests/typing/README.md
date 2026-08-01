@@ -49,10 +49,15 @@ into a test.
 - **The generated `__init__` accepts a SQL expression where a value is meant.**
   The parameter type is `SQLCoreOperations[int] | int`, inherited from
   `Mapped.__set__`. Not worth fighting.
-- **Five or more selected entities.** `fetch_all` degrades to `list[Any]`. The
-  overloads are written per arity because that is exactly what a checker knows —
-  `Select` is parameterised by a tuple of its selected types — and they stop at
-  four rather than growing without end.
+- **Five or more selected entities.** `fetch_all` and `fetch_one` degrade to
+  `Any`. The overloads are written per arity because that is exactly what a
+  checker knows — `Select` is parameterised by a tuple of its selected types —
+  and they stop at four rather than growing without end.
+
+  `fetch_value` is the exception, and shows what the per-arity form costs: it
+  returns only the *first* selected entity, so one variadic overload names that
+  one and drops the rest, and it stays exact where the others have given up. They
+  cannot do the same — they have to name every type they return.
 - **Writes.** `execute()` returns `Any`: an int rowcount on sqlite and psycopg, a
   status string on asyncpg. Normalising it would hide the difference between "0
   rows matched" and "the statement did nothing".

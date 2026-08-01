@@ -116,12 +116,18 @@ await db.fetch_all(sa.select(User.name, User.id))       # list[tuple[str, int]]
 await db.fetch_all(sa.select(User, Post).join(Post))    # list[tuple[User, Post]]
 
 await db.fetch_one(sa.select(User).where(User.id == 1))            # User | None
-await db.fetch_value(sa.func.count().select().select_from(User.__table__))  # int
+await db.fetch_one(sa.select(User.name, User.id))                  # tuple[str, int] | None
+await db.fetch_value(sa.func.count().select().select_from(User.__table__))  # int | None
 ```
 
 One selected entity yields that entity; two or more yield a tuple, in select
 order. An `outerjoin` with no match gives `None` for that slot rather than an
 object full of `None`s.
+
+`fetch_one` shapes its row exactly as `fetch_all` does, so the rule above is the
+only one to learn. `fetch_value` is the exception, and the only one: it takes the
+first column of that row, which matters solely when you selected more than one
+thing.
 
 ### The other way to read
 

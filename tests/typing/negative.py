@@ -94,6 +94,35 @@ async def reads() -> None:
         sa.select(Author)
     )
 
+    # ...and it follows the same arity rule as fetch_all, so a two-entity
+    # statement is a tuple. Before fetch_one carried those overloads this was
+    # `Any` and every line below passed.
+    pair: Author | None = await engine.fetch_one(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author, Book)
+    )
+    swapped: tuple[Book, Author] | None = await engine.fetch_one(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author, Book)
+    )
+    nonnull: tuple[Author, Book] = await engine.fetch_one(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author, Book)
+    )
+
+    # fetch_value is the first column, and it too can be None.
+    value: str = await engine.fetch_value(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author.name)
+    )
+    mistyped: int | None = await engine.fetch_value(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author.name)
+    )
+    # The *first* column, not any of the others.
+    second: Book | None = await engine.fetch_value(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author, Book)
+    )
+    # A whole entity comes back whole, so it is not the model's scalar either.
+    unwrapped: str | None = await engine.fetch_value(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author)
+    )
+
     # An alias carries the model it aliases, so a self-join is pairs of Author.
     selves: list[tuple[Author, Book]] = await engine.fetch_all(  # pyright: ignore[reportAssignmentType]
         sa.select(Author, other)
@@ -116,6 +145,47 @@ async def streams() -> None:
         only: Author = pair  # pyright: ignore[reportAssignmentType]
 
     rows = await engine.fetch_iter(sa.select(Author))  # pyright: ignore[reportGeneralTypeIssues]
+
+    # ...and iterated with `async for`, never `for`.
+    for author2 in engine.fetch_iter(sa.select(Author)):  # pyright: ignore[reportGeneralTypeIssues]
+        print(author2)
+
+    engine.fetch_iter(sa.select(Author), chunk="10")  # pyright: ignore[reportCallIssue, reportArgumentType]
+
+
+# --- the surrounding shape ---------------------------------------------------
+# None of these is about row types, and all of them are mistakes a checker
+# already catches. They are pinned here because nothing else says they must stay
+# caught.
+
+# The engine is SQLAlchemy's async one. A sync engine is the likeliest wrong
+# thing to reach for, and there is no awaiting it later.
+rf.Engine(sa.create_engine("sqlite:///app.db"))  # pyright: ignore[reportArgumentType]
+
+
+async def shapes() -> None:
+    # A forgotten await is a coroutine, not rows.
+    forgot: list[Author] = engine.fetch_all(sa.select(Author))  # pyright: ignore[reportAssignmentType]
+
+    # `**params` is keyword-only: a positional second argument is SQLAlchemy's
+    # `execute(stmt, parameters)` shape, which the hot track does not take.
+    await engine.fetch_all(sa.select(Author), {"id": 1})  # pyright: ignore[reportCallIssue]
+
+    # The scope's own methods are the ones that see its uncommitted state, and
+    # `EngineStateError` says so at runtime — but a `Connection` is not an
+    # `Engine`, so what it does *not* have is caught before that.
+    async with engine.begin() as conn:
+        conn.prepare(sa.select(Author))  # pyright: ignore[reportAttributeAccessIssue]
+        await conn.create_all(Base.metadata)  # pyright: ignore[reportAttributeAccessIssue]
+
+        # The connection declares its own overloads rather than inheriting the
+        # engine's, so the hot track's row types are pinned on both.
+        scoped: Author | None = await conn.fetch_one(  # pyright: ignore[reportAssignmentType]
+            sa.select(Author, Book)
+        )
+        scoped_value: int | None = await conn.fetch_value(  # pyright: ignore[reportAssignmentType]
+            sa.select(Author.name)
+        )
 
 
 # --- declaration ------------------------------------------------------------

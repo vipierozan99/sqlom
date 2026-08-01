@@ -194,13 +194,14 @@ await db.fetch_all(sa.select(User.name))              # list[str]
 await db.fetch_all(sa.select(User, Post).join(Post))  # list[tuple[User, Post]]
 
 await db.fetch_one(sa.select(User).where(User.id == 1))             # User | None
-await db.fetch_value(sa.select(sa.func.count()).select_from(User))  # int
+await db.fetch_one(sa.select(User, Post).join(Post))                # tuple[User, Post] | None
+await db.fetch_value(sa.select(sa.func.count()).select_from(User))  # int | None
 ```
 
 **One selected entity yields that entity; two or more yield a tuple.** The statement
 decides, never the model — so `select(User.name, User.id)` returns `(str, int)` in
 *that* order and cannot silently mis-assign fields. An `outerjoin` with no match gives
-`None` for that slot rather than an object full of `None`s. `fetch_all` is overloaded on
+`None` for that slot rather than an object full of `None`s. Every read is overloaded on
 arity, so all of the above infer without a cast.
 
 For an export or a backfill, `fetch_iter` reads through a cursor and hydrates a chunk at

@@ -299,6 +299,15 @@ per row on the hottest path; keeping rowform's unwrapping left a divergence that
 bit silently on `select(User.name)`, where `row[0]` returns the first *character* of
 a string rather than failing.
 
+A last splinter of that bug outlived the split, inside `fetch_value`: it chose
+whether to unwrap with `isinstance(row, tuple)`, which is a guess at what
+`Plan.wrap` already knows for certain. The guess is wrong for exactly the rows
+where a value is itself a tuple — a psycopg composite hydrates to a namedtuple —
+so `fetch_value(select(User.address))` returned the composite's first field. Both
+`fetch_one` and `fetch_value` now read the plan (`Engine._first`). The lesson is
+the same one twice: the row's shape is a fact the planner establishes, and
+re-deriving it from the row's runtime type is where the silence comes from.
+
 The answer was to stop choosing. `execute()` is SQLAlchemy's and pays for it;
 `fetch_all()` is rowform's and does not. The tracks are told apart by name, so no
 statement means one thing under one spelling and another under the other:
