@@ -2,12 +2,29 @@
 
 Pure in-process micro benchmarks: one contender per shape/backend, gated by
 output equivalence before any timing starts.
+
+**Two modes, and only one of them produces a publishable number.** By default
+every contender is timed in this process, one after another — fast, fine for a
+dev loop, and *not* quotable: `Run.quotable` refuses a multi-cell run whose
+`plan.isolation` is not `one_contender_per_process`, because contenders sharing
+an interpreter share its allocator arenas, its type caches and whatever the
+previous contender left resident. `--isolate` spawns `bench micro cell` per
+measurement instead, which is what that gate is asking for.
+
+`--trials N` is the other half. A single timed run yields a median and no way to
+tell whether it reproduces; the schema has carried `spread_pct` (trial to trial)
+and `ratios[].tie` since it was written, and both need more than one trial to
+mean anything. `--isolate --trials 5` is the publishing recipe, and slow on
+purpose.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import subprocess
 import sys
+import tempfile
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,17 +38,26 @@ from benchmarks.harness import affinity, equivalence, registry, result
 from benchmarks.harness import env as env_module
 from benchmarks.harness import seed as seed_module
 from benchmarks.harness.registry import ContenderInit
-from benchmarks.harness.stats import sample_shape
+from benchmarks.harness.stats import ratio_with_spread, sample_shape
 from benchmarks.harness.timing import gc_control, per_iteration
 
 app = typer.Typer(help="Pure in-process micro benchmarks.")
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
+#: Ratios are reported against this contender where it is present — it is the
+#: thing the suite exists to defend, so "vs rowform" is the number a reader
+#: wants, and reporting it beside its own trial spread is what stops a 3%
+#: difference being read as a result.
+REFERENCE = "rowform"
+
 # One spec drives both the header and the value rows so they cannot drift apart.
 # `outliers m/s` is Tukey mild/severe (see stats.SampleShape); `max/p50` is an
-# interference detector, not a dispersion figure.
-_COLUMNS: tuple[tuple[str, str], ...] = (
+# interference detector, not a dispersion figure. `spread%` is the trial-to-trial
+# one and only appears with `--trials`; `vs rowform` likewise, since a ratio
+# without an interval around it is the thing METHODOLOGY.md's tie rule exists to
+# prevent.
+_BASE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("contender", "<38"),
     ("median ms", ">10"),
     ("IQR%", ">8"),
@@ -39,15 +65,16 @@ _COLUMNS: tuple[tuple[str, str], ...] = (
     ("outliers m/s", ">14"),
     ("max/p50", ">9"),
 )
+_TRIAL_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("spread%", ">9"),
+    (f"vs {REFERENCE}", ">14"),
+)
 
 
-def _row(*cells: str) -> str:
+def _row(columns: tuple[tuple[str, str], ...], *cells: str) -> str:
     return "    " + "".join(
-        f"{cell:{spec}}" for cell, (_, spec) in zip(cells, _COLUMNS, strict=True)
+        f"{cell:{spec}}" for cell, (_, spec) in zip(cells, columns, strict=True)
     )
-
-
-_HEADER = _row(*(label for label, _ in _COLUMNS))
 
 
 @app.command()
@@ -58,11 +85,25 @@ def run(
     iterations: int = typer.Option(1000, help="timed iterations per contender"),
     warmup: int = typer.Option(100, help="untimed iterations before measurement"),
     only: str | None = typer.Option(None, help=registry.ONLY_HELP),
+    backend: str | None = typer.Option(
+        None,
+        "--backend",
+        help="only this backend ('sqlite', 'postgres', 'mock'). A recorded run "
+        "carries one equivalence block, so pick the backend you mean to publish",
+    ),
     gc: str = typer.Option(
         "off", help="'on', 'off', or 'both'"
     ),
     pin: str | None = typer.Option(
         "6,7,8,9", "--pin", help="comma-separated logical CPUs to pin this process to"
+    ),
+    trials: int = typer.Option(
+        1, help="repeat the whole measurement N times — what spread_pct and the "
+        "tie rule are computed from. More than 1 to publish"
+    ),
+    isolate: bool = typer.Option(
+        False, "--isolate", help="time each contender in its own process. Required "
+        "for a quotable multi-contender run"
     ),
     record: bool = typer.Option(
         False, "--record", help="write a run.json under results/runs/"
@@ -81,16 +122,64 @@ def run(
     gc_modes = ["on", "off"] if gc == "both" else [gc]
     if any(mode not in ("on", "off") for mode in gc_modes):
         raise typer.BadParameter("--gc must be 'on', 'off', or 'both'")
+    if trials < 1:
+        raise typer.BadParameter("--trials must be at least 1")
     pin_cpus = [int(c) for c in pin.split(",")] if pin else []
     asyncio.run(
-        _run(shape, rows, limit, iterations, warmup, only, gc_modes, pin_cpus, record, pg_dsn)
+        _run(
+            shape, rows, limit, iterations, warmup, only, backend, gc_modes,
+            pin_cpus, trials, isolate, record, pg_dsn,
+        )
     )
+
+
+@app.command(hidden=True)
+def cell(
+    slug: str = typer.Option(..., help="contender slug to time"),
+    shape: str = typer.Option(...),
+    handle: str = typer.Option("", help="sqlite path or postgres DSN; empty for mock"),
+    limit: int = typer.Option(1000),
+    iterations: int = typer.Option(1000),
+    warmup: int = typer.Option(100),
+    gc: str = typer.Option("off"),
+    out: Path = typer.Option(..., help="write the metrics JSON here"),
+) -> None:
+    """Time exactly one contender and write its `SampleShape` to `--out`.
+
+    The child half of `run --isolate`. Not meant to be called by hand, and
+    hidden for that reason: it takes an already-provisioned `--handle` and does
+    no equivalence checking, both of which are the parent's job.
+
+    CPU affinity is inherited from the parent across `exec`, so this lands on the
+    same cpus `--pin` chose without being told them (`harness/affinity.py`).
+    """
+    asyncio.run(_cell(slug, shape, handle, limit, iterations, warmup, gc, out))
+
+
+async def _cell(
+    slug: str, shape: str, handle: str, limit: int, iterations: int,
+    warmup: int, gc_mode: str, out: Path,
+) -> None:
+    spec = registry.get(slug)
+    resolved = await _mock_handle(shape, limit) if spec.backend == "mock" else handle
+    target, teardown = await spec.factory(ContenderInit(handle=resolved, limit=limit))
+    try:
+        with gc_control(gc_mode):
+            samples = [s * 1000 for s in await per_iteration(target, iterations, warmup)]
+    finally:
+        await teardown()
+    out.write_text(json.dumps(asdict(sample_shape(samples))))
 
 
 async def _mock_handle(shape: str, limit: int) -> list[tuple]:
     """Real rows sourced from a throwaway sqlite db, once, at setup — the
     driver term is paid only here, never inside a MockEngine contender's
-    timed `request()`."""
+    timed `request()`.
+
+    Rebuilt rather than passed when `--isolate` spawns a child: the seeder is
+    deterministic (`harness/seed.RNG_SEED`), so the child's rows are the parent's
+    rows, and shipping a few thousand of them over argv is not.
+    """
     import aiosqlite
 
     db = EphemeralSqlite.create(shape, max(limit * 2, 200))
@@ -122,6 +211,95 @@ async def _mock_handle(shape: str, limit: int) -> list[tuple]:
         db.close()
 
 
+def _spawn_cell(
+    slug: str, shape: str, handle: str, limit: int, iterations: int, warmup: int, gc_mode: str,
+) -> dict:
+    """One measurement in a process of its own. Raises on a non-zero exit rather
+    than recording a hole: a contender that cannot run is a failed run, not a
+    missing cell."""
+    with tempfile.TemporaryDirectory(prefix="rowform-cell-") as tmp:
+        out = Path(tmp) / "cell.json"
+        completed = subprocess.run(
+            [
+                sys.executable, "-m", "benchmarks", "micro", "cell",
+                "--slug", slug, "--shape", shape, "--handle", handle,
+                "--limit", str(limit), "--iterations", str(iterations),
+                "--warmup", str(warmup), "--gc", gc_mode, "--out", str(out),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"contender {slug!r} failed in its own process "
+                f"(exit {completed.returncode}):\n{completed.stderr[-2000:]}"
+            )
+        return json.loads(out.read_text())
+
+
+async def _measure(
+    spec: registry.ContenderSpec,
+    target,
+    shape: str,
+    handle,
+    limit: int,
+    iterations: int,
+    warmup: int,
+    gc_mode: str,
+    isolate: bool,
+) -> dict:
+    """One trial's metrics for one contender, in this process or its own."""
+    if isolate:
+        return _spawn_cell(
+            spec.slug, shape, handle if isinstance(handle, str) else "",
+            limit, iterations, warmup, gc_mode,
+        )
+    with gc_control(gc_mode):
+        samples = [s * 1000 for s in await per_iteration(target, iterations, warmup)]
+    return asdict(sample_shape(samples))
+
+
+def _ratios_for(cells: list[result.Cell]) -> list[dict]:
+    """Every cell's median against `REFERENCE`'s, per gc mode, as
+    `ratio_with_spread` — value, the worst-case interval the trials allow, and
+    the tie flag. Needs one value per trial, which is why this is empty for a
+    single-trial run rather than quietly reporting a bare ratio."""
+    by_mode: dict[str, list[result.Cell]] = {}
+    for cell_obj in cells:
+        by_mode.setdefault(cell_obj.params["gc"], []).append(cell_obj)
+
+    ratios = []
+    for mode, group in by_mode.items():
+        reference = next((c for c in group if c.contender == REFERENCE), None)
+        if reference is None or len(reference.trials) < 2:
+            continue
+        denominator = [t.metrics["median_ms"] for t in reference.trials]
+        for cell_obj in group:
+            if cell_obj.contender == REFERENCE:
+                continue
+            numerator = [t.metrics["median_ms"] for t in cell_obj.trials]
+            ratios.append(
+                {
+                    "contender": cell_obj.contender,
+                    "against": REFERENCE,
+                    "gc": mode,
+                    **ratio_with_spread(numerator, denominator),
+                }
+            )
+    return ratios
+
+
+def _format_ratio(cell_obj: result.Cell, ratios: list[dict], mode: str) -> str:
+    if cell_obj.contender == REFERENCE:
+        return "1.00x"
+    entry = next(
+        (r for r in ratios if r["contender"] == cell_obj.contender and r["gc"] == mode), None
+    )
+    if entry is None:
+        return "—"
+    return f"{entry['value']:.2f}x{' tie' if entry['tie'] else ''}"
+
+
 async def _run(
     shape: str,
     rows: int,
@@ -129,14 +307,19 @@ async def _run(
     iterations: int,
     warmup: int,
     only: str | None,
+    backend_filter: str | None,
     gc_modes: list[str],
     pin_cpus: list[int],
+    trials: int,
+    isolate: bool,
     record: bool,
     pg_dsn: str | None = None,
 ) -> result.Run | None:
-    specs = registry.select(shape=shape, only=only)
+    specs = registry.select(shape=shape, only=only, backend=backend_filter)
     if not specs:
-        raise typer.BadParameter(f"no contenders match shape={shape!r} only={only!r}")
+        raise typer.BadParameter(
+            f"no contenders match shape={shape!r} only={only!r} backend={backend_filter!r}"
+        )
 
     by_backend: dict[str, list[registry.ContenderSpec]] = {}
     for spec in specs:
@@ -146,10 +329,14 @@ async def _run(
     recorded_backend: str | None = None
     recorded_eq: equivalence.EquivalenceResult | None = None
     cells: list[result.Cell] = []
+    columns = _BASE_COLUMNS + (_TRIAL_COLUMNS if trials > 1 else ())
+    header = _row(columns, *(label for label, _ in columns))
 
     with affinity.pin_current_process(pin_cpus) as pin_actual:
         if pin_cpus:
             typer.echo(f"pinned to cpus {pin_actual}")
+        if isolate:
+            typer.echo("isolation: one contender per process")
 
         for backend, backend_specs in by_backend.items():
             db = None
@@ -184,6 +371,9 @@ async def _run(
                     target, teardown = await spec.factory(init)
                     instances[spec.name] = (target, teardown)
 
+                # The gate runs in this process even under `--isolate`: it is a
+                # correctness check on bytes, not a measurement, and comparing
+                # payloads across processes would only add ways to be wrong.
                 eq = await equivalence.check({name: req for name, (req, _) in instances.items()})
                 typer.echo(
                     f"\n[{shape}/{backend}] equivalence: "
@@ -195,52 +385,63 @@ async def _run(
 
                 if eq.passed:
                     # Recorded run.json covers the first backend group with
-                    # passing equivalence (typically "sqlite") — mock/other
-                    # groups still print above but aren't persisted, keeping the
-                    # recorded schema to one equivalence block.
+                    # passing equivalence — pick it with `--backend`, since the
+                    # recorded schema carries one equivalence block.
                     record_this_group = record and recorded_backend is None
                     if record_this_group:
                         recorded_backend = backend
                         recorded_eq = eq
 
                     for mode in gc_modes:
-                        typer.echo(f"  -- gc={mode} --")
-                        typer.echo(_HEADER)
-                        for name, (request, _) in instances.items():
-                            with gc_control(mode):
-                                samples = [
-                                    s * 1000
-                                    for s in await per_iteration(request, iterations, warmup)
-                                ]
-                            shape_stats = sample_shape(samples)
-                            typer.echo(
-                                _row(
-                                    name,
-                                    f"{shape_stats.median_ms:.4f}",
-                                    f"{shape_stats.iqr_pct:.1f}",
-                                    f"{shape_stats.p95_over_p50:.2f}",
-                                    f"{shape_stats.outliers_mild}/{shape_stats.outliers_severe}",
-                                    f"{shape_stats.max_over_p50:.2f}x",
-                                )
+                        group_cells = [
+                            result.Cell(
+                                contender=spec.name,
+                                shipped=spec.shipped,
+                                params={"backend": backend, "gc": mode, "limit": limit},
+                                trials=[],
                             )
-                            if record_this_group:
-                                spec = next(s for s in backend_specs if s.name == name)
-                                cells.append(
-                                    result.Cell(
-                                        contender=name,
-                                        shipped=spec.shipped,
-                                        params={"backend": backend, "gc": mode, "limit": limit},
-                                        trials=[
-                                            result.Trial(
-                                                trial=0,
-                                                metrics={
-                                                    **asdict(shape_stats),
-                                                    "iterations": iterations,
-                                                },
-                                            )
-                                        ],
+                            for spec in backend_specs
+                        ]
+                        for trial in range(trials):
+                            for spec, cell_obj in zip(backend_specs, group_cells, strict=True):
+                                target = instances[spec.name][0]
+                                metrics = await _measure(
+                                    spec, target, shape, handle, limit,
+                                    iterations, warmup, mode, isolate,
+                                )
+                                cell_obj.trials.append(
+                                    result.Trial(
+                                        trial=trial,
+                                        metrics={**metrics, "iterations": iterations},
                                     )
                                 )
+                        for cell_obj in group_cells:
+                            cell_obj.summarize(["median_ms", "iqr_pct"])
+
+                        group_ratios = _ratios_for(group_cells)
+                        typer.echo(f"  -- gc={mode}, trials={trials} --")
+                        typer.echo(header)
+                        for cell_obj in group_cells:
+                            best = min(cell_obj.trials, key=lambda t: t.metrics["median_ms"])
+                            values = [
+                                f"{cell_obj.summary['median_ms']['median']:.4f}",
+                                f"{best.metrics['iqr_pct']:.1f}",
+                                f"{best.metrics['p95_over_p50']:.2f}",
+                                "{}/{}".format(
+                                    best.metrics["outliers_mild"],
+                                    best.metrics["outliers_severe"],
+                                ),
+                                f"{best.metrics['max_over_p50']:.2f}x",
+                            ]
+                            if trials > 1:
+                                values += [
+                                    f"{cell_obj.summary['median_ms']['spread_pct']:.1f}",
+                                    _format_ratio(cell_obj, group_ratios, mode),
+                                ]
+                            typer.echo(_row(columns, cell_obj.contender, *values))
+
+                        if record_this_group:
+                            cells.extend(group_cells)
 
                 for _, teardown in instances.values():
                     await teardown()
@@ -264,15 +465,20 @@ async def _run(
         invocation={"argv": sys.argv},
         git=env_start["git"],
         env=env_start,
-        plan={"isolation": "combined", "bottleneck": "cpu"},
+        plan={
+            "isolation": "one_contender_per_process" if isolate else "combined",
+            "bottleneck": "cpu",
+        },
         config={
             "shape": shape,
             "rows": rows,
             "limit": limit,
             "iterations": iterations,
             "warmup": warmup,
+            "trials": trials,
             "gc": gc_modes,
             "only": only,
+            "backend": recorded_backend,
             "pin_requested": pin_cpus,
             "pin_actual": pin_actual,
         },
@@ -285,8 +491,31 @@ async def _run(
             "backend": recorded_backend,
         },
         cells=cells,
+        ratios=_ratios_for(cells),
         warnings=env_module.warnings_for(env_start),
     )
     path = result.write(run_obj, RESULTS_DIR)
     typer.echo(f"\nrecorded: {path}  (quotable={run_obj.quotable})")
+    if not run_obj.quotable:
+        for reason in _unquotable_reasons(run_obj):
+            typer.echo(f"  not quotable: {reason}")
     return run_obj
+
+
+def _unquotable_reasons(run_obj: result.Run) -> list[str]:
+    """Why `quotable` is False, in the terms the gate uses. Printed rather than
+    left to be rediscovered by reading `Run.quotable` — the flag is only useful
+    if the fix is obvious from the message."""
+    reasons = []
+    if not run_obj.equivalence.get("enforced", False):
+        reasons.append("equivalence gate did not run")
+    if run_obj.equivalence.get("self_consistent") is False:
+        reasons.append("the reference contender was not self-consistent")
+    if (
+        len(run_obj.cells) > 1
+        and run_obj.plan.get("isolation") != "one_contender_per_process"
+    ):
+        reasons.append("contenders shared a process — pass --isolate")
+    # The dirty-tree gate is also an env warning, so it arrives from there.
+    reasons.extend(run_obj.warnings)
+    return reasons
