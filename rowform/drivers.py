@@ -44,8 +44,22 @@ class Driver(ABC):
     """One driver's execution primitives. Held by an `Engine`, never subclassed
     per database — `driver_for()` picks the one the dialect names."""
 
+    #: Whether the driver connection is still outside a transaction after
+    #: SQLAlchemy has opened one, and so needs `enter_transaction()` before
+    #: rowform runs anything on it. False for every driver but asyncpg; the flag
+    #: exists so the check on `Connection._autobegin`'s path is an attribute load
+    #: rather than an awaited no-op per statement.
+    defers_transaction = False
+
     def __init__(self, dialect: Any):
         self.dialect = dialect
+
+    async def enter_transaction(self, sa_conn: Any) -> None:
+        """Put the *driver* connection inside the transaction SQLAlchemy has
+        already opened on `sa_conn`. Default: nothing to do, because it already
+        is — psycopg's connection is transactional in its own right, and sqlite
+        gets a real `BEGIN` from `SqliteDriver.configure`'s event.
+        """
 
     def configure(self, engine: Any) -> None:
         """Per-driver setup on the `AsyncEngine` being wrapped. Default: none.
@@ -206,6 +220,30 @@ class AsyncpgDriver(Driver):
     — a bug this cost once, when rowform pooled its own connections and JSON
     columns came back as unparsed text.
     """
+
+    defers_transaction = True
+
+    async def enter_transaction(self, sa_conn):
+        """Start the asyncpg transaction SQLAlchemy's `begin()` only promised.
+
+        **Without this a rowform scope gives no atomicity on asyncpg at all.**
+        asyncpg has no implicit transaction — a statement outside one commits —
+        and SQLAlchemy's adapter opens its `asyncpg.Transaction` *lazily, on the
+        first statement executed through its own cursor*. rowform never uses that
+        cursor, so `begin()` marked the connection as in a transaction while the
+        driver stayed in autocommit: writes committed as they were issued, and
+        `rollback()` found nothing started and discarded nothing. Four transaction
+        tests caught it the first time a server was available to run them on.
+
+        Driving the adapter's own lazy start, rather than opening a transaction
+        directly on the asyncpg connection, is what keeps SQLAlchemy's
+        `commit()`/`rollback()` in charge of ending it — both are gated on the
+        `_started` flag set here. Private, like the compiler surface the rest of
+        this library reads, and pinned by the tests above.
+        """
+        adapted = sa_conn.sync_connection.connection.dbapi_connection
+        if not adapted._started:
+            await adapted._start_transaction()
 
     async def fetch(self, conn, sql, params, describe):
         if not describe:

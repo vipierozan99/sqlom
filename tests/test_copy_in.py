@@ -85,7 +85,7 @@ class TestWhatItRefuses:
         """It would take a different pooled connection and commit on its own, so a
         rollback of the surrounding block would leave the loaded rows behind —
         the same reason `fetch_all` is refused there."""
-        async with pg_engine.transaction():
+        async with pg_engine.begin():
             with pytest.raises(rowform.EngineStateError, match="copy_in"):
                 await pg_engine.copy_in(Wide.__table__, wide_rows(1, 400))
 

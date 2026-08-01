@@ -81,7 +81,7 @@ def active_connection() -> Connection | None:
 class Connection:
     """A checked-out connection. See the module docstring for the two tracks."""
 
-    __slots__ = ("_engine", "_owns", "_token", "connection", "sa_connection")
+    __slots__ = ("_defers_txn", "_engine", "_owns", "_token", "connection", "sa_connection")
 
     def __init__(
         self,
@@ -92,6 +92,9 @@ class Connection:
         owns: bool = True,
     ):
         self._engine = engine
+        # Read once: `_autobegin` runs before every statement, and for the two
+        # drivers that need nothing this keeps it an attribute load.
+        self._defers_txn = engine.driver.defers_transaction
         #: SQLAlchemy's connection — what owns the transaction.
         self.sa_connection = sa_connection
         #: The driver connection under it — what statements actually run on.
@@ -112,8 +115,15 @@ class Connection:
             self._token = None
 
     async def _autobegin(self) -> None:
-        if self._owns and not self.sa_connection.in_transaction():
-            await self.sa_connection.begin()
+        conn = self.sa_connection
+        if self._owns and not conn.in_transaction():
+            await conn.begin()
+        # Not `elif`, and not folded into the branch above: the transaction may be
+        # one the caller opened — `conn.begin()` by hand, or a session bound with
+        # `bind=` — and on asyncpg it is not on the driver connection until this
+        # runs (`AsyncpgDriver.enter_transaction`).
+        if self._defers_txn and conn.in_transaction():
+            await self._engine.driver.enter_transaction(conn)
 
     # --- transactions, unwrapped ---------------------------------------------
 

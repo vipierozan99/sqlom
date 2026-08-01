@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author, Base, sqlite_url
+from conftest import Author, Base, pg_url, sqlite_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import rowform as rf
@@ -24,11 +24,23 @@ class Boom(Exception):
     pass
 
 
-@pytest.fixture
-async def pair(tmp_path):
-    """One `AsyncEngine`, wrapped — the shape a migrating application is in."""
-    sa_engine = create_async_engine(sqlite_url(str(tmp_path / "bind.sqlite3")))
+@pytest.fixture(params=["sqlite", "postgres"])
+async def pair(request, tmp_path):
+    """One `AsyncEngine`, wrapped — the shape a migrating application is in.
+
+    Both backends, because "the same transaction" is three different mechanisms
+    underneath: psycopg's connection is transactional in its own right, sqlite
+    gets an explicit BEGIN from `SqliteDriver.configure`, and asyncpg has none
+    until `AsyncpgDriver.enter_transaction` puts it in one. Asserting the goal on
+    sqlite alone is how the asyncpg case came to be written and stay broken.
+    """
+    if request.param == "sqlite":
+        url = sqlite_url(str(tmp_path / "bind.sqlite3"))
+    else:
+        url = pg_url(request.getfixturevalue("pg_dsn"))
+    sa_engine = create_async_engine(url)
     db = rf.Engine(sa_engine)
+    await db.drop_all(Base.metadata)
     await db.create_all(Base.metadata)
     await db.execute(sa.insert(Author.__table__).values(id=1, name="ada", active=True))
     try:
@@ -117,18 +129,21 @@ class TestItRefusesWhatItCannotDo:
             async with db.connect(bind=object()):
                 pass
 
-    async def test_a_connection_from_another_driver(self, pg_dsn, pair):
+    async def test_a_connection_from_another_driver(self, pg_dsn, pair, tmp_path):
         """The compiled SQL carries one driver's paramstyle. Running it on
         another's would bind wrongly rather than fail cleanly, so it is refused
         by name. Needs a real postgres, because the check is on a live
         connection's dialect — it skips with the rest of the postgres suite."""
-        from conftest import pg_url
-
         db, _ = pair
-        other = create_async_engine(pg_url(pg_dsn))
+        other_url = (
+            pg_url(pg_dsn)
+            if db.dialect.name == "sqlite"
+            else sqlite_url(str(tmp_path / "other.sqlite3"))
+        )
+        other = create_async_engine(other_url)
         try:
             async with other.connect() as their:
-                with pytest.raises(rf.ConfigurationError, match="asyncpg"):
+                with pytest.raises(rf.ConfigurationError, match="wrong paramstyle"):
                     async with db.connect(bind=their):
                         pass
         finally:
