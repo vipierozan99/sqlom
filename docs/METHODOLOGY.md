@@ -15,8 +15,8 @@ report until you have tried to break it.**
 300 timed iterations after 50 warmup, GC off, process pinned to cpus 6-9. Medians in
 milliseconds, lower is better.
 
-Runs land in `benchmarks/results/runs/`, which is gitignored on main; `bench record`
-commits chosen ones to a dated branch, indexed in [RUNS.md](RUNS.md).
+Runs land in `benchmarks/results/runs/`, which is gitignored on main; chosen ones are
+committed to a dated `bench/` branch by hand and indexed in [RUNS.md](RUNS.md).
 
 ### sqlite
 
@@ -100,10 +100,17 @@ this suite's most valuable tripwire.
 out every payload builder per shape. Shared helper code is exactly how a floor quietly
 stops being one (correction 10).
 
-**One contender per process for any published number.** `--only` plus `--repeat`,
-report medians. Allocator state, CPU caches and thermal drift are all shared within a
-process: Core's median moved 32% across three runs differing only in what had run
-before it.
+**One contender per process for any published number.** `--isolate --trials N`, report
+medians. Allocator state, CPU caches and thermal drift are all shared within a process:
+Core's median moved 32% across three runs differing only in what had run before it, and
+`execute().scalars()` measured 3-4% above `fetch_all()` sharing a process with it and
+tied with it once separated.
+
+> This one was written down, mechanically checked by `Run.quotable`, and impossible to
+> satisfy: `bench micro run` hardcoded `isolation="combined"`, so the command that
+> produces the published tables could never pass the gate guarding them. A convention
+> nothing can comply with is worse than an unenforced one — the check reported
+> `quotable=False` on every run, which trained the reader to ignore it.
 
 **Group ties instead of ranking them.** When the spread between two rows exceeds the
 gap between them, say they tie. Report a dispersion figure alongside every central
