@@ -73,9 +73,15 @@ class Driver(ABC):
         """Called while unwinding a `CancelledError`, before the connection goes
         back to the pool. Default: nothing to do.
 
-        Measured across all three drivers and all three read paths before any of
-        this existed: asyncpg and psycopg were already correct, because both
-        cancel server-side and hand back a clean connection. sqlite was not.
+        Measured across all three drivers and all three read paths: asyncpg and
+        psycopg were already correct, because both cancel server-side and hand
+        back a clean connection. sqlite was not.
+
+        That measurement was taken when rowform owned the pool, so what it
+        establishes is a property of the *drivers*, not of the arrangement they
+        now run under. `tests/test_cancellation.py` is what re-establishes it
+        here — it asserts on every driver that the pool hands back a working
+        connection, promptly, after a cancelled read, stream and in-scope read.
         """
 
     @abstractmethod

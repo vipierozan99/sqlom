@@ -12,7 +12,13 @@ clean connection. **sqlite stalled the pool every time.** aiosqlite runs each
 statement in a worker thread, and cancelling the awaiting task does not stop that
 thread, so the connection went back to the pool with the abandoned statement
 still running — the next borrower queued behind work nobody wanted, which looks
-exactly like a leak. `_SqlitePool.acquire` now interrupts it.
+exactly like a leak. `SqliteDriver.on_cancelled` now interrupts it, from
+`Engine._checkout`'s `except CancelledError` while the scope unwinds.
+
+That measurement predates the move onto SQLAlchemy's pool, so these tests are
+what carry the claim now rather than the note above: the pool being SQLAlchemy's
+is exactly the sort of change that could make "hands back a clean connection"
+stop being true without anything saying so.
 
 The statements here are slow enough to still be running when cancelled and no
 slower, so the suite does not pay for this.
