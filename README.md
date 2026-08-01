@@ -119,8 +119,9 @@ and `~` marks a pair the trials do not actually order.
 **1.1–1.3x SQLAlchemy Core's result layer and 2.1–4.1x its ORM**, on both backends. With
 the driver removed entirely, the row layer alone is **0.26 ms against Core's 0.55 and
 the ORM's 3.18**. Postgres numbers, and the ratios' intervals, are in
-[METHODOLOGY.md](docs/METHODOLOGY.md) — including the `MappedAsDataclass` row, which
-is a stale upper bound pending a re-run.
+[METHODOLOGY.md](docs/METHODOLOGY.md) — including two cells flagged there as stale and
+pending a re-run: the `MappedAsDataclass` row, and Core's 0.55 above, which was charged
+a pool checkout that rowform's 0.26 was not.
 
 Three things matter more than the ratios. **Every contender runs identical SQL**,
 compiled by Core, so what is compared is only what happens to the rows afterwards.

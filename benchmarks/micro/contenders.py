@@ -445,13 +445,21 @@ async def flat_sa_core_mock(init: ContenderInit) -> tuple[Target, Teardown]:
 
     engine = mock_sqlalchemy_engine(FLAT_FIELDS, init.handle)
     stmt = flat_stmt(init.limit)
+    # Hoisted, because rowform's mock overrides `_connection` to yield nothing —
+    # the ~0.4 ms checkout is the cost this instrument exists to exclude, and
+    # leaving it inside the timed region here made the ratio a checkout
+    # comparison as much as a row-layer one.
+    conn = await engine.connect()
 
     async def target() -> bytes:
-        async with engine.connect() as conn:
-            result = await conn.execute(stmt)
-            return dumps(_flat(result.all()))
+        result = await conn.execute(stmt)
+        return dumps(_flat(result.all()))
 
-    return target, engine.dispose
+    async def teardown() -> None:
+        await conn.close()
+        await engine.dispose()
+
+    return target, teardown
 
 
 @contender(
@@ -466,13 +474,21 @@ async def flat_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
 
     engine = mock_sqlalchemy_engine(FLAT_FIELDS, init.handle)
     stmt = flat_stmt(init.limit, UserORM)
+    # `bind=conn` rather than `bind=engine`: a fresh Session per request (so the
+    # identity map is fresh, as in production) over a connection checked out
+    # once, so the excluded cost is the same one rowform's mock excludes.
+    conn = await engine.connect()
 
     async def target() -> bytes:
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(bind=conn) as session:
             users = (await session.execute(stmt)).scalars().all()
             return dumps([{f: getattr(u, f) for f in FLAT_FIELDS} for u in users])
 
-    return target, engine.dispose
+    async def teardown() -> None:
+        await conn.close()
+        await engine.dispose()
+
+    return target, teardown
 
 
 # ==========================================================================
@@ -663,9 +679,11 @@ async def join_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
 
     engine = mock_sqlalchemy_engine(AUTHOR_FIELDS + POST_FIELDS, init.handle)
     stmt = join_stmt(init.limit, AuthorORM, PostORM)
+    # See the flat mock: the checkout is excluded on both sides or neither.
+    conn = await engine.connect()
 
     async def target() -> bytes:
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(bind=conn) as session:
             rows = (await session.execute(stmt)).all()
             return dumps(
                 [
@@ -677,7 +695,11 @@ async def join_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
                 ]
             )
 
-    return target, engine.dispose
+    async def teardown() -> None:
+        await conn.close()
+        await engine.dispose()
+
+    return target, teardown
 
 
 # ==========================================================================

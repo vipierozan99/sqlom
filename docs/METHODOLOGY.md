@@ -93,6 +93,18 @@ committed to a dated `bench/` branch by hand and indexed in [RUNS.md](RUNS.md).
 | SQLAlchemy Core (positional) | 0.5467 | — | | 2.13x | — |
 | SQLAlchemy ORM | 3.1768 | 5.5547 | | 12.38x | 10.63x |
 
+> [!WARNING]
+> **Stale, and it flattered rowform.** `MockEngine` overrides `_connection` so a
+> read never reaches SQLAlchemy's pool — that ~0.4 ms checkout is exactly what
+> this instrument exists to exclude — but the SQLAlchemy contenders were still
+> calling `engine.connect()` *inside* the timed region. So the checkout was
+> excluded on one side and charged to the other, in the one table whose whole
+> point is that nothing but the row layer is being measured. They now hold a
+> hoisted connection too, with a fresh `Session` per request over it so the ORM
+> keeps its per-request identity map. On an unpinned box that moves Core's cell
+> from ~0.58 ms to ~0.46 ms, roughly `2.13x` → `~1.6x`; the ORM row is
+> proportionally much less affected. Re-run on the pinned box before quoting.
+
 ### Reading the floors
 
 **The two sqlite floors hoist one connection for the whole run; rowform checks one out

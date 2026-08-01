@@ -57,6 +57,12 @@ JSON = "application/json"
 DEFAULT_LIMIT = 1000
 
 
+#: One pool configuration for every contender. This is a *concurrent* load test,
+#: so pool size is a first-class variable — running rowform at 1+3 against
+#: SQLAlchemy's default 5+10 compares two configurations, not two result layers.
+POOL = {"pool_size": 1, "max_overflow": 3}
+
+
 def _sa_dsn(path: str) -> str:
     return f"sqlite+aiosqlite:///{path}"
 
@@ -80,21 +86,24 @@ async def lifespan(app: FastAPI):
     Postgres pools are only opened if `BENCH_PG_DSN` is set — `bench service
     run` doesn't provision postgres, so its worker leaves `app.state.pg_*` as
     `None` and never serves a `/postgres-*` route."""
-    app.state.rf_sa_engine = create_async_engine(_sa_dsn(DB_PATH), pool_size=1, max_overflow=3)
+    app.state.rf_sa_engine = create_async_engine(_sa_dsn(DB_PATH), **POOL)
     app.state.rowform = rf.Engine(app.state.rf_sa_engine)
     app.state.aiosqlite = await aiosqlite.connect(DB_PATH)
-    app.state.sa_engine = create_async_engine(_sa_dsn(DB_PATH))
+    app.state.sa_engine = create_async_engine(_sa_dsn(DB_PATH), **POOL)
 
     app.state.pg_rowform = None
     app.state.pg_asyncpg = None
     app.state.pg_sa_engine = None
     if PG_DSN:
-        app.state.pg_rf_sa_engine = create_async_engine(
-            _sa_dsn_pg(PG_DSN, "psycopg"), pool_size=1, max_overflow=3
-        )
+        # Same driver on both sides. rowform used to run these routes on psycopg
+        # while its comparators ran on asyncpg, so every /postgres-* number was
+        # a driver difference and a result-layer difference added together.
+        app.state.pg_rf_sa_engine = create_async_engine(_sa_dsn_pg(PG_DSN), **POOL)
         app.state.pg_rowform = rf.Engine(app.state.pg_rf_sa_engine)
-        app.state.pg_asyncpg = await asyncpg.create_pool(PG_DSN, min_size=1, max_size=4)
-        app.state.pg_sa_engine = create_async_engine(_sa_dsn_pg(PG_DSN))
+        app.state.pg_asyncpg = await asyncpg.create_pool(
+            PG_DSN, min_size=POOL["pool_size"], max_size=POOL["pool_size"] + POOL["max_overflow"]
+        )
+        app.state.pg_sa_engine = create_async_engine(_sa_dsn_pg(PG_DSN), **POOL)
     try:
         yield
     finally:
