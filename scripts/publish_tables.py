@@ -86,20 +86,34 @@ def load(paths: list[Path], gc: str = "off") -> dict[tuple[str, str], dict[str, 
     enough to refresh it.
     """
     table: dict[tuple[str, str], dict[str, Any]] = {}
+    shas: dict[str, list[str]] = {}
     for path in sorted(paths):
         run = json.loads(path.read_text())
         shape = run["config"]["shape"]
-        ratios = {(r["contender"], r["gc"]): r for r in run.get("ratios", [])}
+        shas.setdefault(str(run.get("git", {}).get("sha", "unknown")), []).append(path.name)
+        recorded = run.get("ratios", [])
+        ratios = {(r["contender"], r["gc"]): r for r in recorded}
+        # The reference has no ratio of its own — it is what the others are
+        # divided by — so it is named on every record instead. Knowing it is what
+        # separates "this row is 1.00x by definition" from "nothing was measured
+        # here", which look identical from a missing dict entry.
+        references = {r["against"] for r in recorded if r["gc"] == gc}
         for cell in run["cells"]:
             if cell["params"]["gc"] != gc:
                 continue
             backend = cell["params"]["backend"]
             summary = cell["summary"]["median_ms"]
             ratio = ratios.get((cell["contender"], gc))
+            is_reference = cell["contender"] in references
             table.setdefault((backend, shape), {})[cell["contender"]] = {
                 "median": summary["median"],
                 "spread_pct": summary["spread_pct"],
-                "ratio": ratio["value"] if ratio else 1.0,
+                # 1.0 only for the reference itself. None everywhere else means
+                # "no ratio was recorded", which is not "this row ties with the
+                # reference": a --trials 1 run records no ratios at all (micro.py
+                # needs two trials to bound one), and defaulting all of them to
+                # 1.0 published a 12x spread as a three-way tie, silently.
+                "ratio": ratio["value"] if ratio else (1.0 if is_reference else None),
                 "tie": bool(ratio["tie"]) if ratio else False,
                 "quotable": run["quotable"],
                 "trials": len(cell["trials"]),
@@ -111,6 +125,13 @@ def load(paths: list[Path], gc: str = "off") -> dict[tuple[str, str], dict[str, 
             f"no cells with gc={gc!r} in those runs — pass --gc to pick a mode "
             f"the sweep actually recorded"
         )
+    if len(shas) > 1:
+        # "Later runs win" is applied per contender, so re-running one cell and
+        # re-globbing over both leaves every other row at the older commit's
+        # numbers. One table, one build of the library, or the ratios compare
+        # things that never ran against each other.
+        detail = "; ".join(f"{sha[:9]}: {', '.join(names)}" for sha, names in sorted(shas.items()))
+        raise SystemExit(f"these runs span more than one commit — {detail}")
     return table
 
 
@@ -129,6 +150,10 @@ def _cell(entry: dict[str, Any] | None, field: str, *, bold: bool = False) -> st
         return "—"
     if field == "median":
         text = f"{entry['median']:.4f}"
+    elif entry["ratio"] is None:
+        # No ratio recorded for this cell — a single-trial run, or a reference
+        # that was filtered out. Say so; do not render it as a tie.
+        return "—"
     elif entry["ratio"] == 1.0 and not entry["tie"]:
         text = "1.00x"
     else:
@@ -148,9 +173,17 @@ def render(table: dict[tuple[str, str], dict[str, Any]], backend: str) -> str:
     shapes = [s for s in SHAPES if (backend, s) in table]
     if not shapes:
         return ""
-    present = [
-        name for name in ROW_ORDER if any(name in table[(backend, s)] for s in shapes)
-    ]
+    recorded = {name for s in shapes for name in table[(backend, s)]}
+    unknown = recorded - set(ROW_ORDER)
+    if unknown:
+        # Registering a contender and forgetting the constant used to delete it
+        # from the published table with no sign it had ever run — the exact
+        # silent-omission failure this script exists to prevent.
+        raise SystemExit(
+            f"{backend}: {', '.join(sorted(unknown))} not in ROW_ORDER, so it "
+            f"would be dropped from the table. Add it (and a LABELS entry)."
+        )
+    present = [name for name in ROW_ORDER if name in recorded]
     span = " | ".join(shapes)
     lines = [
         f"| contender | {span} | | {span} |",

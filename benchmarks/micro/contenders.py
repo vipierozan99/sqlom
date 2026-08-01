@@ -23,6 +23,15 @@ and what this file is organised around:
   cost from the hydrator's. Keeping only the first is how an earlier run produced
   a "floor" slower than the thing it was bounding.
 
+**Every contender builds its payload the same way**, with a
+`{field: getattr(obj, field)}` comprehension over the shape's field list. That is
+not a style rule: the `MappedAsDataclass` rows used `dataclasses.asdict()`, which
+deep-copies recursively, and on `wide` that cost more than the ORM work the row
+was there to measure — 14 ms of a 17 ms cell, for byte-identical JSON. The row
+registered to *avoid* overstating the win was carrying the largest handicap in
+the file. If a contender needs a different payload builder, the difference
+belongs in the timed region of every contender or none.
+
 `bench micro` calls these factories directly — this is its whole registry. The
 FastAPI load-test worker (`service/app.py`) is deliberately *not* a consumer: it
 is hand-written so it profiles as real named functions instead of frames through
@@ -33,7 +42,6 @@ from __future__ import annotations
 
 import decimal
 import uuid
-from dataclasses import asdict
 from typing import Any
 
 import orjson
@@ -420,7 +428,7 @@ async def flat_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(engine) as session:
             users = (await session.execute(stmt)).scalars().all()
-            return dumps([asdict(u) for u in users])
+            return dumps([{f: getattr(u, f) for f in FLAT_FIELDS} for u in users])
 
     return target, engine.dispose
 
@@ -630,7 +638,15 @@ async def join_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(engine) as session:
             rows = (await session.execute(stmt)).all()
-            return dumps([[asdict(a), asdict(p)] for a, p in rows])
+            return dumps(
+                [
+                    [
+                        {f: getattr(a, f) for f in AUTHOR_FIELDS},
+                        {f: getattr(p, f) for f in POST_FIELDS},
+                    ]
+                    for a, p in rows
+                ]
+            )
 
     return target, engine.dispose
 
@@ -755,7 +771,7 @@ async def wide_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(engine) as session:
             rows = (await session.execute(stmt)).scalars().all()
-            return dumps([asdict(e) for e in rows])
+            return dumps([{f: getattr(e, f) for f in WIDE_FIELDS} for e in rows])
 
     return target, engine.dispose
 

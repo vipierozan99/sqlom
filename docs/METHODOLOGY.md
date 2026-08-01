@@ -49,6 +49,16 @@ trial-to-trial spread anywhere below: **8.1%** (sqlite), 4.5% (postgres), 7.5% (
 Runs land in `benchmarks/results/runs/`, which is gitignored on main; chosen ones are
 committed to a dated `bench/` branch by hand and indexed in [RUNS.md](RUNS.md).
 
+> [!WARNING]
+> **The `MappedAsDataclass` row is stale and overstates the ORM's cost.** It built
+> its JSON payload with `dataclasses.asdict()` where every other contender uses a
+> `getattr` comprehension; `asdict()` deep-copies recursively, and on `wide` that
+> was ~14 ms of the 17.37 ms cell for byte-identical output. The contender is
+> fixed, but these cells were measured before the fix and have not been re-taken —
+> a re-run has to happen on the pinned, isolated box this sweep was recorded on,
+> not wherever the fix landed. Every other row is unaffected: none of them ever
+> used `asdict()`. Treat `MappedAsDataclass` as an upper bound until re-run.
+
 ### sqlite
 
 | contender | flat | join | wide | | flat | join | wide |

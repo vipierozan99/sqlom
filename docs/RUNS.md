@@ -23,6 +23,13 @@ done
 uv run python scripts/publish_tables.py benchmarks/results/runs/*_3757a0d/run.json
 ```
 
+**Superseded in one row.** The `SQLAlchemy ORM (MappedAsDataclass)` contender built
+its payload with `dataclasses.asdict()` while every sibling used a `getattr`
+comprehension — a recursive deep copy inside the timed region, ~14 ms of the 17.37 ms
+`wide` cell, for byte-identical JSON. Fixed in `contenders.py`; these cells predate
+the fix and need re-taking on the same pinned box before they are quoted again. No
+other contender used `asdict()`, so no other row moves.
+
 200,000 rows (1.2M for join), 1000 per read, 300 timed iterations after 50 warmup,
 **5 trials, one contender per process**, gc off, pinned to cpus 6-9. Worst
 trial-to-trial spread anywhere: **8.1%**. Tables are in METHODOLOGY.md rather than
