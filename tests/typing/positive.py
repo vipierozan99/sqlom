@@ -171,6 +171,32 @@ async def one_column() -> None:
     assert_type(await engine.fetch_all(wide.with_only_columns(Author.name)), list[str])
 
 
+async def documented() -> None:
+    """The example snippets, in the exact spellings the docs print beside a type.
+
+    A doc comment saying `# int | None` is a claim, and an untested claim is the
+    kind that quietly stops being true. These are the ones written out in
+    README.md and GUIDE.md — same statement, same annotation.
+    """
+    assert_type(
+        await engine.fetch_one(sa.select(Author, Book).join(Book)),
+        "tuple[Author, Book] | None",
+    )
+    assert_type(
+        await engine.fetch_one(sa.select(sa.func.count()).select_from(Author)), "int | None"
+    )
+    assert_type(
+        await engine.fetch_one(sa.func.count().select().select_from(Author.__table__)),
+        "int | None",
+    )
+    assert_type(
+        await engine.fetch_one(
+            sa.select(Author.id, Author.name).with_only_columns(Author.id)
+        ),
+        "int | None",
+    )
+
+
 async def streams() -> None:
     # fetch_iter is overloaded on the same arity rule as fetch_all, so the loop
     # variable is exact rather than Any.

@@ -603,6 +603,7 @@ nothing is tracked.
 |---|---|
 | `session.scalars(select(User))` | `db.fetch_all(sa.select(User))`, or `db.scalars(...)` for the `ScalarResult` |
 | `session.execute(select(User))` | `db.execute(sa.select(User))` — the same `Result` |
+| `session.scalar(select(func.count()))` | `db.fetch_one(...)` — one selected entity is already unwrapped, so there is no `scalar` step |
 | `session.get(User, 1)` | `db.fetch_one(sa.select(User).where(User.id == 1))` |
 | `session.add(user); await session.commit()` | `db.execute(sa.insert(User).values(...))` |
 | `user.name = "x"; await session.commit()` | `db.execute(sa.update(User).where(...).values(name="x"))` |
