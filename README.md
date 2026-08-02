@@ -195,7 +195,7 @@ await db.fetch_all(sa.select(User, Post).join(Post))  # list[tuple[User, Post]]
 
 await db.fetch_one(sa.select(User).where(User.id == 1))             # User | None
 await db.fetch_one(sa.select(User, Post).join(Post))                # tuple[User, Post] | None
-await db.fetch_value(sa.select(sa.func.count()).select_from(User))  # int | None
+await db.fetch_one(sa.select(sa.func.count()).select_from(User))    # int | None
 ```
 
 **One selected entity yields that entity; two or more yield a tuple.** The statement

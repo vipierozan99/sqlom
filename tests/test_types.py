@@ -104,10 +104,10 @@ class TestPythonTypes:
 async def test_scalar_selects_convert_too(engine):
     """A column selected on its own is planned as a scalar, not part of a model,
     so it takes a different path through the codegen and must still convert."""
-    when = await engine.fetch_value(sa.select(Wide.when).where(Wide.id == 1))
+    when = await engine.fetch_one(sa.select(Wide.when).where(Wide.id == 1))
     assert when == WIDE_ROW["when"]
 
-    colour = await engine.fetch_value(sa.select(Wide.colour).where(Wide.id == 1))
+    colour = await engine.fetch_one(sa.select(Wide.colour).where(Wide.id == 1))
     assert colour is Colour.RED
 
 
@@ -121,25 +121,20 @@ class _Pair(sa.TypeDecorator):
         return None if value is None else (value, value)
 
 
-async def test_fetch_value_does_not_unpack_a_value_that_is_a_tuple(engine):
-    """`fetch_value` returns the first *column*, which at arity one is the whole
-    value — even when that value is a tuple. Testing `isinstance(row, tuple)`
-    instead of the plan plucked a field out of it, the same silent wrongness
-    `row[0]` on a `str` was (docs/PLAN_SQLA_API.md)."""
+async def test_a_value_that_is_itself_a_tuple_arrives_whole(engine):
+    """Whether a row is a tuple is the planner's answer (`Plan.wrap`), never the
+    row's runtime type. At arity one the row *is* the value, and a value may be a
+    tuple — a psycopg composite hydrates to a namedtuple — so anything deriving
+    the shape from `isinstance(row, tuple)` plucks a field out of it."""
     await engine.execute(sa.update(Wide.__table__).where(Wide.id == 1).values(note="x"))
     statement = sa.select(sa.type_coerce(Wide.note, _Pair)).where(Wide.id == 1)
 
-    assert await engine.fetch_value(statement) == ("x", "x")
     assert await engine.fetch_one(statement) == ("x", "x")
+    assert await engine.fetch_all(statement) == [("x", "x")]
 
-
-async def test_fetch_value_still_takes_the_first_of_a_real_multi_column_row(engine):
-    """The other half: past arity one the row *is* a tuple the planner built, and
-    `fetch_value` is the only thing that unwraps it."""
-    statement = sa.select(Wide.id, Wide.ratio).where(Wide.id == 1)
-
-    assert await engine.fetch_value(statement) == 1
-    assert await engine.fetch_one(statement) == (1, 1.5)
+    # ...and past arity one the tuple is the planner's own, one slot per entity.
+    pair = sa.select(Wide.id, Wide.ratio).where(Wide.id == 1)
+    assert await engine.fetch_one(pair) == (1, 1.5)
 
 
 async def test_a_nullable_column_still_converts_when_present(engine):

@@ -36,7 +36,7 @@ import contextvars
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, TypeVar, TypeVarTuple, overload
+from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncResult, AsyncScalarResult
@@ -57,7 +57,6 @@ R = TypeVar("R")
 R2 = TypeVar("R2")
 R3 = TypeVar("R3")
 R4 = TypeVar("R4")
-Rest = TypeVarTuple("Rest")  # `fetch_value` discards all but the first (`engine.py`)
 
 # Holds the innermost active Connection for the current task. contextvars, not an
 # instance attribute: one engine serves many concurrent tasks, and each needs its
@@ -351,47 +350,10 @@ class Connection:
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
         """The first row, or None — narrowed to `LIMIT 1` where that is safe, as
         on the engine (`engine._one_row`)."""
-        row, _ = await self._first(statement, params)
-        return row
-
-    @overload
-    async def fetch_value(
-        self, statement: CoreQuery[tuple[R, *Rest]], **params: Any
-    ) -> R | None: ...
-
-    @overload
-    async def fetch_value(self, statement: CoreQuery[R], **params: Any) -> R | None: ...
-
-    @overload
-    async def fetch_value(
-        self, statement: Select[tuple[R, *Rest]], **params: Any
-    ) -> R | None: ...
-
-    @overload
-    async def fetch_value(self, statement: Any, **params: Any) -> Any: ...
-
-    async def fetch_value(self, statement: Any, **params: Any) -> Any:
-        """The first column of the first row, or None — `Engine.fetch_value` on
-        this connection."""
-        row, wrap = await self._first(statement, params)
-        return row[0] if wrap else row
-
-    async def _first(self, statement: Any, params: dict[str, Any]) -> tuple[Any, bool]:
-        """`Engine._first` on this connection: the first hydrated row and whether
-        it is a tuple. `Plan.wrap` rather than the row's runtime type, for the
-        reason given there."""
         from .engine import _one_row
 
-        engine = self._engine
-        await self._autobegin()
-        query, extracted = engine._require_rows(_one_row(statement))
-        rows, hydrate = await engine._run(query, params, self._pinned, extracted)
-        hydrated = hydrate(rows)
-        if not hydrated:
-            return None, False
-        plan = query.entities
-        assert plan is not None  # _require_rows guarantees it
-        return hydrated[0], plan.wrap
+        rows = await self.fetch_all(_one_row(statement), **params)
+        return rows[0] if rows else None
 
     @overload
     def fetch_iter(

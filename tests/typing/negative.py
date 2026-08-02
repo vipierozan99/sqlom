@@ -107,20 +107,13 @@ async def reads() -> None:
         sa.select(Author, Book)
     )
 
-    # fetch_value is the first column, and it too can be None.
-    value: str = await engine.fetch_value(  # pyright: ignore[reportAssignmentType]
-        sa.select(Author.name)
-    )
-    mistyped: int | None = await engine.fetch_value(  # pyright: ignore[reportAssignmentType]
-        sa.select(Author.name)
-    )
-    # The *first* column, not any of the others.
-    second: Book | None = await engine.fetch_value(  # pyright: ignore[reportAssignmentType]
-        sa.select(Author, Book)
-    )
-    # A whole entity comes back whole, so it is not the model's scalar either.
-    unwrapped: str | None = await engine.fetch_value(  # pyright: ignore[reportAssignmentType]
-        sa.select(Author)
+    # There is no `fetch_value`: `fetch_one` is the "one value" read, because a
+    # single selected entity already arrives unwrapped.
+    await engine.fetch_value(sa.select(Author.name))  # pyright: ignore[reportAttributeAccessIssue]
+
+    # Narrowing the statement keeps the type exact, so a wrong one still fails.
+    narrowed: str | None = await engine.fetch_one(  # pyright: ignore[reportAssignmentType]
+        sa.select(Author.id, Author.name).with_only_columns(Author.id)
     )
 
     # An alias carries the model it aliases, so a self-join is pairs of Author.
@@ -183,7 +176,7 @@ async def shapes() -> None:
         scoped: Author | None = await conn.fetch_one(  # pyright: ignore[reportAssignmentType]
             sa.select(Author, Book)
         )
-        scoped_value: int | None = await conn.fetch_value(  # pyright: ignore[reportAssignmentType]
+        scoped_value: int | None = await conn.fetch_one(  # pyright: ignore[reportAssignmentType]
             sa.select(Author.name)
         )
 

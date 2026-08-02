@@ -152,35 +152,23 @@ async def reads() -> None:
     assert_type(await engine.fetch_all(sa.select(recent)), list[Author])
 
 
-async def values() -> None:
-    """`fetch_value` is the first *column*, so only the first type survives.
+async def one_column() -> None:
+    """There is no `fetch_value`: one selected entity already arrives unwrapped,
+    so `fetch_one` *is* the "one value" read.
 
-    That is why its overloads are variadic where the others are per-arity: the
-    types it discards need no names, and one overload therefore stays exact past
-    the arity four at which `fetch_all` gives up.
+    For one column of a wider statement, narrow the statement rather than the
+    row. That is the better half of the trade — the type stays exact, and the
+    discarded column never reaches the database.
     """
-    assert_type(await engine.fetch_value(sa.select(Author.name)), "str | None")
-    assert_type(await engine.fetch_value(sa.select(Book.price)), "decimal.Decimal | None")
-    assert_type(await engine.fetch_value(sa.select(sa.func.count())), "int | None")
+    assert_type(await engine.fetch_one(sa.select(Author.name)), "str | None")
+    assert_type(await engine.fetch_one(sa.select(Book.price)), "decimal.Decimal | None")
+    assert_type(await engine.fetch_one(sa.select(sa.func.count())), "int | None")
 
-    # At arity one the row *is* the value, so a whole entity comes back whole —
-    # `fetch_value` is `fetch_one` here, and typed to say so.
-    assert_type(await engine.fetch_value(sa.select(Author)), "Author | None")
-
-    # Past one, the first selected entity and nothing else.
-    assert_type(await engine.fetch_value(sa.select(Author, Book)), "Author | None")
-    assert_type(await engine.fetch_value(sa.select(Author.name, Author.id)), "str | None")
-    assert_type(
-        await engine.fetch_value(
-            sa.select(Author.id, Author.name, Author.active, Author.born, Book.title)
-        ),
-        "int | None",
-    )
-
-    assert_type(await engine.fetch_value(engine.prepare(sa.select(Author))), "Author | None")
-    assert_type(
-        await engine.fetch_value(engine.prepare(sa.select(Author, Book))), "Author | None"
-    )
+    wide = sa.select(Author.id, Author.name)
+    assert_type(wide, sa.Select[tuple[int, str]])
+    assert_type(wide.with_only_columns(Author.id), sa.Select[tuple[int]])
+    assert_type(await engine.fetch_one(wide.with_only_columns(Author.id)), "int | None")
+    assert_type(await engine.fetch_all(wide.with_only_columns(Author.name)), list[str])
 
 
 async def streams() -> None:
@@ -213,8 +201,7 @@ async def scopes() -> None:
         assert_type(await conn.fetch_all(sa.select(Author, Book)), list[tuple[Author, Book]])
         assert_type(await conn.fetch_one(sa.select(Author)), "Author | None")
         assert_type(await conn.fetch_one(sa.select(Author, Book)), "tuple[Author, Book] | None")
-        assert_type(await conn.fetch_value(sa.select(Author.name)), "str | None")
-        assert_type(await conn.fetch_value(sa.select(Author, Book)), "Author | None")
+        assert_type(await conn.fetch_one(sa.select(Author.name)), "str | None")
         assert_type(await conn.fetch_all(engine.prepare(sa.select(Author))), list[Author])
 
         async for author in conn.fetch_iter(sa.select(Author), chunk=100):

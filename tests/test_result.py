@@ -277,7 +277,7 @@ class TestTheEngineOneShots:
             ],
         )
         count = sa.select(sa.func.count()).select_from(Author)
-        assert await pg_engine.fetch_value(count) == 6
+        assert await pg_engine.fetch_one(count) == 6
 
     async def test_a_one_shot_returning_write_is_committed(self, engine):
         """The other half of the bug above: a *single* parameter set.
@@ -315,7 +315,7 @@ class TestTheEngineOneShots:
             sa.insert(table).values(id=83, name="edsger d", active=True).returning(table)
         )
         assert len([row async for row in streamed]) == 1
-        assert await streamable_engine.fetch_value(
+        assert await streamable_engine.fetch_one(
             sa.select(Author.name).where(Author.id == 83)
         ) == "edsger d"
 

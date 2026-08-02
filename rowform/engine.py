@@ -32,7 +32,7 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from time import perf_counter
-from typing import Any, TypeVar, TypeVarTuple, overload
+from typing import Any, TypeVar, overload
 
 import sqlalchemy as sa
 from sqlalchemy import Select
@@ -53,10 +53,9 @@ _LOG = logging.getLogger("rowform")
 def _one_row(statement: Any) -> Any:
     """`statement`, narrowed to a single row where that is safe to do.
 
-    `fetch_one` and `fetch_value` read the whole result and threw away everything
-    after the first row, so "get me this user" transferred and hydrated the entire
-    table. Adding the LIMIT is the fix, but only for a `Select` that sets none of
-    its own:
+    `fetch_one` read the whole result and threw away everything after the first
+    row, so "get me this user" transferred and hydrated the entire table. Adding
+    the LIMIT is the fix, but only for a `Select` that sets none of its own:
 
     * a caller's `.limit()` may be a bind parameter, and replacing it would leave
       their value with nothing to bind to;
@@ -96,11 +95,6 @@ R = TypeVar("R")
 R2 = TypeVar("R2")
 R3 = TypeVar("R3")
 R4 = TypeVar("R4")
-
-# `fetch_value` is the exception: it returns the *first* selected entity and
-# discards the rest, so it needs no name for them and a variadic says so in one
-# overload — including past the arity four where the others give up.
-Rest = TypeVarTuple("Rest")
 
 
 class Engine:
@@ -394,35 +388,20 @@ class Engine:
         The statement is narrowed to one row where that is safe (`_one_row`), so
         this is a `LIMIT 1` rather than a whole result set with everything after
         the first discarded.
+
+        For one *column* of that row, narrow the statement rather than the row:
+        `select(User.id, User.name).with_only_columns(User.id)` keeps the exact
+        type and does not fetch the column it is going to discard.
+
+        Written out rather than delegating to `fetch_all` so the guard names this
+        method: telling a caller inside a scope to use `conn.fetch_all()` when
+        they called `fetch_one()` points them at a call they never made.
         """
-        row, _ = await self._first(statement, params, "fetch_one")
-        return row
-
-    @overload
-    async def fetch_value(
-        self, statement: CoreQuery[tuple[R, *Rest]], **params: Any
-    ) -> R | None: ...
-
-    @overload
-    async def fetch_value(self, statement: CoreQuery[R], **params: Any) -> R | None: ...
-
-    @overload
-    async def fetch_value(
-        self, statement: Select[tuple[R, *Rest]], **params: Any
-    ) -> R | None: ...
-
-    @overload
-    async def fetch_value(self, statement: Any, **params: Any) -> Any: ...
-
-    async def fetch_value(self, statement: Any, **params: Any) -> Any:
-        """The first column of the first row, or None.
-
-        The hot track's `scalar()` (`docs/PLAN_SQLA_API.md`). Distinct from
-        `fetch_one` only for a multi-entity statement, since a single selected
-        entity already arrives unwrapped.
-        """
-        row, wrap = await self._first(statement, params, "fetch_value")
-        return row[0] if wrap else row
+        self._reject_if_in_transaction("fetch_one")
+        query, extracted = self._require_rows(_one_row(statement))
+        rows, hydrate = await self._run(query, params, self._acquire_for(query), extracted)
+        hydrated = hydrate(rows)
+        return hydrated[0] if hydrated else None
 
     # --- writes -------------------------------------------------------------
 
@@ -776,28 +755,6 @@ class Engine:
                 "returning(...)."
             )
         return query, extracted
-
-    async def _first(
-        self, statement: Any, params: dict[str, Any], method: str
-    ) -> tuple[Any, bool]:
-        """The first hydrated row and whether it is a tuple, or `(None, False)`.
-
-        `fetch_one` and `fetch_value` differ only in what they do with that pair,
-        so the shape comes from `Plan.wrap` rather than `isinstance(row, tuple)`.
-        The runtime test cannot tell the two apart at arity one, where the row
-        *is* the value and the value may itself be a tuple — a psycopg composite
-        hydrates to a namedtuple — and plucking `row[0]` out of one is the same
-        silent wrongness `row[0]` on a `str` was (`docs/PLAN_SQLA_API.md`).
-        """
-        self._reject_if_in_transaction(method)
-        query, extracted = self._require_rows(_one_row(statement))
-        rows, hydrate = await self._run(query, params, self._acquire_for(query), extracted)
-        hydrated = hydrate(rows)
-        if not hydrated:
-            return None, False
-        plan = query.entities
-        assert plan is not None  # _require_rows guarantees it
-        return hydrated[0], plan.wrap
 
     async def _run(
         self, query: CoreQuery[Any], params: dict[str, Any], acquire: Any, extracted: Any = None
