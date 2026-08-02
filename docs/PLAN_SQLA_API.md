@@ -6,8 +6,19 @@ both a SQLAlchemy-shaped track and rowform's own (§6). §8 is what building it
 turned up, including two silent-wrongness bugs and one retracted claim.
 
 The postgres arm has since been run — see §5.1 and §8d, which is the bug it
-found. What is left is §2's *ablation* (the per-checkout cost), still sqlite-only,
-and §5.3's published table, which predates the pool change.
+found.
+
+> **§2's ablation is withdrawn.** Every number in it was taken with the benchmark CLI
+> importing locust, whose `gevent.monkey.patch_all()` replaced `threading.Thread` for
+> the whole process and moved every measurement by roughly 30% — aiosqlite runs each
+> statement on a worker thread, so a patched `threading` changes the thing being timed.
+> The *conclusions* of §2a and §2c (wrapping is free per statement; go to the driver
+> connection, not the adapter) are directionally unaffected, but the per-checkout figure
+> of ~0.40 ms against ~0.09 ms should not be quoted and is no longer carried by
+> METHODOLOGY.md, the README, or `rowform/engine.py`. What replaces it is coarser and
+> honest: the three floors in METHODOLOGY.md bound the checkout *and* the transaction
+> together at roughly 0.2 ms per read on sqlite. Re-deriving the split needs a clean
+> re-run.
 
 ## 0. The goal
 
@@ -16,9 +27,9 @@ without giving up its engine, its sessions, its transactions, or its
 migrations.**
 
 That is a stronger goal than "our API looks like theirs", and it rules out things
-a resemblance goal would allow. Today rowform owns its own pool, so a service
-using `AsyncSession` cannot read through rowform *inside its own transaction* at
-all — adoption is all-or-nothing at the process level. The goal above makes
+a resemblance goal would allow. When this was written rowform owned its own pool,
+so a service using `AsyncSession` could not read through rowform *inside its own
+transaction* at all — adoption was all-or-nothing at the process level. The goal above makes
 adoption granular at the statement level, and it is testable: a suite arm that
 runs rowform reads inside a stock `AsyncSession` transaction either passes or it
 does not.
@@ -262,14 +273,19 @@ this box. It is §5.1's first item.
    commits and psycopg does not. Refusing it uniformly is still the likely
    answer.
 
-3. **The per-request tax is real and the benchmark story must say so.** *Closed.*
+3. **The per-request tax is real and the benchmark story must say so.** *Reopened.*
    The published "1.2–1.6x SQLAlchemy Core" figure was a per-request-acquire
-   comparison on *rowform's* pool. Re-measured on SQLAlchemy's, one contender per
-   process, five trials: **1.26x/1.16x/1.13x** on sqlite and 1.34x/1.17x/1.17x on
-   postgres. METHODOLOGY.md and the README carry those now, and say beside them
-   that the sqlite floors hoist a connection while rowform checks one out — which
-   is where most of the remaining floor gap is, and why the postgres floor, which
-   acquires per request as rowform does, ties instead.
+   comparison on *rowform's* pool. It was re-measured on SQLAlchemy's and published
+   as 1.26x/1.16x/1.13x on sqlite; that replacement is now withdrawn too, along with
+   the reading beside it that the remaining floor gap was mostly per-checkout cost
+   and that the postgres floor "ties". Three things broke it: every contender now
+   reads inside `BEGIN`…`COMMIT` bar the one named for the exception (SQLAlchemy
+   always did, rowform's engine-level `fetch_all()` never did, and the difference
+   was being scored as row-layer speed);
+   the pools were equalised at `4+0`; and every measurement in this section was taken
+   with the benchmark CLI importing locust, whose `gevent.monkey.patch_all()` moved
+   all of them by ~30%. Current sqlite figures are in METHODOLOGY.md and are
+   provisional; postgres has not been re-measured.
 
 4. **Which suggests keeping rowform's pool as an option, not a default.** If the
    row API is `rf.fetch_all(conn, stmt)`, then rowform's pool does not need an
@@ -488,7 +504,7 @@ upstream's inconsistency, and a second internal coupling on top of
 
 End to end this holds, and slightly stronger than "almost nothing": one contender
 per process, `execute().scalars()` **ties** with `fetch_all()` in every cell where
-both run, and `execute().all()` costs 8-14% (METHODOLOGY.md). An in-process run
+both run, and `execute().all()` costs 9-17% (METHODOLOGY.md). An in-process run
 first put `.scalars()` 3-4% above `fetch_all()`, which was the compat contender
 inheriting the allocator state of the one before it — correction 2, in a suite that
 had already written correction 2 down.

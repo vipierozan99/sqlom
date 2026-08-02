@@ -40,25 +40,30 @@ owns the schema.
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import Mapped
-import rowform
+import rowform as rf
 
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()
 
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     name: Mapped[str]
     email: Mapped[str | None]
 
 sa_engine = create_async_engine("postgresql+asyncpg://localhost/app")
-db = rowform.Engine(sa_engine)
+db = rf.Engine(sa_engine)
 try:
-    users = await db.fetch_all(sa.select(User).limit(100))
+    async with db.begin() as conn:
+        users = await conn.fetch_all(sa.select(User).limit(100))
 finally:
     await sa_engine.dispose()
 ```
+
+`db.fetch_all(...)` off the engine is the shorter spelling and does the same work, with
+one difference worth knowing before you reach for it: **it opens no transaction.** See
+[Writing and transactions](#writing-and-transactions).
 
 The engine is SQLAlchemy's. rowform wraps one; it never opens or disposes one, so
 its lifetime is whatever your application already does with it.
@@ -72,22 +77,22 @@ recognise goes straight to `sa.Column`:
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     name: Mapped[str]
     email: Mapped[str | None]                       # nullable
     role: Mapped[Role]                              # an Enum class -> sa.Enum
-    balance: Mapped[Decimal] = rowform.mapped_column(sa.Numeric(12, 2))
-    org_id: Mapped[int] = rowform.mapped_column(sa.ForeignKey("orgs.id"))
-    slug: Mapped[str] = rowform.mapped_column("url_slug", unique=True)
+    balance: Mapped[Decimal] = rf.mapped_column(sa.Numeric(12, 2))
+    org_id: Mapped[int] = rf.mapped_column(sa.ForeignKey("orgs.id"))
+    slug: Mapped[str] = rf.mapped_column("url_slug", unique=True)
 
     __table_args__ = (sa.Index("ix_users_org_name", "org_id", "name"),)
 ```
 
-The Python type maps to a SQLAlchemy type through `rowform.DEFAULT_TYPE_MAP`.
+The Python type maps to a SQLAlchemy type through `rf.DEFAULT_TYPE_MAP`.
 Override it for one column by naming the type, or for a whole base:
 
 ```python
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()
     type_annotation_map = {str: sa.Text()}      # every bare `Mapped[str]` becomes TEXT
 ```
@@ -171,7 +176,7 @@ for what you take.
 
 Those are the accessors alone. End to end against `fetch_all()` on the same read,
 one contender per process, `.scalars().all()` **ties** with it and `.all()` costs
-**8-14%** (`docs/METHODOLOGY.md`).
+**9-17%** (`docs/METHODOLOGY.md`).
 
 So the idiomatic ORM-style read is not measurably off the hot path, and only asking
 for actual `Row` objects costs real money. Use `execute()` while porting and where
@@ -179,17 +184,17 @@ the `Result` API earns its keep; use `fetch_all()` on the paths you care about.
 
 ## Aliases and self-joins
 
-**Self-joins** go through `rowform.alias()`, and hydrate as models:
+**Self-joins** go through `rf.alias()`, and hydrate as models:
 
 ```python
-mgr = rowform.alias(User, "mgr")
+mgr = rf.alias(User, "mgr")
 rows = await db.fetch_all(
     sa.select(User, mgr).join(mgr, User.manager_id == mgr.id)
 )   # list[tuple[User, User]]
 ```
 
 `sqlalchemy.orm.aliased()` is *not* usable here — it looks for a `Mapper` and
-raises `NoInspectionAvailable`. `rowform.alias()` is the equivalent, and it keeps
+raises `NoInspectionAvailable`. `rf.alias()` is the equivalent, and it keeps
 the types: `mgr.id` is that alias's column, so the join needs no cast.
 `User.__table__.alias("mgr")` and `sa.alias(User)` hydrate identically, but their
 columns are only reachable as `.c.id` and typed `Column[Any]`, which degrades the
@@ -199,7 +204,7 @@ A **subquery or CTE** hydrates only if you say whose rows it holds, since its
 columns belong to it rather than to any table:
 
 ```python
-active = rowform.alias(User, of=sa.select(User).where(User.active).cte("active"))
+active = rf.alias(User, of=sa.select(User).where(User.active).cte("active"))
 await db.fetch_all(sa.select(active).order_by(active.id))   # list[User]
 ```
 
@@ -214,7 +219,7 @@ to filter on — filter inside it and select the model's columns out:
 
 ```python
 inner = sa.select(User, sa.func.row_number().over(...).label("rk")).subquery()
-first = rowform.alias(User, of=(
+first = rf.alias(User, of=(
     sa.select(*[inner.c[c.key] for c in User.__table__.c])
       .where(inner.c.rk == 1)
       .subquery()
@@ -295,6 +300,23 @@ sqlite streams anything.
 
 ## Writing and transactions
 
+**Off the engine, a read opens no transaction.** `db.fetch_all()`, `db.fetch_one()` and
+`db.execute()` take a connection for one statement and hand it straight back. A write
+with `RETURNING` commits — it has to, or the pool's rollback on release would discard it
+— but a `SELECT` runs with no transaction around it at all, which is a weaker guarantee
+than `AsyncSession.execute()` gives you: no snapshot, so two reads in a row can see
+different data, and nothing to roll back with.
+
+That is the right default for a one-shot read and it is measurably cheaper (the
+benchmark suite prices it as a separate row). It is the wrong default the moment two
+statements have to agree. Use a scope when they do:
+
+```python
+async with db.begin() as conn:              # BEGIN ... COMMIT
+    a = await conn.fetch_all(sa.select(User))
+    b = await conn.fetch_all(sa.select(Post))   # same snapshot as `a`
+```
+
 ```python
 await db.execute(sa.insert(User.__table__).values(name="ada"))
 await db.execute_many(sa.insert(User.__table__), [{...}, {...}])
@@ -372,9 +394,9 @@ inherits the builtin it replaces, so existing `except ValueError` still works.
 ```python
 try:
     rows = await db.fetch_all(statement)
-except rowform.StatementError:
+except rf.StatementError:
     ...     # right statement, wrong method
-except rowform.RowformError:
+except rf.RowformError:
     ...     # anything else rowform refused
 ```
 
@@ -413,7 +435,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.sa_engine = create_async_engine(DSN, pool_size=4, max_overflow=12)
-    app.state.db = rowform.Engine(app.state.sa_engine)
+    app.state.db = rf.Engine(app.state.sa_engine)
     try:
         yield
     finally:
@@ -421,10 +443,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-def get_db(request: Request) -> rowform.Engine:
+def get_db(request: Request) -> rf.Engine:
     return request.app.state.db
 
-Db = Annotated[rowform.Engine, Depends(get_db)]
+Db = Annotated[rf.Engine, Depends(get_db)]
 
 @app.get("/users")
 async def list_users(db: Db, after: int = 0, size: int = 50) -> list[User]:
@@ -447,9 +469,17 @@ The pool is SQLAlchemy's, so sizing it is too — `pool_size`, `max_overflow`,
 `pool_timeout`, `pool_recycle`, `pool_pre_ping`, all on `create_async_engine`:
 
 ```python
-create_async_engine("sqlite+aiosqlite:///app.db", pool_size=1, max_overflow=4)
-create_async_engine(dsn, pool_size=4, max_overflow=12, pool_timeout=5)
+create_async_engine("sqlite+aiosqlite:///app.db", pool_size=4, max_overflow=0)
+create_async_engine(dsn, pool_size=16, max_overflow=0, pool_timeout=5)
 ```
+
+**Prefer `max_overflow=0` and a `pool_size` you actually want.** `pool_size=1,
+max_overflow=4` and `pool_size=5, max_overflow=0` have the same ceiling and behave
+completely differently: SQLAlchemy *closes* overflow connections when they are returned,
+keeping only `pool_size` alive. At a sustained concurrency of five the first spelling
+re-establishes four connections per request — on sqlite an `open(2)`, on postgres a TCP
+connect plus authentication. Measured with four concurrent checkouts over two rounds,
+`1+3` reused one connection and opened three fresh; `4+0` reused all four.
 
 `cache_size` (default 500) caps the compiled statements an engine keeps, evicting
 the least recently used. Statements built per request vary in *shape* and so mint
@@ -465,10 +495,12 @@ application.
 
 Rules of thumb: `pool_size + max_overflow` at or below what the server will accept
 divided by the number of processes; count a long `fetch_iter` as a connection held
-for its whole duration; and remember that a checkout costs ~0.3–0.4 ms more than
-rowform's own pool used to, paid per checkout rather than per row — so a handler
-that holds one connection for the request pays it once
-([PLAN_SQLA_API.md](PLAN_SQLA_API.md) §2).
+for its whole duration; and remember that a checkout is paid per *checkout*, not per row
+or per statement — so a handler that holds one connection for the request pays it once,
+however many reads it does. The benchmark suite measures the checkout and the
+transaction together as roughly 0.2 ms per read on sqlite; earlier editions of this
+guide split that out as "~0.3–0.4 ms of checkout", which was measured under conditions
+since found to be broken and has not been re-derived.
 
 ## Seeing what runs
 
@@ -477,7 +509,7 @@ def slow_queries(sql: str, seconds: float, rows: int | None) -> None:
     if seconds > 0.05:
         log.warning("slow query %.1fms rows=%s: %s", seconds * 1000, rows, sql)
 
-engine = rowform.Engine(sa_engine, observer=slow_queries)
+engine = rf.Engine(sa_engine, observer=slow_queries)
 ```
 
 The observer is called after every statement — one-shot or scope, read or
@@ -546,7 +578,7 @@ import pytest, rowform
 @pytest.fixture
 async def db(tmp_path):
     sa_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.sqlite3'}")
-    db = rowform.Engine(sa_engine)
+    db = rf.Engine(sa_engine)
     try:
         await db.drop_all(Base.metadata)     # ignore_missing=True by default
         await db.create_all(Base.metadata)
@@ -598,6 +630,13 @@ Pin it with `__column_order__` on a table that already exists.
 
 The declaration barely changes. What changes is that you write every join, and
 nothing is tracked.
+
+**One asymmetry to read the table through**: an `AsyncSession` autobegins, so every
+`session.*` call on the left runs inside a transaction. The `db.*` spellings on the
+right do not — they take a connection per statement and open nothing. For a single read
+that is a cheaper equivalent, not an identical one; where the session's transaction was
+load-bearing, the equivalent is `async with db.begin() as conn:` and `conn.*`. See
+[Writing and transactions](#writing-and-transactions).
 
 | ORM | rowform |
 |---|---|
@@ -670,6 +709,6 @@ class Timestamped(Base):        # no __tablename__: a mixin, not a table
 class Review(Timestamped, kw_only=True):
     __tablename__ = "reviews"
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     body: Mapped[str]
 ```

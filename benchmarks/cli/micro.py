@@ -39,7 +39,7 @@ from benchmarks.harness import env as env_module
 from benchmarks.harness import seed as seed_module
 from benchmarks.harness.registry import ContenderInit
 from benchmarks.harness.stats import ratio_with_spread, sample_shape
-from benchmarks.harness.timing import gc_control, per_iteration
+from benchmarks.harness.timing import assert_unpatched_threading, gc_control, per_iteration
 
 app = typer.Typer(help="Pure in-process micro benchmarks.")
 
@@ -181,6 +181,7 @@ def run(
         raise typer.BadParameter("--gc must be 'on', 'off', or 'both'")
     if trials < 1:
         raise typer.BadParameter("--trials must be at least 1")
+    assert_unpatched_threading()
     pin_cpus = [int(c) for c in pin.split(",")] if pin else []
     asyncio.run(
         _run(
@@ -210,6 +211,7 @@ def cell(
     CPU affinity is inherited from the parent across `exec`, so this lands on the
     same cpus `--pin` chose without being told them (`harness/affinity.py`).
     """
+    assert_unpatched_threading()
     asyncio.run(_cell(slug, shape, handle, limit, iterations, warmup, gc, out))
 
 

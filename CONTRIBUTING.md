@@ -60,7 +60,7 @@ whether you got it right.
 ## Benchmarks
 
 Read [docs/METHODOLOGY.md](docs/METHODOLOGY.md) before quoting a number, and
-especially before adding one. It carries a log of eleven published claims that
+especially before adding one. It carries a log of thirteen published claims that
 turned out to be wrong, with how each was caught; most of them are mistakes that
 are easy to repeat.
 
@@ -70,8 +70,15 @@ The short version:
   load is a trend signal, not a baseline.
 * **Every contender must run identical SQL**, so what is compared is the row layer
   and not two different queries.
-* **Two floors, always** — one bounding the whole stack, one running the same
-  hydrator over the same driver — so engine cost and row cost stay separable.
+* **Three floors, always** — one bounding the whole stack, one running the same
+  hydrator over the same driver, and one on SQLAlchemy's own pool and transaction —
+  so engine cost, row cost and plumbing cost stay separable. Leaving out the third
+  is how a pool-and-transaction gap once got published as row-layer speed.
+* **Every contender reads inside `BEGIN`…`COMMIT`.** SQLAlchemy autobegins and
+  rowform's engine-level `fetch_all()` does not, so a suite that leaves this to
+  each contender is comparing isolation guarantees and calling it throughput.
+  The one exception is named for it — `rowform (no transaction)` — because the
+  cheaper weaker read is worth pricing, just not worth publishing as the headline.
 * **`just bench micro run --record`** writes a `run.json`. Commit chosen artifacts
   to a dated branch and note the run in [docs/RUNS.md](docs/RUNS.md), so a number
   can always be traced back to a commit that reproduces it.

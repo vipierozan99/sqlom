@@ -14,6 +14,11 @@ isolates the mapper in-process, this one is the actual HTTP+driver path
 under concurrent load) and sharing code between them is what made this file
 confusing to profile in the first place.
 
+**Every route reads inside `BEGIN`...`COMMIT`**, for the reason spelled out in
+`micro/contenders.py`: the ORM code this is measured against is written that way,
+and SQLAlchemy's autobegin means its contenders were paying for a transaction that
+rowform's engine-level `fetch_all()` never opened.
+
 `limit` is a query parameter (`?limit=N`), read per request — not baked into
 a query built once at startup — the same way a hand-written endpoint would
 do it. Each route acquires its connection from a pool set up once in
@@ -30,7 +35,6 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
-import aiosqlite
 import asyncpg
 import orjson
 from fastapi import FastAPI, Query
@@ -39,6 +43,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 import rowform as rf
+from benchmarks.harness.aiosqlite_pool import AiosqlitePool
 from benchmarks.shapes.flat import User, UserORM, users_table
 from benchmarks.shapes.join import (
     AUTHOR_FIELDS,
@@ -60,7 +65,15 @@ DEFAULT_LIMIT = 1000
 #: One pool configuration for every contender. This is a *concurrent* load test,
 #: so pool size is a first-class variable — running rowform at 1+3 against
 #: SQLAlchemy's default 5+10 compares two configurations, not two result layers.
-POOL = {"pool_size": 1, "max_overflow": 3}
+#:
+#: `4+0` rather than `1+3`: the same ceiling, but not the same pool. SQLAlchemy
+#: *closes* overflow connections on return while asyncpg's pool retains them, so
+#: `1+3` had the asyncpg floor holding four connections while every SQLAlchemy
+#: contender re-established three per request — a TCP connect plus auth on three
+#: quarters of the traffic, charged to one side only. Under `4+0` both retain
+#: four, and the saturation point is genuinely shared.
+POOL = {"pool_size": 4, "max_overflow": 0}
+POOL_MAX = POOL["pool_size"] + POOL["max_overflow"]
 
 
 def _sa_dsn(path: str) -> str:
@@ -88,7 +101,7 @@ async def lifespan(app: FastAPI):
     `None` and never serves a `/postgres-*` route."""
     app.state.rf_sa_engine = create_async_engine(_sa_dsn(DB_PATH), **POOL)
     app.state.rowform = rf.Engine(app.state.rf_sa_engine)
-    app.state.aiosqlite = await aiosqlite.connect(DB_PATH)
+    app.state.aiosqlite = await AiosqlitePool.open(DB_PATH, POOL_MAX)
     app.state.sa_engine = create_async_engine(_sa_dsn(DB_PATH), **POOL)
 
     app.state.pg_rowform = None
@@ -101,7 +114,7 @@ async def lifespan(app: FastAPI):
         app.state.pg_rf_sa_engine = create_async_engine(_sa_dsn_pg(PG_DSN), **POOL)
         app.state.pg_rowform = rf.Engine(app.state.pg_rf_sa_engine)
         app.state.pg_asyncpg = await asyncpg.create_pool(
-            PG_DSN, min_size=POOL["pool_size"], max_size=POOL["pool_size"] + POOL["max_overflow"]
+            PG_DSN, min_size=POOL_MAX, max_size=POOL_MAX
         )
         app.state.pg_sa_engine = create_async_engine(_sa_dsn_pg(PG_DSN), **POOL)
     try:
@@ -135,15 +148,20 @@ async def noop() -> Response:
 @app.get("/sqlite-flat-rowform")
 async def sqlite_flat_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     query = select(User).where(User.is_active == True).where(User.id > 100).limit(limit)
-    rows = await app.state.rowform.fetch_all(query)
+    async with app.state.rowform.begin() as conn:
+        rows = await conn.fetch_all(query)
     return Response(content=orjson.dumps(rows), media_type=JSON)
 
 
 @app.get("/sqlite-flat-raw-aiosqlite-dict")
 async def sqlite_flat_raw_aiosqlite_dict(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     sql = "SELECT id, name, email, is_active FROM users WHERE is_active = 1 AND id > 100 LIMIT ?"
-    cur = await app.state.aiosqlite.execute(sql, (limit,))
-    rows = await cur.fetchall()
+    async with app.state.aiosqlite.acquire() as conn:
+        cur = await conn.execute(sql, (limit,))
+        rows = await cur.fetchall()
+        # The DBAPI's commit, not a literal COMMIT: see `micro/contenders.py` — the
+        # SQL spelling would open a transaction no other contender here opens.
+        await conn.commit()
     payload = [
         {
             "id": r[0],
@@ -166,7 +184,7 @@ async def sqlite_flat_sqlalchemy_async_core_mappings(
         .where(users_table.c.id > 100)
         .limit(limit)
     )
-    async with app.state.sa_engine.connect() as conn:
+    async with app.state.sa_engine.begin() as conn:
         result = await conn.execute(stmt)
         payload = [{str(k): v for k, v in m.items()} for m in result.mappings()]
     return Response(content=orjson.dumps(payload), media_type=JSON)
@@ -182,7 +200,7 @@ async def sqlite_flat_sqlalchemy_async_core_positional(
         .where(users_table.c.id > 100)
         .limit(limit)
     )
-    async with app.state.sa_engine.connect() as conn:
+    async with app.state.sa_engine.begin() as conn:
         result = await conn.execute(stmt)
         payload = [
             {
@@ -200,7 +218,7 @@ async def sqlite_flat_sqlalchemy_async_core_positional(
 async def sqlite_flat_sqlalchemy_async_orm(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     stmt = select(UserORM).where(UserORM.is_active == True).where(UserORM.id > 100).limit(limit)
     names = [str(c.name) for c in UserORM.__table__.columns]
-    async with AsyncSession(app.state.sa_engine) as session:
+    async with AsyncSession(app.state.sa_engine) as session, session.begin():
         users = (await session.execute(stmt)).scalars().all()
         payload = [{name: getattr(u, name) for name in names} for u in users]
     return Response(content=orjson.dumps(payload), media_type=JSON)
@@ -220,7 +238,8 @@ async def sqlite_join_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Resp
         .where(Post.score > 100)
         .limit(limit)
     )
-    pairs = await app.state.rowform.fetch_all(query)
+    async with app.state.rowform.begin() as conn:
+        pairs = await conn.fetch_all(query)
     payload = [{"author": author, "post": post} for author, post in pairs]
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
@@ -237,7 +256,7 @@ async def sqlite_join_sqlalchemy_async_core_positional(
         .limit(limit)
     )
 
-    async with app.state.sa_engine.connect() as conn:
+    async with app.state.sa_engine.begin() as conn:
         result = await conn.execute(stmt)
         payload = [
             {
@@ -269,7 +288,7 @@ async def sqlite_join_sqlalchemy_async_orm(limit: int = Query(default=DEFAULT_LI
         .where(PostORM.score > 100)
         .limit(limit)
     )
-    async with AsyncSession(app.state.sa_engine) as session:
+    async with AsyncSession(app.state.sa_engine) as session, session.begin():
         pairs = (await session.execute(stmt)).all()
         payload = [
             {
@@ -289,14 +308,15 @@ async def sqlite_join_sqlalchemy_async_orm(limit: int = Query(default=DEFAULT_LI
 @app.get("/postgres-flat-rowform")
 async def postgres_flat_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     query = select(User).where(User.is_active == True).where(User.id > 100).limit(limit)
-    rows = await app.state.pg_rowform.fetch_all(query)
+    async with app.state.pg_rowform.begin() as conn:
+        rows = await conn.fetch_all(query)
     return Response(content=orjson.dumps(rows), media_type=JSON)
 
 
 @app.get("/postgres-flat-raw-asyncpg-dict")
 async def postgres_flat_raw_asyncpg_dict(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     sql = "SELECT id, name, email, is_active FROM users WHERE is_active AND id > 100 LIMIT $1"
-    async with app.state.pg_asyncpg.acquire() as conn:
+    async with app.state.pg_asyncpg.acquire() as conn, conn.transaction():
         rows = await conn.fetch(sql, limit)
     payload = [dict(r) for r in rows]
     return Response(content=orjson.dumps(payload), media_type=JSON)
@@ -312,7 +332,7 @@ async def postgres_flat_sqlalchemy_core_mappings(
         .where(users_table.c.id > 100)
         .limit(limit)
     )
-    async with app.state.pg_sa_engine.connect() as conn:
+    async with app.state.pg_sa_engine.begin() as conn:
         result = await conn.execute(stmt)
         payload = [{str(k): v for k, v in m.items()} for m in result.mappings()]
     return Response(content=orjson.dumps(payload), media_type=JSON)
@@ -328,7 +348,7 @@ async def postgres_flat_sqlalchemy_core_positional(
         .where(users_table.c.id > 100)
         .limit(limit)
     )
-    async with app.state.pg_sa_engine.connect() as conn:
+    async with app.state.pg_sa_engine.begin() as conn:
         result = await conn.execute(stmt)
         payload = [
             {
@@ -348,7 +368,7 @@ async def postgres_flat_sqlalchemy_orm(
 ) -> Response:
     stmt = select(UserORM).where(UserORM.is_active == True).where(UserORM.id > 100).limit(limit)
     names = [str(c.name) for c in UserORM.__table__.columns]
-    async with AsyncSession(app.state.pg_sa_engine) as session:
+    async with AsyncSession(app.state.pg_sa_engine) as session, session.begin():
         users = (await session.execute(stmt)).scalars().all()
         payload = [{name: getattr(u, name) for name in names} for u in users]
     return Response(content=orjson.dumps(payload), media_type=JSON)
@@ -368,7 +388,8 @@ async def postgres_join_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Re
         .where(Post.score > 100)
         .limit(limit)
     )
-    pairs = await app.state.pg_rowform.fetch_all(query)
+    async with app.state.pg_rowform.begin() as conn:
+        pairs = await conn.fetch_all(query)
     payload = [{"author": author, "post": post} for author, post in pairs]
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
@@ -384,7 +405,7 @@ async def postgres_join_sqlalchemy_core_positional(
         .where(posts_table.c.score > 100)
         .limit(limit)
     )
-    async with app.state.pg_sa_engine.connect() as conn:
+    async with app.state.pg_sa_engine.begin() as conn:
         result = await conn.execute(stmt)
         payload = [
             {
@@ -418,7 +439,7 @@ async def postgres_join_sqlalchemy_orm(
         .where(PostORM.score > 100)
         .limit(limit)
     )
-    async with AsyncSession(app.state.pg_sa_engine) as session:
+    async with AsyncSession(app.state.pg_sa_engine) as session, session.begin():
         pairs = (await session.execute(stmt)).all()
         payload = [
             {

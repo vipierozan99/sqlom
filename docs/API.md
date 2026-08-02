@@ -1,8 +1,11 @@
 # API reference
 
-Everything in `rowform.__all__`, which is the whole public surface. Signatures are
+Everything in `rf.__all__`, which is the whole public surface. Signatures are
 the real ones; the overloads that make the row types exact are noted where they
 change what you get back rather than repeated in full.
+
+`rf` throughout is `import rowform as rf` — the one spelling this project uses in
+docs, tests, benchmarks and examples alike, so `rf` is free to mean nothing else.
 
 See [GUIDE.md](GUIDE.md) for how these fit together.
 
@@ -10,13 +13,13 @@ See [GUIDE.md](GUIDE.md) for how these fit together.
 
 ## Declaring
 
-### `rowform.Base`
+### `rf.Base`
 
 The base your own base inherits from. Yours carries the `MetaData` that Alembic
 and `create_all()` point at:
 
 ```python
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()
     type_annotation_map = {str: sa.Text()}      # optional, per-base type overrides
 ```
@@ -32,7 +35,7 @@ Class attributes it defines: `__table__` (a real `sa.Table`), `__tablename__`,
 `metadata`, `registry`, `type_annotation_map`, `__table__` and `__tablename__` are
 reserved as field names and raise `DeclarationError`.
 
-### `rowform.mapped_column(*args, default=..., default_factory=..., init=True, **kwargs)`
+### `rf.mapped_column(*args, default=..., default_factory=..., init=True, **kwargs)`
 
 Declares a column. `default`, `default_factory` and `init` are the dataclass
 field's; **everything else goes straight to `sa.Column`**, so `primary_key`,
@@ -40,12 +43,12 @@ field's; **everything else goes straight to `sa.Column`**, so `primary_key`,
 positional type all work as they do in SQLAlchemy.
 
 ```python
-id: Mapped[int] = rowform.mapped_column(primary_key=True)
-slug: Mapped[str] = rowform.mapped_column("url_slug", sa.Text(), unique=True)
-org_id: Mapped[int] = rowform.mapped_column(sa.ForeignKey("orgs.id"))
+id: Mapped[int] = rf.mapped_column(primary_key=True)
+slug: Mapped[str] = rf.mapped_column("url_slug", sa.Text(), unique=True)
+org_id: Mapped[int] = rf.mapped_column(sa.ForeignKey("orgs.id"))
 ```
 
-### `rowform.DEFAULT_TYPE_MAP`
+### `rf.DEFAULT_TYPE_MAP`
 
 `{python_type: sa.TypeEngine}` used when a `Mapped[T]` names no type explicitly:
 `bool`, `int`, `float`, `str`, `bytes`, `datetime`, `date`, `time`, `Decimal`,
@@ -55,21 +58,21 @@ org_id: Mapped[int] = rowform.mapped_column(sa.ForeignKey("orgs.id"))
 `Mapped[T | None]` makes the column nullable. A union of more than one non-`None`
 type raises `DeclarationError`.
 
-### `rowform.ModelMeta`
+### `rf.ModelMeta`
 
 The metaclass. Carries `@dataclass_transform`, which is why field types survive
 into the constructor's signature — and why a model cannot also inherit `ABC` or
 `Protocol` ([workaround](GUIDE.md#working-around-the-metaclass)).
 
-### `rowform.alias(model, name=None, *, of=None) -> type[Model]`
+### `rf.alias(model, name=None, *, of=None) -> type[Model]`
 
 A second reference to a model's rows, typed as the model.
 
 ```python
-mgr = rowform.alias(User, "mgr")                       # another alias of its table
+mgr = rf.alias(User, "mgr")                       # another alias of its table
 sa.select(User, mgr).join(mgr, User.manager_id == mgr.id)   # list[tuple[User, User]]
 
-active = rowform.alias(User, of=sa.select(User).where(User.active).cte("active"))
+active = rf.alias(User, of=sa.select(User).where(User.active).cte("active"))
 sa.select(active)                                       # list[User]
 ```
 
@@ -86,17 +89,17 @@ model's rows, and demands exactly its columns in order. Anything else raises
 columns and there is no `Mapper` to narrow that to "the entity's". A `name` with
 `of=` is refused too; name the subquery or CTE itself.
 
-### `rowform.model_for(from_clause) -> type | None`
+### `rf.model_for(from_clause) -> type | None`
 
 The model a `Table` — or an `alias()` of one — was built from, else `None`. This is
 how the planner resolves an aliased self-join back to a model.
 
 ---
 
-## `rowform.Engine`
+## `rf.Engine`
 
 ```python
-rowform.Engine(engine: AsyncEngine, *, observer=None, cache_size=500)
+rf.Engine(engine: AsyncEngine, *, observer=None, cache_size=500)
 ```
 
 Wraps a SQLAlchemy `AsyncEngine`. rowform does not open one, does not pool, and
@@ -106,7 +109,7 @@ and `echo` are all SQLAlchemy's and reach it the usual way, through
 
 ```python
 sa_engine = create_async_engine("postgresql+asyncpg://localhost/app", pool_size=10)
-db = rowform.Engine(sa_engine)
+db = rf.Engine(sa_engine)
 ...
 await sa_engine.dispose()
 ```
@@ -282,7 +285,7 @@ compile nor the cache-key lookup. Keeps the statement's row type.
 
 ---
 
-## `rowform.Connection`
+## `rf.Connection`
 
 Yielded by `engine.connect()` and `engine.begin()`. Carries **two tracks**, told
 apart by name rather than by semantics.
@@ -326,7 +329,7 @@ take from it rather than a flat toll — per 1000 rows, `.scalars().all()` 0.004
 SQLAlchemy is told the source yields scalars, so no `Row` is built at all.
 
 End to end against `fetch_all()` on the same read, one contender per process,
-`.scalars().all()` **ties** with it and `.all()` costs **8-14%**
+`.scalars().all()` **ties** with it and `.all()` costs **9-17%**
 (`docs/METHODOLOGY.md`). Building the `Result` is not free in principle, but it
 does not show above the trial spread; building a `Row` per row does.
 
@@ -346,7 +349,7 @@ and still rolls the transaction back.
 asyncpg and sqlite raise `UnsupportedError`: asyncpg exposes no such API, and
 sqlite is a local file with no round trip to hide.
 
-### `rowform.active_connection() -> Connection | None`
+### `rf.active_connection() -> Connection | None`
 
 The innermost `Connection` scope open in this task, from a `ContextVar`. This is
 what `engine.fetch_all()` consults in order to refuse to run inside one. A scope
@@ -354,16 +357,16 @@ opened with `bind=` does not register: its transaction belongs to the caller.
 
 ---
 
-## `rowform.Driver`
+## `rf.Driver`
 
 The execution primitives one driver needs — `fetch`, `stream`, `execute`,
-`execute_many`, and optionally `copy_in` and `pipeline`. `rowform.driver_for(dialect)`
+`execute_many`, and optionally `copy_in` and `pipeline`. `rf.driver_for(dialect)`
 picks the one a dialect names. Public because it is the seam a mock engine
 replaces, not because an application calls it.
 
 ---
 
-## `rowform.Observer`
+## `rf.Observer`
 
 ```python
 Observer = Callable[[str, float, int | None], None]
@@ -402,7 +405,7 @@ Driver exceptions are **not** wrapped.
 Public because they are inspectable and testable, not because a typical
 application calls them.
 
-### `rowform.CoreQuery`
+### `rf.CoreQuery`
 
 One statement compiled for one dialect. `engine.prepare()` returns it.
 
@@ -415,7 +418,7 @@ One statement compiled for one dialect. `engine.prepare()` returns it.
 | `query.bind(params=None, extracted=None)` | `(sql, parameters)` in the driver's shape |
 | `query.hydrator(dialect, description)` | the generated function, built on first use and cached |
 
-### `rowform.plan(statement) -> Plan`
+### `rf.plan(statement) -> Plan`
 
 What a statement's rows mean: a contiguous run of selected columns that *is* some
 model's full column list becomes that model, anything else is a scalar. Columns are
@@ -426,19 +429,19 @@ Raises `PlanError` for a statement selecting nothing.
 more entities were selected, which is the single rule the exact `fetch_all` typing
 depends on.
 
-### `rowform.compile_hydrator(plan, dialect, coltypes) -> Callable`
+### `rf.compile_hydrator(plan, dialect, coltypes) -> Callable`
 
 Builds the `rows -> list` function for one planned statement. `coltypes` are the
 DBAPI type codes from `cursor.description`, positionally aligned with
 `plan.columns` — a length mismatch is a `PlanError` rather than a mis-assignment.
 The generated source is on the returned function's `__source__`.
 
-### `rowform.result_processor(column, dialect, coltype) -> Callable | None`
+### `rf.result_processor(column, dialect, coltype) -> Callable | None`
 
 One column's value decoder, taken from the *dialect-adapted* type — the same call
 `Row` itself runs on. `None` means the driver already returns the right object, in
 which case the field compiles to a bare store.
 
-### `rowform.__version__`
+### `rf.__version__`
 
 The installed version, single-sourced into the package metadata.
