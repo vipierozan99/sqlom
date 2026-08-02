@@ -32,6 +32,24 @@ registered to *avoid* overstating the win was carrying the largest handicap in
 the file. If a contender needs a different payload builder, the difference
 belongs in the timed region of every contender or none.
 
+**Every contender runs its read inside `BEGIN`...`COMMIT`**, because that is what
+the code this library is measured against looks like — `async with session.begin():
+session.execute(...)`. It is also the only way the comparison is honest: SQLAlchemy
+autobegins on first statement and rolls back on release, so a `Core`/ORM contender
+was always paying for a transaction, while `Engine.fetch_all()` off the engine opens
+none. Left alone, part of rowform's margin was a weaker isolation guarantee billed
+as row-layer speed. Measured cost of closing that gap: 0.711x -> 0.782x against Core
+on sqlite, and 1.015x -> 1.134x against the raw asyncpg floor on postgres.
+
+**The floors spell it with the DBAPI's `commit()`, never literal `BEGIN`/`COMMIT`
+SQL.** They are not interchangeable. pysqlite only implicitly begins before DML, so
+SQLAlchemy's `begin()` around a SELECT emits no `BEGIN` and the connection never
+enters a transaction — a floor issuing the SQL by hand *does* open one (measured
+0.4445 ms against 0.4182 ms) and would do strictly more work than the contenders it
+bounds, which is the same "floor slower than the thing it bounds" bug recorded
+below, arrived at from the other direction. Mirror the DBAPI semantics, not the SQL
+text. The mock contenders are exempt throughout: they have no connection to begin on.
+
 `bench micro` calls these factories directly — this is its whole registry. The
 FastAPI load-test worker (`service/app.py`) is deliberately *not* a consumer: it
 is hand-written so it profiles as real named functions instead of frames through
@@ -40,6 +58,7 @@ this file's closures.
 
 from __future__ import annotations
 
+import datetime as dt
 import decimal
 import uuid
 from typing import Any
@@ -66,10 +85,23 @@ from benchmarks.shapes.join import (
     PostDC,
     PostORM,
 )
-from benchmarks.shapes.wide import Event, EventDC, EventORM, events_table
+from benchmarks.shapes.wide import Event, EventDC, EventORM, Severity, events_table
 
 FLAT_FIELDS = [str(c.name) for c in users_table.columns]
 WIDE_FIELDS = [str(c.name) for c in events_table.columns]
+
+#: One pool configuration for every contender that opens one, so a cell compares
+#: result layers rather than pool settings.
+#:
+#: `4+0` rather than `1+3`, which is the same ceiling but not the same pool.
+#: SQLAlchemy *closes* overflow connections on return while asyncpg's pool retains
+#: them, so under `1+3` four concurrent checkouts reuse exactly one connection
+#: across rounds and re-establish three, where asyncpg reuses all four — measured,
+#: and on postgres that difference is a TCP connect plus auth on three quarters of
+#: the traffic. Under `4+0` both retain four. `POOL_MAX` is the same ceiling for
+#: the pools that are not SQLAlchemy's.
+POOL = {"pool_size": 4, "max_overflow": 0}
+POOL_MAX = POOL["pool_size"] + POOL["max_overflow"]
 
 
 def _default(value: Any) -> Any:
@@ -197,6 +229,33 @@ def _join(rows):
     ]
 
 
+def _wide_raw(rows):
+    """sqlite hands back 0/1, strings and floats; these are the conversions
+    SQLAlchemy's per-column processors would apply, written out by hand.
+
+    Skipping them would not make a faster floor, it would make a *different
+    answer* — 8 of these 9 columns come back wrong untouched, which is the whole
+    point of this shape (`shapes/wide.py`). `Decimal` is built from a `%.3f`
+    string rather than the float, because that is what `Numeric(12, 3)`'s
+    processor does (`to_decimal_processor_factory`) and anything else disagrees
+    in the last digits.
+    """
+    return [
+        {
+            "id": a,
+            "label": b,
+            "seen": bool(c),
+            "at": dt.datetime.fromisoformat(d),
+            "day": dt.date.fromisoformat(e),
+            "amount": decimal.Decimal(f"{f:.3f}"),
+            "severity": Severity[g],
+            "trace": uuid.UUID(h),
+            "note": i,
+        }
+        for a, b, c, d, e, f, g, h, i in rows
+    ]
+
+
 def _wide(rows):
     return [
         {
@@ -226,7 +285,36 @@ def _wide(rows):
     description="Core compiles, rowform hydrates: compiled hydrator into plain dataclasses.",
 )
 async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(flat_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(await conn.fetch_all(query))
+
+    return target, sa_engine.dispose
+
+# The one row that is deliberately *not* in a transaction, registered on `flat`
+# only — the no-transaction cost is a property of the API, not of the shape, so
+# pricing it once per backend is enough.
+
+
+@contender(
+    "rowform (no transaction)",
+    backend="sqlite",
+    shape="flat",
+    description="`fetch_all()` straight off the engine — one statement, no transaction opened.",
+)
+async def flat_rowform_oneshot(init: ContenderInit) -> tuple[Target, Teardown]:
+    """The cheaper, weaker read, priced rather than published as the headline.
+
+    `Engine.fetch_all()` opens no transaction at all (`engine.py`), so a row
+    measured this way is not comparable to contenders that all pay for one — it
+    buys its margin partly with a weaker guarantee. Registering it next to the
+    transactional row is what makes that a number instead of a footnote.
+    """
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(flat_stmt(init.limit))
 
@@ -253,12 +341,13 @@ async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     description="The compat track: rowform's rows inside SQLAlchemy's Result, taken as scalars.",
 )
 async def flat_rowform_compat_scalars(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(flat_stmt(init.limit))
 
     async def target() -> bytes:
-        return dumps((await engine.execute(query)).scalars().all())
+        async with engine.begin() as conn:
+            return dumps((await conn.execute(query)).scalars().all())
 
     return target, sa_engine.dispose
 
@@ -270,12 +359,13 @@ async def flat_rowform_compat_scalars(init: ContenderInit) -> tuple[Target, Tear
     description="The same Result taken as rows — one SQLAlchemy Row built per row.",
 )
 async def flat_rowform_compat_rows(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(flat_stmt(init.limit))
 
     async def target() -> bytes:
-        return dumps([row[0] for row in (await engine.execute(query)).all()])
+        async with engine.begin() as conn:
+            return dumps([row[0] for row in (await conn.execute(query)).all()])
 
     return target, sa_engine.dispose
 
@@ -300,7 +390,36 @@ async def flat_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
-    "raw aiosqlite + dict",
+    "hand-written dict (mock)",
+    backend="mock",
+    shape="flat",
+    shipped=False,
+    tags=("mapper-floor", "floor"),
+    description="The parsing floor: canned driver rows straight to dicts, no engine at all.",
+)
+async def flat_dict_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+    """What reading these rows costs if nothing at all sits between them and the
+    payload — no engine, no connection, no pool, no transaction.
+
+    The mock backend already cans the driver, so this is the only arm in the file
+    where the number is purely "parse N rows into something serializable". Every
+    other floor still has plumbing in it, however little. Registered here rather
+    than as a sqlite contender because on a real backend it would be
+    indistinguishable from the hand-rolled floor.
+    """
+    rows = init.handle
+
+    async def target() -> bytes:
+        return dumps(_flat_raw(rows))
+
+    async def teardown() -> None:
+        return None
+
+    return target, teardown
+
+
+@contender(
+    "floor: hand-rolled (dict)",
     backend="sqlite",
     shape="flat",
     shipped=False,
@@ -308,20 +427,27 @@ async def flat_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     description="The true floor: driver rows straight to dicts, no object construction.",
 )
 async def flat_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
-    import aiosqlite
+    # Imported here, not at module scope. `python -m benchmarks` loads locust,
+    # which gevent-monkey-patches `threading.Thread` into a greenlet; aiosqlite
+    # binding that instead of a real thread deadlocks its worker against the
+    # asyncio loop, and the whole run hangs before its first result.
+    from benchmarks.harness.aiosqlite_pool import AiosqlitePool
 
-    conn = await aiosqlite.connect(init.handle)
+    pool = await AiosqlitePool.open(init.handle, POOL_MAX)
     sql, params = _compiled(flat_stmt(init.limit), _SQLITE_DIALECT)
 
     async def target() -> bytes:
-        cur = await conn.execute(sql, params)
-        return dumps(_flat_raw(await cur.fetchall()))
+        async with pool.acquire() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+            await conn.commit()
+        return dumps(_flat_raw(rows))
 
-    return target, conn.close
+    return target, pool.close
 
 
 @contender(
-    "raw aiosqlite + rowform hydrator",
+    "floor: hand-rolled (hydrator)",
     backend="sqlite",
     shape="flat",
     shipped=False,
@@ -339,19 +465,71 @@ async def flat_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Tear
     construction cost", which is the only way either number means anything
 .
     """
-    import aiosqlite
+    # Imported here, not at module scope. `python -m benchmarks` loads locust,
+    # which gevent-monkey-patches `threading.Thread` into a greenlet; aiosqlite
+    # binding that instead of a real thread deadlocks its worker against the
+    # asyncio loop, and the whole run hangs before its first result.
+    from benchmarks.harness.aiosqlite_pool import AiosqlitePool
 
-    conn = await aiosqlite.connect(init.handle)
+    pool = await AiosqlitePool.open(init.handle, POOL_MAX)
     dialect = _SQLITE_DIALECT
     statement = flat_stmt(init.limit)
     sql, params = _compiled(statement, dialect)
     hydrate = _hydrator(statement, dialect, FLAT_FIELDS)
 
     async def target() -> bytes:
-        cur = await conn.execute(sql, params)
-        return dumps(hydrate(await cur.fetchall()))
+        async with pool.acquire() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+            await conn.commit()
+        return dumps(hydrate(rows))
 
-    return target, conn.close
+    return target, pool.close
+
+
+# The third floor, and the one that answers the adoption question.
+#
+# The other two hand-roll the plumbing as well as the rows, so the gap between
+# them and `rowform` is mostly SQLAlchemy's pool and transaction — measured at a
+# fixed ~0.41 ms per request, the same on `flat` and on `wide`, which is what
+# gives it away as per-request overhead rather than row-layer work. That is a
+# real cost, but it is one an application on SQLAlchemy is *already paying*
+# before rowform enters the picture, so charging it to the row layer answers a
+# question nobody has.
+#
+# This floor holds the plumbing constant instead: SQLAlchemy's pool, SQLAlchemy's
+# transaction, the same compiled statement, and hand-written dicts where rowform
+# runs its hydrator. What separates it from `rowform` is the row layer and
+# nothing else — measured at +0.034 ms on flat and -0.033 ms on wide, i.e. zero
+# within noise. Keep all three: this one prices the abstraction, the other two
+# bound the stack.
+
+
+@contender(
+    "floor: on SQLAlchemy (dict)",
+    backend="sqlite",
+    shape="flat",
+    shipped=False,
+    tags=("floor", "same-plumbing"),
+    description="Same pool, same transaction, hand-written dicts — the abstraction floor.",
+)
+async def flat_sa_plumbing_dict(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    sql, params = _compiled(flat_stmt(init.limit), _SQLITE_DIALECT)
+
+    async def target() -> bytes:
+        async with sa_engine.connect() as sa_conn:
+            # The driver connection, not the adapter's cursor: statements are
+            # awaited from a real coroutine rather than through `greenlet_spawn`,
+            # which is what rowform does and what this floor has to match to be
+            # measuring the row layer and not the execution path.
+            driver_conn: Any = (await sa_conn.get_raw_connection()).driver_connection
+            async with sa_conn.begin():
+                cur = await driver_conn.execute(sql, params)
+                rows = await cur.fetchall()
+        return dumps(_flat_raw(rows))
+
+    return target, sa_engine.dispose
 
 
 @contender(
@@ -361,11 +539,11 @@ async def flat_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Tear
     description="The headline comparison: identical SQL, stock Row/CursorResult result layer.",
 )
 async def flat_sa_core_positional(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn(init.handle))
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     stmt = flat_stmt(init.limit)
 
     async def target() -> bytes:
-        async with engine.connect() as conn:
+        async with engine.begin() as conn:
             result = await conn.execute(stmt)
             return dumps(_flat(result.all()))
 
@@ -383,11 +561,11 @@ async def flat_sa_core_mappings(init: ContenderInit) -> tuple[Target, Teardown]:
     orjson refuses), so every row pays a `str()` cast per key — kept registered
     alongside the positional variant rather than "corrected away", because a
     workaround one contender needs has to be priced, not hidden."""
-    engine = create_async_engine(_sa_dsn(init.handle))
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     stmt = flat_stmt(init.limit)
 
     async def target() -> bytes:
-        async with engine.connect() as conn:
+        async with engine.begin() as conn:
             result = await conn.execute(stmt)
             return dumps([{str(k): v for k, v in m.items()} for m in result.mappings()])
 
@@ -404,11 +582,11 @@ async def flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     """Fresh `Session` per request, bound to a per-request connection: hoisting
     the `Session` would let its identity map skip hydration on every request
     after the first — what is inside each timed region gets audited."""
-    engine = create_async_engine(_sa_dsn(init.handle))
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     stmt = flat_stmt(init.limit, UserORM)
 
     async def target() -> bytes:
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(engine) as session, session.begin():
             users = (await session.execute(stmt)).scalars().all()
             return dumps([{f: getattr(u, f) for f in FLAT_FIELDS} for u in users])
 
@@ -422,11 +600,11 @@ async def flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     description="SQLAlchemy ORM (MappedAsDataclass) — the closest ORM shape to what rowform builds.",
 )
 async def flat_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn(init.handle))
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     stmt = flat_stmt(init.limit, UserDC)
 
     async def target() -> bytes:
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(engine) as session, session.begin():
             users = (await session.execute(stmt)).scalars().all()
             return dumps([{f: getattr(u, f) for f in FLAT_FIELDS} for u in users])
 
@@ -503,12 +681,13 @@ async def flat_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     description="Two entities per row through one compiled hydrator, no per-entity call.",
 )
 async def join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(join_stmt(init.limit))
 
     async def target() -> bytes:
-        return dumps(await engine.fetch_all(query))
+        async with engine.begin() as conn:
+            return dumps(await conn.fetch_all(query))
 
     return target, sa_engine.dispose
 
@@ -523,12 +702,13 @@ async def join_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
     """`.scalars()` has no meaning here — it would take the `Author` and drop the
     `Post` — so rows are the idiomatic compat spelling at arity two, and the Row
     per row is unavoidable rather than opt-in."""
-    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(join_stmt(init.limit))
 
     async def target() -> bytes:
-        return dumps([(a, p) for a, p in (await engine.execute(query)).all()])
+        async with engine.begin() as conn:
+            return dumps([(a, p) for a, p in (await conn.execute(query)).all()])
 
     return target, sa_engine.dispose
 
@@ -553,7 +733,28 @@ async def join_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
-    "raw aiosqlite + dict",
+    "hand-written dict (mock)",
+    backend="mock",
+    shape="join",
+    shipped=False,
+    tags=("mapper-floor", "floor"),
+    description="The parsing floor at arity two: canned rows split into two dicts each.",
+)
+async def join_dict_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+    """See the flat twin."""
+    rows = init.handle
+
+    async def target() -> bytes:
+        return dumps(_join_raw(rows))
+
+    async def teardown() -> None:
+        return None
+
+    return target, teardown
+
+
+@contender(
+    "floor: hand-rolled (dict)",
     backend="sqlite",
     shape="join",
     shipped=False,
@@ -561,20 +762,27 @@ async def join_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     description="The true floor: driver rows split into two dicts per row.",
 )
 async def join_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
-    import aiosqlite
+    # Imported here, not at module scope. `python -m benchmarks` loads locust,
+    # which gevent-monkey-patches `threading.Thread` into a greenlet; aiosqlite
+    # binding that instead of a real thread deadlocks its worker against the
+    # asyncio loop, and the whole run hangs before its first result.
+    from benchmarks.harness.aiosqlite_pool import AiosqlitePool
 
-    conn = await aiosqlite.connect(init.handle)
+    pool = await AiosqlitePool.open(init.handle, POOL_MAX)
     sql, params = _compiled(join_stmt(init.limit), _SQLITE_DIALECT)
 
     async def target() -> bytes:
-        cur = await conn.execute(sql, params)
-        return dumps(_join_raw(await cur.fetchall()))
+        async with pool.acquire() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+            await conn.commit()
+        return dumps(_join_raw(rows))
 
-    return target, conn.close
+    return target, pool.close
 
 
 @contender(
-    "raw aiosqlite + rowform hydrator",
+    "floor: hand-rolled (hydrator)",
     backend="sqlite",
     shape="join",
     shipped=False,
@@ -582,19 +790,50 @@ async def join_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
     description="The second floor: same driver, same hydrator, no engine.",
 )
 async def join_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Teardown]:
-    import aiosqlite
+    # Imported here, not at module scope. `python -m benchmarks` loads locust,
+    # which gevent-monkey-patches `threading.Thread` into a greenlet; aiosqlite
+    # binding that instead of a real thread deadlocks its worker against the
+    # asyncio loop, and the whole run hangs before its first result.
+    from benchmarks.harness.aiosqlite_pool import AiosqlitePool
 
-    conn = await aiosqlite.connect(init.handle)
+    pool = await AiosqlitePool.open(init.handle, POOL_MAX)
     dialect = _SQLITE_DIALECT
     statement = join_stmt(init.limit)
     sql, params = _compiled(statement, dialect)
     hydrate = _hydrator(statement, dialect, AUTHOR_FIELDS + POST_FIELDS)
 
     async def target() -> bytes:
-        cur = await conn.execute(sql, params)
-        return dumps(hydrate(await cur.fetchall()))
+        async with pool.acquire() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+            await conn.commit()
+        return dumps(hydrate(rows))
 
-    return target, conn.close
+    return target, pool.close
+
+
+@contender(
+    "floor: on SQLAlchemy (dict)",
+    backend="sqlite",
+    shape="join",
+    shipped=False,
+    tags=("floor", "same-plumbing"),
+    description="Same pool, same transaction, hand-written dicts — the abstraction floor.",
+)
+async def join_sa_plumbing_dict(init: ContenderInit) -> tuple[Target, Teardown]:
+    """See the flat twin for why this floor exists alongside the hand-rolled ones."""
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    sql, params = _compiled(join_stmt(init.limit), _SQLITE_DIALECT)
+
+    async def target() -> bytes:
+        async with sa_engine.connect() as sa_conn:
+            driver_conn: Any = (await sa_conn.get_raw_connection()).driver_connection
+            async with sa_conn.begin():
+                cur = await driver_conn.execute(sql, params)
+                rows = await cur.fetchall()
+        return dumps(_join_raw(rows))
+
+    return target, sa_engine.dispose
 
 
 @contender(
@@ -604,11 +843,11 @@ async def join_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Tear
     description="Identical SQL, stock Row/CursorResult result layer.",
 )
 async def join_sa_core_positional(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn(init.handle))
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     stmt = join_stmt(init.limit)
 
     async def target() -> bytes:
-        async with engine.connect() as conn:
+        async with engine.begin() as conn:
             result = await conn.execute(stmt)
             return dumps(_join(result.all()))
 
@@ -622,11 +861,11 @@ async def join_sa_core_positional(init: ContenderInit) -> tuple[Target, Teardown
     description="SQLAlchemy ORM, two entities per row, one Session per request.",
 )
 async def join_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn(init.handle))
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     stmt = join_stmt(init.limit, AuthorORM, PostORM)
 
     async def target() -> bytes:
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(engine) as session, session.begin():
             rows = (await session.execute(stmt)).all()
             return dumps(
                 [
@@ -648,11 +887,11 @@ async def join_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     description="SQLAlchemy ORM (MappedAsDataclass), two entities per row.",
 )
 async def join_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn(init.handle))
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     stmt = join_stmt(init.limit, AuthorDC, PostDC)
 
     async def target() -> bytes:
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(engine) as session, session.begin():
             rows = (await session.execute(stmt)).all()
             return dumps(
                 [
@@ -717,12 +956,13 @@ async def join_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     description="Per-column processors from SQLAlchemy, inlined into generated code.",
 )
 async def wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(wide_stmt(init.limit))
 
     async def target() -> bytes:
-        return dumps(await engine.fetch_all(query))
+        async with engine.begin() as conn:
+            return dumps(await conn.fetch_all(query))
 
     return target, sa_engine.dispose
 
@@ -734,12 +974,95 @@ async def wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     description="The compat track over the widened shape — same processors, SQLAlchemy's Result.",
 )
 async def wide_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(wide_stmt(init.limit))
 
     async def target() -> bytes:
-        return dumps((await engine.execute(query)).scalars().all())
+        async with engine.begin() as conn:
+            return dumps((await conn.execute(query)).scalars().all())
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "floor: hand-rolled (dict)",
+    backend="sqlite",
+    shape="wide",
+    shipped=False,
+    tags=("floor",),
+    description="The true floor where correctness costs: hand-written per-column conversion into dicts.",
+)
+async def wide_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
+    """`flat` is the shape where bypassing `Row` looks free — one `bool()` is the
+    whole conversion cost, so a floor there barely has to do anything and the
+    hydrator's margin over it says little. Here 8 of 9 columns need a processor,
+    which makes this the pair that actually prices the compiled hydrator against
+    hand-written code doing the same conversions."""
+    from benchmarks.harness.aiosqlite_pool import AiosqlitePool  # see the flat floor
+
+    pool = await AiosqlitePool.open(init.handle, POOL_MAX)
+    sql, params = _compiled(wide_stmt(init.limit), _SQLITE_DIALECT)
+
+    async def target() -> bytes:
+        async with pool.acquire() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+            await conn.commit()
+        return dumps(_wide_raw(rows))
+
+    return target, pool.close
+
+
+@contender(
+    "floor: hand-rolled (hydrator)",
+    backend="sqlite",
+    shape="wide",
+    shipped=False,
+    tags=("floor",),
+    description="The second floor: same driver, same hydrator, no engine — processors included.",
+)
+async def wide_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Teardown]:
+    from benchmarks.harness.aiosqlite_pool import AiosqlitePool  # see the flat floor
+
+    pool = await AiosqlitePool.open(init.handle, POOL_MAX)
+    dialect = _SQLITE_DIALECT
+    statement = wide_stmt(init.limit)
+    sql, params = _compiled(statement, dialect)
+    hydrate = _hydrator(statement, dialect, WIDE_FIELDS)
+
+    async def target() -> bytes:
+        async with pool.acquire() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+            await conn.commit()
+        return dumps(hydrate(rows))
+
+    return target, pool.close
+
+
+@contender(
+    "floor: on SQLAlchemy (dict)",
+    backend="sqlite",
+    shape="wide",
+    shipped=False,
+    tags=("floor", "same-plumbing"),
+    description="Same pool, same transaction, hand-written per-column conversion into dicts.",
+)
+async def wide_sa_plumbing_dict(init: ContenderInit) -> tuple[Target, Teardown]:
+    """The most informative cell of the three: plumbing held constant *and* eight
+    of nine columns needing a processor, so what is left between this and
+    `rowform` is the compiled hydrator against hand-written conversions."""
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    sql, params = _compiled(wide_stmt(init.limit), _SQLITE_DIALECT)
+
+    async def target() -> bytes:
+        async with sa_engine.connect() as sa_conn:
+            driver_conn: Any = (await sa_conn.get_raw_connection()).driver_connection
+            async with sa_conn.begin():
+                cur = await driver_conn.execute(sql, params)
+                rows = await cur.fetchall()
+        return dumps(_wide_raw(rows))
 
     return target, sa_engine.dispose
 
@@ -751,11 +1074,11 @@ async def wide_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
     description="Identical SQL and identical processors, run through Row/CursorResult.",
 )
 async def wide_sa_core_positional(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn(init.handle))
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     stmt = wide_stmt(init.limit)
 
     async def target() -> bytes:
-        async with engine.connect() as conn:
+        async with engine.begin() as conn:
             result = await conn.execute(stmt)
             return dumps(_wide(result.all()))
 
@@ -769,11 +1092,11 @@ async def wide_sa_core_positional(init: ContenderInit) -> tuple[Target, Teardown
     description="SQLAlchemy ORM over the widened shape, one Session per request.",
 )
 async def wide_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn(init.handle))
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     stmt = wide_stmt(init.limit, EventORM)
 
     async def target() -> bytes:
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(engine) as session, session.begin():
             rows = (await session.execute(stmt)).scalars().all()
             return dumps([{f: getattr(e, f) for f in WIDE_FIELDS} for e in rows])
 
@@ -787,11 +1110,11 @@ async def wide_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     description="SQLAlchemy ORM (MappedAsDataclass) over the widened shape.",
 )
 async def wide_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn(init.handle))
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     stmt = wide_stmt(init.limit, EventDC)
 
     async def target() -> bytes:
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(engine) as session, session.begin():
             rows = (await session.execute(stmt)).scalars().all()
             return dumps([{f: getattr(e, f) for f in WIDE_FIELDS} for e in rows])
 
@@ -810,7 +1133,28 @@ async def wide_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
     description="Core compiles, rowform's asyncpg pool executes, compiled hydrator shapes.",
 )
 async def pg_flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(flat_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(await conn.fetch_all(query))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (no transaction)",
+    backend="postgres",
+    shape="flat",
+    description="`fetch_all()` straight off the engine — no BEGIN/COMMIT round trip.",
+)
+async def pg_flat_rowform_oneshot(init: ContenderInit) -> tuple[Target, Teardown]:
+    """See the sqlite twin. The gap is wider here: on postgres the transaction
+    the other contenders open is two real round trips, where on sqlite it is
+    Python overhead only."""
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(flat_stmt(init.limit))
 
@@ -827,12 +1171,13 @@ async def pg_flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     description="The compat track on asyncpg, taken as scalars.",
 )
 async def pg_flat_rowform_compat_scalars(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(flat_stmt(init.limit))
 
     async def target() -> bytes:
-        return dumps((await engine.execute(query)).scalars().all())
+        async with engine.begin() as conn:
+            return dumps((await conn.execute(query)).scalars().all())
 
     return target, sa_engine.dispose
 
@@ -844,18 +1189,19 @@ async def pg_flat_rowform_compat_scalars(init: ContenderInit) -> tuple[Target, T
     description="The same Result taken as rows — one SQLAlchemy Row built per row.",
 )
 async def pg_flat_rowform_compat_rows(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(flat_stmt(init.limit))
 
     async def target() -> bytes:
-        return dumps([row[0] for row in (await engine.execute(query)).all()])
+        async with engine.begin() as conn:
+            return dumps([row[0] for row in (await conn.execute(query)).all()])
 
     return target, sa_engine.dispose
 
 
 @contender(
-    "raw asyncpg + dict",
+    "floor: hand-rolled (dict)",
     backend="postgres",
     shape="flat",
     shipped=False,
@@ -865,16 +1211,41 @@ async def pg_flat_rowform_compat_rows(init: ContenderInit) -> tuple[Target, Tear
 async def pg_flat_raw_asyncpg(init: ContenderInit) -> tuple[Target, Teardown]:
     import asyncpg
 
-    pool = await asyncpg.create_pool(init.handle, min_size=1, max_size=4)
+    pool = await asyncpg.create_pool(init.handle, min_size=POOL_MAX, max_size=POOL_MAX)
     assert pool is not None
     sql, params = _compiled(flat_stmt(init.limit), _PG_DIALECT)
 
     async def target() -> bytes:
-        async with pool.acquire() as conn:
+        async with pool.acquire() as conn, conn.transaction():
             rows = await conn.fetch(sql, *params)
         return dumps(_flat(rows))
 
     return target, pool.close
+
+
+@contender(
+    "floor: on SQLAlchemy (dict)",
+    backend="postgres",
+    shape="flat",
+    shipped=False,
+    tags=("floor", "same-plumbing"),
+    description="Same pool, same transaction, hand-written dicts — the abstraction floor.",
+)
+async def pg_flat_sa_plumbing_dict(init: ContenderInit) -> tuple[Target, Teardown]:
+    """Worth more here than on sqlite. The transaction the plumbing opens is two
+    real round trips on postgres where on sqlite it is Python overhead only, so
+    this is the arm that keeps that cost out of the row-layer number."""
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    sql, params = _compiled(flat_stmt(init.limit), _PG_DIALECT)
+
+    async def target() -> bytes:
+        async with sa_engine.connect() as sa_conn:
+            driver_conn: Any = (await sa_conn.get_raw_connection()).driver_connection
+            async with sa_conn.begin():
+                rows = await driver_conn.fetch(sql, *params)
+        return dumps(_flat(rows))
+
+    return target, sa_engine.dispose
 
 
 @contender(
@@ -884,11 +1255,11 @@ async def pg_flat_raw_asyncpg(init: ContenderInit) -> tuple[Target, Teardown]:
     description="Identical SQL, stock Row/CursorResult result layer, SQLAlchemy's own pool.",
 )
 async def pg_flat_sa_core(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn_pg(init.handle))
+    engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     stmt = flat_stmt(init.limit)
 
     async def target() -> bytes:
-        async with engine.connect() as conn:
+        async with engine.begin() as conn:
             result = await conn.execute(stmt)
             return dumps(_flat(result.all()))
 
@@ -902,11 +1273,11 @@ async def pg_flat_sa_core(init: ContenderInit) -> tuple[Target, Teardown]:
     description="Core via .mappings() — the per-key str() cast orjson needs.",
 )
 async def pg_flat_sa_core_mappings(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn_pg(init.handle))
+    engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     stmt = flat_stmt(init.limit)
 
     async def target() -> bytes:
-        async with engine.connect() as conn:
+        async with engine.begin() as conn:
             result = await conn.execute(stmt)
             return dumps([{str(k): v for k, v in m.items()} for m in result.mappings()])
 
@@ -920,11 +1291,11 @@ async def pg_flat_sa_core_mappings(init: ContenderInit) -> tuple[Target, Teardow
     description="SQLAlchemy ORM, one Session per request.",
 )
 async def pg_flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn_pg(init.handle))
+    engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     stmt = flat_stmt(init.limit, UserORM)
 
     async def target() -> bytes:
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(engine) as session, session.begin():
             users = (await session.execute(stmt)).scalars().all()
             return dumps([{f: getattr(u, f) for f in FLAT_FIELDS} for u in users])
 
@@ -938,12 +1309,13 @@ async def pg_flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     description="Two entities per row through one compiled hydrator, on asyncpg.",
 )
 async def pg_join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(join_stmt(init.limit))
 
     async def target() -> bytes:
-        return dumps(await engine.fetch_all(query))
+        async with engine.begin() as conn:
+            return dumps(await conn.fetch_all(query))
 
     return target, sa_engine.dispose
 
@@ -955,12 +1327,13 @@ async def pg_join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     description="The compat track at arity two on asyncpg — see the sqlite join note.",
 )
 async def pg_join_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(join_stmt(init.limit))
 
     async def target() -> bytes:
-        return dumps([(a, p) for a, p in (await engine.execute(query)).all()])
+        async with engine.begin() as conn:
+            return dumps([(a, p) for a, p in (await conn.execute(query)).all()])
 
     return target, sa_engine.dispose
 
@@ -972,11 +1345,11 @@ async def pg_join_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]
     description="Identical SQL, stock Row/CursorResult result layer.",
 )
 async def pg_join_sa_core(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn_pg(init.handle))
+    engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     stmt = join_stmt(init.limit)
 
     async def target() -> bytes:
-        async with engine.connect() as conn:
+        async with engine.begin() as conn:
             result = await conn.execute(stmt)
             return dumps(_join(result.all()))
 
@@ -990,11 +1363,11 @@ async def pg_join_sa_core(init: ContenderInit) -> tuple[Target, Teardown]:
     description="SQLAlchemy ORM, two entities per row, one Session per request.",
 )
 async def pg_join_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn_pg(init.handle))
+    engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     stmt = join_stmt(init.limit, AuthorORM, PostORM)
 
     async def target() -> bytes:
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(engine) as session, session.begin():
             rows = (await session.execute(stmt)).all()
             return dumps(
                 [
@@ -1016,12 +1389,13 @@ async def pg_join_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     description="The widened shape where asyncpg decodes natively and most processors are None.",
 )
 async def pg_wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(wide_stmt(init.limit))
 
     async def target() -> bytes:
-        return dumps(await engine.fetch_all(query))
+        async with engine.begin() as conn:
+            return dumps(await conn.fetch_all(query))
 
     return target, sa_engine.dispose
 
@@ -1033,12 +1407,13 @@ async def pg_wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     description="The compat track over the widened shape on asyncpg.",
 )
 async def pg_wide_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), pool_size=1, max_overflow=3)
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(wide_stmt(init.limit))
 
     async def target() -> bytes:
-        return dumps((await engine.execute(query)).scalars().all())
+        async with engine.begin() as conn:
+            return dumps((await conn.execute(query)).scalars().all())
 
     return target, sa_engine.dispose
 
@@ -1050,11 +1425,11 @@ async def pg_wide_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]
     description="Identical SQL and processors, run through Row/CursorResult.",
 )
 async def pg_wide_sa_core(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn_pg(init.handle))
+    engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     stmt = wide_stmt(init.limit)
 
     async def target() -> bytes:
-        async with engine.connect() as conn:
+        async with engine.begin() as conn:
             result = await conn.execute(stmt)
             return dumps(_wide(result.all()))
 
@@ -1068,11 +1443,11 @@ async def pg_wide_sa_core(init: ContenderInit) -> tuple[Target, Teardown]:
     description="SQLAlchemy ORM over the widened shape.",
 )
 async def pg_wide_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
-    engine = create_async_engine(_sa_dsn_pg(init.handle))
+    engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     stmt = wide_stmt(init.limit, EventORM)
 
     async def target() -> bytes:
-        async with AsyncSession(engine) as session:
+        async with AsyncSession(engine) as session, session.begin():
             rows = (await session.execute(stmt)).scalars().all()
             return dumps([{f: getattr(e, f) for f in WIDE_FIELDS} for e in rows])
 

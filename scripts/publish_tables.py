@@ -39,10 +39,12 @@ BACKENDS = ("sqlite", "postgres", "mock")
 #: render as an em dash. Fixed here rather than taken from the registry so the
 #: floors stay above the thing they bound and rowform's three rows stay adjacent.
 ROW_ORDER = (
-    "raw aiosqlite + dict",
-    "raw asyncpg + dict",
-    "raw aiosqlite + rowform hydrator",
+    "hand-written dict (mock)",
+    "floor: hand-rolled (dict)",
+    "floor: hand-rolled (hydrator)",
+    "floor: on SQLAlchemy (dict)",
     "rowform",
+    "rowform (no transaction)",
     "rowform compat (.scalars())",
     "rowform compat (.all())",
     "rowform (mock)",
@@ -57,10 +59,12 @@ ROW_ORDER = (
 #: How the contender names are spelled in prose, where the registry's names are
 #: either too terse or carry a backend suffix the table's own heading supplies.
 LABELS = {
-    "raw aiosqlite + dict": "raw driver → dicts *(floor)*",
-    "raw asyncpg + dict": "raw driver → dicts *(floor)*",
-    "raw aiosqlite + rowform hydrator": "raw driver + the same hydrator *(floor)*",
+    "hand-written dict (mock)": "hand-written dicts *(parsing floor)*",
+    "floor: hand-rolled (dict)": "raw driver → dicts *(floor: no SQLAlchemy)*",
+    "floor: hand-rolled (hydrator)": "raw driver + the same hydrator *(floor: no SQLAlchemy)*",
+    "floor: on SQLAlchemy (dict)": "same pool + transaction → dicts *(floor: same plumbing)*",
     "rowform": "**rowform** `fetch_all()`",
+    "rowform (no transaction)": "rowform `fetch_all()` off the engine *(no transaction)*",
     "rowform compat (.scalars())": "rowform `execute().scalars()`",
     "rowform compat (.all())": "rowform `execute().all()`",
     "rowform (mock)": "**rowform**",
