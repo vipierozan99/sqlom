@@ -40,20 +40,20 @@ owns the schema.
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import Mapped
-import rowform
+import rowform as rf
 
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()
 
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     name: Mapped[str]
     email: Mapped[str | None]
 
 sa_engine = create_async_engine("postgresql+asyncpg://localhost/app")
-db = rowform.Engine(sa_engine)
+db = rf.Engine(sa_engine)
 try:
     async with db.begin() as conn:
         users = await conn.fetch_all(sa.select(User).limit(100))
@@ -77,7 +77,7 @@ recognise goes straight to `sa.Column`:
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     name: Mapped[str]
     email: Mapped[str | None]                       # nullable
     role: Mapped[Role]                              # an Enum class -> sa.Enum
@@ -578,7 +578,7 @@ import pytest, rowform
 @pytest.fixture
 async def db(tmp_path):
     sa_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.sqlite3'}")
-    db = rowform.Engine(sa_engine)
+    db = rf.Engine(sa_engine)
     try:
         await db.drop_all(Base.metadata)     # ignore_missing=True by default
         await db.create_all(Base.metadata)
@@ -709,6 +709,6 @@ class Timestamped(Base):        # no __tablename__: a mixin, not a table
 class Review(Timestamped, kw_only=True):
     __tablename__ = "reviews"
 
-    id: Mapped[int] = rowform.mapped_column(primary_key=True)
+    id: Mapped[int] = rf.mapped_column(primary_key=True)
     body: Mapped[str]
 ```

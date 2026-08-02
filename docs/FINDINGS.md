@@ -391,7 +391,7 @@ the cache key and pass the current statement's `CacheKey.bindparams` as
   configuration. Against a competent hand-rolled loop rowform *loses* slightly, costing
   +10–25% CPU over building no objects at all. The value is ergonomics at
   near-hand-written cost, not beating hand-written code. The micro suite has since put a
-  number on the row layer alone: the compiled hydrator costs **+8–13%** over
+  number on the row layer alone: the compiled hydrator costs **+5.7–12.6%** over
   hand-written dict-building across three shapes, and — the part worth knowing — that
   overhead does not grow as the conversions get expensive. One column needing a `bool()`
   and eight needing `DateTime`/`Numeric`/`Enum`/`Uuid` parsing both cost about the same

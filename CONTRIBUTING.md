@@ -60,7 +60,7 @@ whether you got it right.
 ## Benchmarks
 
 Read [docs/METHODOLOGY.md](docs/METHODOLOGY.md) before quoting a number, and
-especially before adding one. It carries a log of eleven published claims that
+especially before adding one. It carries a log of thirteen published claims that
 turned out to be wrong, with how each was caught; most of them are mistakes that
 are easy to repeat.
 
@@ -77,6 +77,8 @@ The short version:
 * **Every contender reads inside `BEGIN`…`COMMIT`.** SQLAlchemy autobegins and
   rowform's engine-level `fetch_all()` does not, so a suite that leaves this to
   each contender is comparing isolation guarantees and calling it throughput.
+  The one exception is named for it — `rowform (no transaction)` — because the
+  cheaper weaker read is worth pricing, just not worth publishing as the headline.
 * **`just bench micro run --record`** writes a `run.json`. Commit chosen artifacts
   to a dated branch and note the run in [docs/RUNS.md](docs/RUNS.md), so a number
   can always be traced back to a commit that reproduces it.

@@ -12,7 +12,9 @@ report until you have tried to break it.**
 
 sqlite is an ephemeral 200,000-row database. 1000 rows per read, 1500 timed iterations
 after 200 warmup, **3 trials, one contender per process**, GC off, pinned to cpus 6-9,
-and **every contender reads inside `BEGIN`…`COMMIT`**:
+and **every contender reads inside `BEGIN`…`COMMIT`** — except
+`rowform (no transaction)`, which is registered without one precisely so the cost of the
+guarantee is visible as a row rather than folded into the others:
 
 ```
 for shape in flat join wide; do

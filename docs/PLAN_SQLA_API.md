@@ -27,9 +27,9 @@ without giving up its engine, its sessions, its transactions, or its
 migrations.**
 
 That is a stronger goal than "our API looks like theirs", and it rules out things
-a resemblance goal would allow. Today rowform owns its own pool, so a service
-using `AsyncSession` cannot read through rowform *inside its own transaction* at
-all — adoption is all-or-nothing at the process level. The goal above makes
+a resemblance goal would allow. When this was written rowform owned its own pool,
+so a service using `AsyncSession` could not read through rowform *inside its own
+transaction* at all — adoption was all-or-nothing at the process level. The goal above makes
 adoption granular at the statement level, and it is testable: a suite arm that
 runs rowform reads inside a stock `AsyncSession` transaction either passes or it
 does not.
@@ -279,8 +279,9 @@ this box. It is §5.1's first item.
    as 1.26x/1.16x/1.13x on sqlite; that replacement is now withdrawn too, along with
    the reading beside it that the remaining floor gap was mostly per-checkout cost
    and that the postgres floor "ties". Three things broke it: every contender now
-   reads inside `BEGIN`…`COMMIT` (SQLAlchemy always did, rowform's engine-level
-   `fetch_all()` never did, and the difference was being scored as row-layer speed);
+   reads inside `BEGIN`…`COMMIT` bar the one named for the exception (SQLAlchemy
+   always did, rowform's engine-level `fetch_all()` never did, and the difference
+   was being scored as row-layer speed);
    the pools were equalised at `4+0`; and every measurement in this section was taken
    with the benchmark CLI importing locust, whose `gevent.monkey.patch_all()` moved
    all of them by ~30%. Current sqlite figures are in METHODOLOGY.md and are

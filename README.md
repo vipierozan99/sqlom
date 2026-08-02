@@ -106,7 +106,8 @@ the other direction — correctness rather than latency — and is worth reading
 ## 📊 Performance
 
 sqlite, 200k-row table, 1000 rows per read, 1500 iterations, 3 trials, one contender per
-process, GC off, pinned cores, every read inside `BEGIN`…`COMMIT`. Medians in ms, lower
+process, GC off, pinned cores, every transactional contender reading inside
+`BEGIN`…`COMMIT`. Medians in ms, lower
 is better; `x` is against rowform, and `~` marks a pair the trials do not actually order.
 
 | | flat | join | wide | | flat | join | wide |
@@ -141,9 +142,11 @@ larger share of the read, the gap widens back out; that is what the `mock` table
 
 Three things matter more than the ratios. **Every contender runs identical SQL**,
 compiled by Core, so what is compared is only what happens to the rows afterwards.
-**Every contender also reads inside `BEGIN`…`COMMIT`** — SQLAlchemy autobegins and
-rowform's engine-level `fetch_all()` does not, so an earlier version of this table was
-partly comparing isolation guarantees and calling it row-layer speed. And **`wide` shows
+**Every contender reads inside `BEGIN`…`COMMIT`, bar one that says so in its name** —
+SQLAlchemy autobegins and rowform's engine-level `fetch_all()` does not, so an earlier
+version of this table was partly comparing isolation guarantees and calling it row-layer
+speed. The `rowform (no transaction)` row is the deliberate exception, kept to price what
+that guarantee is worth rather than to win a comparison. And **`wide` shows
 the smallest win, which is why it is in the table** — it is the shape full of
 `DateTime`/`Numeric`/`Enum`/`Uuid` columns, where type processors dominate and both
 sides run the same ones.
