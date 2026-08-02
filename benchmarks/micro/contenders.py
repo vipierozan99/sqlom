@@ -41,14 +41,31 @@ none. Left alone, part of rowform's margin was a weaker isolation guarantee bill
 as row-layer speed. Measured cost of closing that gap: 0.711x -> 0.782x against Core
 on sqlite, and 1.015x -> 1.134x against the raw asyncpg floor on postgres.
 
-**The floors spell it with the DBAPI's `commit()`, never literal `BEGIN`/`COMMIT`
-SQL.** They are not interchangeable. pysqlite only implicitly begins before DML, so
-SQLAlchemy's `begin()` around a SELECT emits no `BEGIN` and the connection never
-enters a transaction — a floor issuing the SQL by hand *does* open one (measured
-0.4445 ms against 0.4182 ms) and would do strictly more work than the contenders it
-bounds, which is the same "floor slower than the thing it bounds" bug recorded
-below, arrived at from the other direction. Mirror the DBAPI semantics, not the SQL
-text. The mock contenders are exempt throughout: they have no connection to begin on.
+**On sqlite, the floors spell it with the DBAPI's `commit()` and never literal
+`BEGIN`/`COMMIT` SQL.** They are not interchangeable *there*. pysqlite only implicitly
+begins before DML, so SQLAlchemy's `begin()` around a SELECT emits no `BEGIN` and the
+connection never enters a transaction — a floor issuing the SQL by hand *does* open one
+(measured 0.4445 ms against 0.4182 ms) and would do strictly more work than the
+contenders it bounds, which is the same "floor slower than the thing it bounds" bug
+recorded below, arrived at from the other direction.
+
+**On postgres the opposite holds**, and `pg_flat_raw_asyncpg` uses
+`conn.transaction()` — a real `BEGIN`/`COMMIT` on the wire — for exactly the same
+reason: there SQLAlchemy's `begin()` *does* emit one, so a floor that skipped it would
+be the cheap side of the asymmetry instead of the expensive one. The rule is "match
+whatever the contenders' transaction actually costs on this backend", not "avoid
+`BEGIN`"; the sqlite spelling is a consequence, not the principle.
+
+Two exemptions. The mock contenders have no connection to begin on. And
+`rowform (no transaction)` is registered deliberately without one, because
+`Engine.fetch_all()` off the engine opens none and pricing that separately is the
+point of the row — it is the one contender the rule above does not apply to.
+
+**`wide` has no mock cell at all**, so it has no `hand-written dict (mock)` arm either.
+That is not an oversight in the parsing floor: nothing else is registered under
+`backend="mock"` for `wide`, and a cell with one contender compares it to nothing and
+passes the equivalence gate vacuously. Adding a wide mock arm means adding the rowform
+and SQLAlchemy siblings with it.
 
 `bench micro` calls these factories directly — this is its whole registry. The
 FastAPI load-test worker (`service/app.py`) is deliberately *not* a consumer: it
