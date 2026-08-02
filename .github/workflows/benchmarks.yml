@@ -129,7 +129,7 @@ jobs:
             echo "> Runner: GitHub-hosted \`ubuntu-latest\` — shared and unpinned."
             echo "> **Not a quotable baseline**; read as a trend / regression signal only."
             echo
-            for shape in flat join; do
+            for shape in flat join wide; do
               echo "## micro / $shape"
               echo '```'
               cat "bench-$shape.log"
