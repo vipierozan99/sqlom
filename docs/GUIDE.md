@@ -81,18 +81,18 @@ class User(Base):
     name: Mapped[str]
     email: Mapped[str | None]                       # nullable
     role: Mapped[Role]                              # an Enum class -> sa.Enum
-    balance: Mapped[Decimal] = rowform.mapped_column(sa.Numeric(12, 2))
-    org_id: Mapped[int] = rowform.mapped_column(sa.ForeignKey("orgs.id"))
-    slug: Mapped[str] = rowform.mapped_column("url_slug", unique=True)
+    balance: Mapped[Decimal] = rf.mapped_column(sa.Numeric(12, 2))
+    org_id: Mapped[int] = rf.mapped_column(sa.ForeignKey("orgs.id"))
+    slug: Mapped[str] = rf.mapped_column("url_slug", unique=True)
 
     __table_args__ = (sa.Index("ix_users_org_name", "org_id", "name"),)
 ```
 
-The Python type maps to a SQLAlchemy type through `rowform.DEFAULT_TYPE_MAP`.
+The Python type maps to a SQLAlchemy type through `rf.DEFAULT_TYPE_MAP`.
 Override it for one column by naming the type, or for a whole base:
 
 ```python
-class Base(rowform.Base):
+class Base(rf.Base):
     metadata = sa.MetaData()
     type_annotation_map = {str: sa.Text()}      # every bare `Mapped[str]` becomes TEXT
 ```
@@ -184,17 +184,17 @@ the `Result` API earns its keep; use `fetch_all()` on the paths you care about.
 
 ## Aliases and self-joins
 
-**Self-joins** go through `rowform.alias()`, and hydrate as models:
+**Self-joins** go through `rf.alias()`, and hydrate as models:
 
 ```python
-mgr = rowform.alias(User, "mgr")
+mgr = rf.alias(User, "mgr")
 rows = await db.fetch_all(
     sa.select(User, mgr).join(mgr, User.manager_id == mgr.id)
 )   # list[tuple[User, User]]
 ```
 
 `sqlalchemy.orm.aliased()` is *not* usable here — it looks for a `Mapper` and
-raises `NoInspectionAvailable`. `rowform.alias()` is the equivalent, and it keeps
+raises `NoInspectionAvailable`. `rf.alias()` is the equivalent, and it keeps
 the types: `mgr.id` is that alias's column, so the join needs no cast.
 `User.__table__.alias("mgr")` and `sa.alias(User)` hydrate identically, but their
 columns are only reachable as `.c.id` and typed `Column[Any]`, which degrades the
@@ -204,7 +204,7 @@ A **subquery or CTE** hydrates only if you say whose rows it holds, since its
 columns belong to it rather than to any table:
 
 ```python
-active = rowform.alias(User, of=sa.select(User).where(User.active).cte("active"))
+active = rf.alias(User, of=sa.select(User).where(User.active).cte("active"))
 await db.fetch_all(sa.select(active).order_by(active.id))   # list[User]
 ```
 
@@ -219,7 +219,7 @@ to filter on — filter inside it and select the model's columns out:
 
 ```python
 inner = sa.select(User, sa.func.row_number().over(...).label("rk")).subquery()
-first = rowform.alias(User, of=(
+first = rf.alias(User, of=(
     sa.select(*[inner.c[c.key] for c in User.__table__.c])
       .where(inner.c.rk == 1)
       .subquery()
@@ -394,9 +394,9 @@ inherits the builtin it replaces, so existing `except ValueError` still works.
 ```python
 try:
     rows = await db.fetch_all(statement)
-except rowform.StatementError:
+except rf.StatementError:
     ...     # right statement, wrong method
-except rowform.RowformError:
+except rf.RowformError:
     ...     # anything else rowform refused
 ```
 
@@ -435,7 +435,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.sa_engine = create_async_engine(DSN, pool_size=4, max_overflow=12)
-    app.state.db = rowform.Engine(app.state.sa_engine)
+    app.state.db = rf.Engine(app.state.sa_engine)
     try:
         yield
     finally:
@@ -443,10 +443,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-def get_db(request: Request) -> rowform.Engine:
+def get_db(request: Request) -> rf.Engine:
     return request.app.state.db
 
-Db = Annotated[rowform.Engine, Depends(get_db)]
+Db = Annotated[rf.Engine, Depends(get_db)]
 
 @app.get("/users")
 async def list_users(db: Db, after: int = 0, size: int = 50) -> list[User]:
@@ -509,7 +509,7 @@ def slow_queries(sql: str, seconds: float, rows: int | None) -> None:
     if seconds > 0.05:
         log.warning("slow query %.1fms rows=%s: %s", seconds * 1000, rows, sql)
 
-engine = rowform.Engine(sa_engine, observer=slow_queries)
+engine = rf.Engine(sa_engine, observer=slow_queries)
 ```
 
 The observer is called after every statement — one-shot or scope, read or
