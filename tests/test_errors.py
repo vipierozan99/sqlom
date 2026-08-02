@@ -184,6 +184,15 @@ class TestEngineStateError:
             with pytest.raises(rowform.EngineStateError, match="different pooled connection"):
                 await engine.fetch_all(sa.select(Author))
 
+    @pytest.mark.parametrize("method", ["fetch_all", "fetch_one"])
+    async def test_it_names_the_method_that_was_called(self, engine, method):
+        """The message ends "Use conn.X() instead", so X has to be the method the
+        caller reached for. `fetch_one` routed through `fetch_all` and inherited
+        its name, telling the caller to fix a call they had not made."""
+        async with engine.begin():
+            with pytest.raises(rowform.EngineStateError, match=f"conn\\.{method}"):
+                await getattr(engine, method)(sa.select(Author))
+
     async def test_it_looks_past_an_inner_scope_on_another_engine(
         self, sqlite_engine, tmp_path
     ):

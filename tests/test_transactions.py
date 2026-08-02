@@ -29,7 +29,7 @@ class TestAtomicity:
         async with engine.begin() as conn:
             await conn.execute(sa.insert(Author.__table__).values(id=50, name="x", active=True))
             await conn.execute(sa.insert(Author.__table__).values(id=51, name="y", active=True))
-        assert await engine.fetch_value(count_authors()) == 6
+        assert await engine.fetch_one(count_authors()) == 6
 
     async def test_an_exception_rolls_the_whole_block_back(self, engine):
         with pytest.raises(Boom):
@@ -38,7 +38,7 @@ class TestAtomicity:
                     sa.insert(Author.__table__).values(id=50, name="x", active=True)
                 )
                 raise Boom
-        assert await engine.fetch_value(count_authors()) == 4
+        assert await engine.fetch_one(count_authors()) == 4
 
     async def test_the_exception_is_not_swallowed(self, engine):
         with pytest.raises(Boom):
@@ -55,19 +55,19 @@ class TestConnectIsCommitAsYouGo:
     async def test_without_commit_the_write_is_discarded(self, engine):
         async with engine.connect() as conn:
             await conn.execute(sa.insert(Author.__table__).values(id=50, name="x", active=True))
-        assert await engine.fetch_value(count_authors()) == 4
+        assert await engine.fetch_one(count_authors()) == 4
 
     async def test_with_commit_it_persists(self, engine):
         async with engine.connect() as conn:
             await conn.execute(sa.insert(Author.__table__).values(id=50, name="x", active=True))
             await conn.commit()
-        assert await engine.fetch_value(count_authors()) == 5
+        assert await engine.fetch_one(count_authors()) == 5
 
     async def test_rollback_discards_explicitly(self, engine):
         async with engine.connect() as conn:
             await conn.execute(sa.insert(Author.__table__).values(id=50, name="x", active=True))
             await conn.rollback()
-            assert await conn.fetch_value(count_authors()) == 4
+            assert await conn.fetch_one(count_authors()) == 4
 
     async def test_the_first_statement_autobegins(self, engine):
         async with engine.connect() as conn:
@@ -90,7 +90,7 @@ class TestVisibility:
     async def test_reads_its_own_uncommitted_writes(self, engine):
         async with engine.begin() as conn:
             await conn.execute(sa.insert(Author.__table__).values(id=50, name="x", active=True))
-            assert await conn.fetch_value(count_authors()) == 5
+            assert await conn.fetch_one(count_authors()) == 5
 
     async def test_invisible_to_other_connections_until_commit(self, engine):
         async with engine.begin() as tx:
@@ -115,10 +115,10 @@ class TestReadsInsideScopes:
             )
         assert {a.name: b for a, b in rows}["dan"] is None
 
-    async def test_fetch_one_and_fetch_value(self, engine):
+    async def test_fetch_one(self, engine):
         async with engine.begin() as conn:
             assert (await conn.fetch_one(sa.select(Author).order_by(Author.id))).name == "ada"
-            assert await conn.fetch_value(count_authors()) == 4
+            assert await conn.fetch_one(count_authors()) == 4
 
     async def test_the_engine_and_the_scope_share_compiled_queries(self, engine):
         statement = sa.select(Author).order_by(Author.id)
@@ -131,7 +131,7 @@ class TestReadsInsideScopes:
     async def test_a_raw_string_runs_on_the_pinned_connection(self, engine):
         async with engine.begin() as conn:
             await conn.exec_driver_sql("DELETE FROM t_tags")
-            assert await conn.fetch_value(sa.select(sa.func.count()).select_from(Tag)) == 0
+            assert await conn.fetch_one(sa.select(sa.func.count()).select_from(Tag)) == 0
 
     async def test_execute_many_inside_a_scope(self, engine):
         async with engine.begin() as conn:
@@ -139,7 +139,7 @@ class TestReadsInsideScopes:
                 sa.insert(Tag.__table__),
                 [{"id": 300 + i, "book_id": 10, "label": "l"} for i in range(3)],
             )
-        assert await engine.fetch_value(sa.select(sa.func.count()).select_from(Tag)) == 5
+        assert await engine.fetch_one(sa.select(sa.func.count()).select_from(Tag)) == 5
 
     async def test_execute_with_a_list_is_an_executemany(self, engine):
         """SQLAlchemy's spelling of `execute_many`."""
@@ -149,7 +149,7 @@ class TestReadsInsideScopes:
                 [{"id": 400 + i, "book_id": 10, "label": "l"} for i in range(3)],
             )
             assert result.returns_rows is False
-        assert await engine.fetch_value(sa.select(sa.func.count()).select_from(Tag)) == 5
+        assert await engine.fetch_one(sa.select(sa.func.count()).select_from(Tag)) == 5
 
 
 class TestSavepoints:
@@ -169,13 +169,13 @@ class TestSavepoints:
                         sa.insert(Author.__table__).values(id=51, name="y", active=True)
                     )
                     raise Boom
-            assert await conn.fetch_value(count_authors()) == 5
-        assert await engine.fetch_value(count_authors()) == 5
+            assert await conn.fetch_one(count_authors()) == 5
+        assert await engine.fetch_one(count_authors()) == 5
 
     async def test_inner_success_is_kept(self, engine):
         async with engine.begin() as conn, conn.begin_nested():
             await conn.execute(sa.insert(Author.__table__).values(id=50, name="x", active=True))
-        assert await engine.fetch_value(count_authors()) == 5
+        assert await engine.fetch_one(count_authors()) == 5
 
     async def test_outer_failure_discards_a_released_savepoint(self, engine):
         with pytest.raises(Boom):
@@ -185,7 +185,7 @@ class TestSavepoints:
                         sa.insert(Author.__table__).values(id=50, name="x", active=True)
                     )
                 raise Boom
-        assert await engine.fetch_value(count_authors()) == 4
+        assert await engine.fetch_one(count_authors()) == 4
 
     async def test_an_explicit_savepoint_rollback(self, engine):
         async with engine.begin() as conn:
@@ -194,7 +194,7 @@ class TestSavepoints:
                     sa.insert(Author.__table__).values(id=50, name="x", active=True)
                 )
                 await sp.rollback()
-            assert await conn.fetch_value(count_authors()) == 4
+            assert await conn.fetch_one(count_authors()) == 4
 
 
 class TestTheFootgunGuard:

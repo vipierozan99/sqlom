@@ -53,10 +53,9 @@ _LOG = logging.getLogger("rowform")
 def _one_row(statement: Any) -> Any:
     """`statement`, narrowed to a single row where that is safe to do.
 
-    `fetch_one` and `fetch_value` read the whole result and threw away everything
-    after the first row, so "get me this user" transferred and hydrated the entire
-    table. Adding the LIMIT is the fix, but only for a `Select` that sets none of
-    its own:
+    `fetch_one` read the whole result and threw away everything after the first
+    row, so "get me this user" transferred and hydrated the entire table. Adding
+    the LIMIT is the fix, but only for a `Select` that sets none of its own:
 
     * a caller's `.limit()` may be a bind parameter, and replacing it would leave
       their value with nothing to bind to;
@@ -366,28 +365,43 @@ class Engine:
     async def fetch_one(self, statement: Select[tuple[R]], **params: Any) -> R | None: ...
 
     @overload
+    async def fetch_one(
+        self, statement: Select[tuple[R, R2]], **params: Any
+    ) -> tuple[R, R2] | None: ...
+
+    @overload
+    async def fetch_one(
+        self, statement: Select[tuple[R, R2, R3]], **params: Any
+    ) -> tuple[R, R2, R3] | None: ...
+
+    @overload
+    async def fetch_one(
+        self, statement: Select[tuple[R, R2, R3, R4]], **params: Any
+    ) -> tuple[R, R2, R3, R4] | None: ...
+
+    @overload
     async def fetch_one(self, statement: Any, **params: Any) -> Any: ...
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
-        """The first row, or None.
+        """The first row, or None. The row is shaped as `fetch_all` shapes it.
 
         The statement is narrowed to one row where that is safe (`_one_row`), so
         this is a `LIMIT 1` rather than a whole result set with everything after
         the first discarded.
-        """
-        rows = await self.fetch_all(_one_row(statement), **params)
-        return rows[0] if rows else None
 
-    async def fetch_value(self, statement: Any, **params: Any) -> Any:
-        """The first column of the first row, or None.
+        For one *column* of that row, narrow the statement rather than the row:
+        `select(User.id, User.name).with_only_columns(User.id)` keeps the exact
+        type and does not fetch the column it is going to discard.
 
-        Distinct from `fetch_one` only for a multi-entity statement, since a
-        single selected entity already arrives unwrapped.
+        Written out rather than delegating to `fetch_all` so the guard names this
+        method: telling a caller inside a scope to use `conn.fetch_all()` when
+        they called `fetch_one()` points them at a call they never made.
         """
-        row = await self.fetch_one(statement, **params)
-        if row is None:
-            return None
-        return row[0] if isinstance(row, tuple) else row
+        self._reject_if_in_transaction("fetch_one")
+        query, extracted = self._require_rows(_one_row(statement))
+        rows, hydrate = await self._run(query, params, self._acquire_for(query), extracted)
+        hydrated = hydrate(rows)
+        return hydrated[0] if hydrated else None
 
     # --- writes -------------------------------------------------------------
 

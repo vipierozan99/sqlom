@@ -29,8 +29,10 @@ class TestItLimits:
         assert await engine.fetch_one(sa.select(Author)) is not None
         assert rows_returned == [1]
 
-    async def test_fetch_value_reads_one_row(self, engine, rows_returned):
-        assert await engine.fetch_value(sa.select(Author.name)) is not None
+    async def test_a_scalar_select_reads_one_row_too(self, engine, rows_returned):
+        """The narrowing is the statement's, not the model's, so it applies to a
+        select that hydrates no model at all."""
+        assert await engine.fetch_one(sa.select(Author.name)) is not None
         assert rows_returned == [1]
 
     async def test_the_limit_reaches_the_sql(self, engine):
@@ -79,7 +81,7 @@ class TestWhatItLeavesAlone:
 
     async def test_no_match_is_still_none(self, engine):
         assert await engine.fetch_one(sa.select(Author).where(Author.name == "no")) is None
-        assert await engine.fetch_value(sa.select(Author.name).where(Author.id < 0)) is None
+        assert await engine.fetch_one(sa.select(Author.name).where(Author.id < 0)) is None
 
 
 class TestUnit:

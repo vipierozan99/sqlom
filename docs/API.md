@@ -155,12 +155,22 @@ await it. Same arity overloads. Raises `EngineStateError` inside a scope (use
 
 #### `await engine.fetch_one(statement, **params) -> T | None`
 
-The first row, or `None`.
+The first row, or `None`, shaped exactly as `fetch_all` shapes a row — the same
+arity overloads, so `select(User, Post)` gives `tuple[User, Post] | None`. The
+statement is narrowed to `LIMIT 1` where that is safe to do.
 
-#### `await engine.fetch_value(statement, **params) -> Any`
+There is no `fetch_value`. A single selected entity already arrives unwrapped, so
+`fetch_one(select(func.count()))` gives an `int` and this *is* the "one value"
+read. For one column of a wider statement, narrow the statement rather than the
+row:
 
-The first column of the first row, or `None`. Differs from `fetch_one` only for a
-multi-entity statement.
+```python
+await db.fetch_one(sa.select(User.id, User.name).with_only_columns(User.id))
+```
+
+That keeps the type exact and does not fetch the column it would discard. For a
+statement you did not build and cannot narrow — a `returning()` list fixed
+elsewhere — the compatibility track has `(await db.execute(stmt)).scalar()`.
 
 ### Writing
 
@@ -299,8 +309,7 @@ real `sqlalchemy.Result` built over rowform's hydrated rows, so `.scalars()`,
 | | |
 |---|---|
 | `await conn.fetch_all(stmt, **params)` | `list[T]`, arity-overloaded as on `Engine` |
-| `await conn.fetch_one(stmt, **params)` | plus the `LIMIT 1` |
-| `await conn.fetch_value(stmt, **params)` | |
+| `await conn.fetch_one(stmt, **params)` | `T \| None`, same overloads, plus the `LIMIT 1` |
 | `conn.fetch_iter(stmt, *, chunk=1000, **params)` | `AsyncIterator[T]` |
 | `await conn.execute_many(stmt, params)` | the driver's report, not a `Result` |
 | `await conn.copy_in(table, rows, *, columns=None)` | postgres only |

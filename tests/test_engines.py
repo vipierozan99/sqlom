@@ -142,9 +142,11 @@ class TestFetchAll:
         assert author.name == "ada"
         assert await engine.fetch_one(sa.select(Author).where(Author.id == 999)) is None
 
-    async def test_fetch_value(self, engine):
-        assert await engine.fetch_value(sa.select(sa.func.count()).select_from(Author)) == 4
-        assert await engine.fetch_value(sa.select(Author.name).where(Author.id == 1)) == "ada"
+    async def test_fetch_one_unwraps_a_single_selected_column(self, engine):
+        """No `.scalar()` step: one selected entity is that entity, so a count
+        comes back as an int (`planner.Plan.wrap`)."""
+        assert await engine.fetch_one(sa.select(sa.func.count()).select_from(Author)) == 4
+        assert await engine.fetch_one(sa.select(Author.name).where(Author.id == 1)) == "ada"
 
     async def test_a_write_without_returning_is_refused(self, engine):
         with pytest.raises(ValueError, match="produces no rows"):
@@ -277,17 +279,17 @@ class TestWrites:
             sa.insert(Tag.__table__),
             [{"id": 200 + i, "book_id": 10, "label": f"l{i}"} for i in range(3)],
         )
-        assert await engine.fetch_value(sa.select(sa.func.count()).select_from(Tag)) == 5
+        assert await engine.fetch_one(sa.select(sa.func.count()).select_from(Tag)) == 5
 
     async def test_update(self, engine):
         await engine.execute(
             sa.update(Author.__table__).where(Author.id == 1).values(name="ada l.")
         )
-        assert await engine.fetch_value(sa.select(Author.name).where(Author.id == 1)) == "ada l."
+        assert await engine.fetch_one(sa.select(Author.name).where(Author.id == 1)) == "ada l."
 
     async def test_delete(self, engine):
         await engine.execute(sa.delete(Tag.__table__).where(Tag.id == 100))
-        assert await engine.fetch_value(sa.select(sa.func.count()).select_from(Tag)) == 1
+        assert await engine.fetch_one(sa.select(sa.func.count()).select_from(Tag)) == 1
 
     async def test_returning_hydrates(self, engine):
         rows = await engine.fetch_all(

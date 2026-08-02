@@ -49,10 +49,12 @@ into a test.
 - **The generated `__init__` accepts a SQL expression where a value is meant.**
   The parameter type is `SQLCoreOperations[int] | int`, inherited from
   `Mapped.__set__`. Not worth fighting.
-- **Five or more selected entities.** `fetch_all` degrades to `list[Any]`. The
-  overloads are written per arity because that is exactly what a checker knows —
-  `Select` is parameterised by a tuple of its selected types — and they stop at
-  four rather than growing without end.
+- **Five or more selected entities.** `fetch_all` and `fetch_one` degrade to
+  `Any`. The overloads are written per arity because that is exactly what a
+  checker knows — `Select` is parameterised by a tuple of its selected types —
+  and they stop at four rather than growing without end. A statement that wide is
+  usually one to narrow anyway: `with_only_columns` re-types exactly, and
+  `positive.py` pins that it does.
 - **Writes.** `execute()` returns `Any`: an int rowcount on sqlite and psycopg, a
   status string on asyncpg. Normalising it would hide the difference between "0
   rows matched" and "the statement did nothing".

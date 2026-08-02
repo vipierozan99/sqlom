@@ -17,7 +17,12 @@ import uuid
 from typing import Any, assert_type
 
 import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncResult,
+    AsyncScalarResult,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import InstrumentedAttribute, Mapped
 
 import rowform as rf
@@ -120,8 +125,24 @@ async def reads() -> None:
     hoisted = engine.prepare(sa.select(Author).where(Author.id > sa.bindparam("floor")))
     assert_type(await engine.fetch_all(hoisted, floor=3), list[Author])
 
+    # fetch_one shapes its row exactly as fetch_all shapes its rows, and adds the
+    # None. Before it carried the arity overloads, everything past one selected
+    # entity was silently `Any`.
     assert_type(await engine.fetch_one(sa.select(Author)), "Author | None")
     assert_type(await engine.fetch_one(sa.select(Author.name)), "str | None")
+    assert_type(await engine.fetch_one(sa.select(Author, Book)), "tuple[Author, Book] | None")
+    assert_type(
+        await engine.fetch_one(sa.select(Author.name, Author.id)), "tuple[str, int] | None"
+    )
+    assert_type(
+        await engine.fetch_one(sa.select(Author, Book, Book.title)),
+        "tuple[Author, Book, str] | None",
+    )
+    assert_type(
+        await engine.fetch_one(sa.select(Author.id, Author.name, Book.id, Book.title)),
+        "tuple[int, str, int, str] | None",
+    )
+    assert_type(await engine.fetch_one(hoisted, floor=3), "Author | None")
 
     # A self-join is a list of pairs of the model, with no cast.
     assert_type(
@@ -129,6 +150,51 @@ async def reads() -> None:
         list[tuple[Author, Author]],
     )
     assert_type(await engine.fetch_all(sa.select(recent)), list[Author])
+
+
+async def one_column() -> None:
+    """There is no `fetch_value`: one selected entity already arrives unwrapped,
+    so `fetch_one` *is* the "one value" read.
+
+    For one column of a wider statement, narrow the statement rather than the
+    row. That is the better half of the trade — the type stays exact, and the
+    discarded column never reaches the database.
+    """
+    assert_type(await engine.fetch_one(sa.select(Author.name)), "str | None")
+    assert_type(await engine.fetch_one(sa.select(Book.price)), "decimal.Decimal | None")
+    assert_type(await engine.fetch_one(sa.select(sa.func.count())), "int | None")
+
+    wide = sa.select(Author.id, Author.name)
+    assert_type(wide, sa.Select[tuple[int, str]])
+    assert_type(wide.with_only_columns(Author.id), sa.Select[tuple[int]])
+    assert_type(await engine.fetch_one(wide.with_only_columns(Author.id)), "int | None")
+    assert_type(await engine.fetch_all(wide.with_only_columns(Author.name)), list[str])
+
+
+async def documented() -> None:
+    """The example snippets, in the exact spellings the docs print beside a type.
+
+    A doc comment saying `# int | None` is a claim, and an untested claim is the
+    kind that quietly stops being true. These are the ones written out in
+    README.md and GUIDE.md — same statement, same annotation.
+    """
+    assert_type(
+        await engine.fetch_one(sa.select(Author, Book).join(Book)),
+        "tuple[Author, Book] | None",
+    )
+    assert_type(
+        await engine.fetch_one(sa.select(sa.func.count()).select_from(Author)), "int | None"
+    )
+    assert_type(
+        await engine.fetch_one(sa.func.count().select().select_from(Author.__table__)),
+        "int | None",
+    )
+    assert_type(
+        await engine.fetch_one(
+            sa.select(Author.id, Author.name).with_only_columns(Author.id)
+        ),
+        "int | None",
+    )
 
 
 async def streams() -> None:
@@ -152,6 +218,33 @@ async def scopes() -> None:
     async with engine.begin() as conn:
         assert_type(conn.in_transaction(), bool)
         assert_type(rf.active_connection(), "rf.Connection | None")
+        assert_type(await conn.fetch_all(sa.select(Author)), list[Author])
+
+    # A scope's reads are typed exactly as the engine's — the hot track is the
+    # same track wherever it is reached from, and half of why it exists is that
+    # the row type survives.
+    async with engine.connect() as conn:
+        assert_type(await conn.fetch_all(sa.select(Author, Book)), list[tuple[Author, Book]])
+        assert_type(await conn.fetch_one(sa.select(Author)), "Author | None")
+        assert_type(await conn.fetch_one(sa.select(Author, Book)), "tuple[Author, Book] | None")
+        assert_type(await conn.fetch_one(sa.select(Author.name)), "str | None")
+        assert_type(await conn.fetch_all(engine.prepare(sa.select(Author))), list[Author])
+
+        async for author in conn.fetch_iter(sa.select(Author), chunk=100):
+            assert_type(author, Author)
+
+        # The compatibility track is SQLAlchemy's own types, deliberately: these
+        # are `Result` and friends, not anything rowform defines.
+        assert_type(await conn.execute(sa.select(Author)), sa.Result[Any])
+        assert_type(await conn.scalars(sa.select(Author)), sa.ScalarResult[Any])
+        assert_type(await conn.stream(sa.select(Author)), AsyncResult[Any])
+        assert_type(await conn.stream_scalars(sa.select(Author)), AsyncScalarResult[Any])
+        assert_type(await conn.exec_driver_sql("select 1"), sa.Result[Any])
+
+    # A read on a connection an existing application already holds — the adoption
+    # path, so it has to type as any other scope does.
+    session = async_sessionmaker(engine.sa_engine)()
+    async with engine.connect(bind=session) as conn:
         assert_type(await conn.fetch_all(sa.select(Author)), list[Author])
 
 
@@ -195,3 +288,12 @@ async def wide() -> None:
     # A write's result is the driver's own answer — an int on sqlite and
     # psycopg, a status string on asyncpg — so it is not normalised.
     assert_type(await engine.execute(sa.insert(Author.__table__)), Any)
+    assert_type(await engine.execute_many(sa.insert(Author.__table__), [{"id": 1}]), Any)
+    assert_type(await engine.scalar(sa.select(sa.func.count())), Any)
+    assert_type(await engine.scalars(sa.select(Author)), Any)
+
+    # These two are not Any, and the difference is the point: `copy_in` counts
+    # rows itself rather than relaying a driver report, and DDL returns nothing.
+    assert_type(await engine.copy_in(Author.__table__, [{"id": 1}]), int)
+    assert_type(await engine.create_all(Base.metadata), None)
+    assert_type(await engine.drop_all(Base.metadata), None)

@@ -299,6 +299,27 @@ per row on the hottest path; keeping rowform's unwrapping left a divergence that
 bit silently on `select(User.name)`, where `row[0]` returns the first *character* of
 a string rather than failing.
 
+A last splinter of that bug outlived the split, inside a `fetch_value` that took
+the first column of a row. It chose whether to unwrap with
+`isinstance(row, tuple)`, a guess at what `Plan.wrap` already knows for certain,
+and the guess is wrong for exactly the rows where a value is itself a tuple — a
+psycopg composite hydrates to a namedtuple — so `fetch_value(select(User.address))`
+returned the composite's first field.
+
+The method is gone rather than fixed. It was the hot track's `scalar()`, but
+`scalar()` earns its place upstream only because `execute()` always returns
+`Row`s; here the planner already unwraps a single selected entity, so
+`fetch_one(select(func.count()))` is an `int` and there was nothing left for a
+second method to do. Its one distinct behaviour, taking the first of several
+columns, is better served by narrowing the statement —
+`select(a, b).with_only_columns(a)` keeps the same exact type and does not fetch
+the discarded column — or, for a `returning()` list you cannot edit, by
+`execute().scalar()` on the compatibility track where such a caller already is.
+
+The lesson generalises past the method: a row's shape is a fact the planner
+establishes, and re-deriving it from the row's runtime type is where the silence
+comes from.
+
 The answer was to stop choosing. `execute()` is SQLAlchemy's and pays for it;
 `fetch_all()` is rowform's and does not. The tracks are told apart by name, so no
 statement means one thing under one spelling and another under the other:
@@ -307,7 +328,7 @@ statement means one thing under one spelling and another under the other:
 |---|---|---|
 | all rows | `(await conn.execute(s)).scalars().all()` | `await conn.fetch_all(s)` |
 | first row | `(await conn.execute(s)).scalar_one_or_none()` | `await conn.fetch_one(s)` |
-| one value | `await conn.scalar(s)` | `await conn.fetch_value(s)` |
+| one value | `await conn.scalar(s)` | `await conn.fetch_one(s)` — already unwrapped |
 | stream | `await conn.stream(s)` → `AsyncResult` | `conn.fetch_iter(s, chunk=…)` |
 | executemany | `await conn.execute(s, [d1, d2])` | `await conn.execute_many(s, rows)` |
 | raw SQL | `await conn.exec_driver_sql(sql, params)` | — |

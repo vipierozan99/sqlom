@@ -100,7 +100,7 @@ async def names(engine):
 
 class TestThePoolSurvives:
     async def test_a_cancelled_read(self, engine, names):
-        await cancel_after(lambda: engine.fetch_value(slow_for(engine)))
+        await cancel_after(lambda: engine.fetch_one(slow_for(engine)))
         await assert_usable(engine, names)
 
     async def test_a_cancelled_stream(self, engine, names):
@@ -117,7 +117,7 @@ class TestThePoolSurvives:
     async def test_a_cancellation_inside_a_transaction(self, engine, names):
         async def in_transaction():
             async with engine.begin() as conn:
-                await conn.fetch_value(slow_for(engine))
+                await conn.fetch_one(slow_for(engine))
 
         await cancel_after(in_transaction)
         await assert_usable(engine, names)
@@ -129,7 +129,7 @@ class TestThePoolSurvives:
             await seed(db)
             expected = [a.name for a in await db.fetch_all(sa.select(Author).order_by(Author.id))]
             for _ in range(3):
-                await cancel_after(lambda: db.fetch_value(SLOW_SQLITE))
+                await cancel_after(lambda: db.fetch_one(SLOW_SQLITE))
                 await assert_usable(db, expected)
 
 
@@ -139,6 +139,6 @@ class TestTimeouts:
         cancellation handling above, so it needs no help from the library."""
         with pytest.raises(TimeoutError):
             async with asyncio.timeout(0.25):
-                await engine.fetch_value(slow_for(engine))
+                await engine.fetch_one(slow_for(engine))
 
         await assert_usable(engine, names)

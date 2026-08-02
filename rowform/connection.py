@@ -330,6 +330,21 @@ class Connection:
     async def fetch_one(self, statement: Select[tuple[R]], **params: Any) -> R | None: ...
 
     @overload
+    async def fetch_one(
+        self, statement: Select[tuple[R, R2]], **params: Any
+    ) -> tuple[R, R2] | None: ...
+
+    @overload
+    async def fetch_one(
+        self, statement: Select[tuple[R, R2, R3]], **params: Any
+    ) -> tuple[R, R2, R3] | None: ...
+
+    @overload
+    async def fetch_one(
+        self, statement: Select[tuple[R, R2, R3, R4]], **params: Any
+    ) -> tuple[R, R2, R3, R4] | None: ...
+
+    @overload
     async def fetch_one(self, statement: Any, **params: Any) -> Any: ...
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
@@ -339,12 +354,6 @@ class Connection:
 
         rows = await self.fetch_all(_one_row(statement), **params)
         return rows[0] if rows else None
-
-    async def fetch_value(self, statement: Any, **params: Any) -> Any:
-        row = await self.fetch_one(statement, **params)
-        if row is None:
-            return None
-        return row[0] if isinstance(row, tuple) else row
 
     @overload
     def fetch_iter(
