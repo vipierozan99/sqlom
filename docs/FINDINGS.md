@@ -353,10 +353,17 @@ measuring.
 
 **`AUTOCOMMIT` does not pay for itself on the read path.** SQLAlchemy's implicit
 `BEGIN`/`COMMIT` around a pooled read was assumed to be a material per-request cost.
-Setting `isolation_level="AUTOCOMMIT"` measured *slower*: 1.2193 against 1.1944 ms. The
-per-request cost that *is* real is pool acquisition — SQLAlchemy's costs ~0.18 ms
-against ~0.03–0.08 ms here, which is why the current design has Core compile and this
-engine execute.
+Setting `isolation_level="AUTOCOMMIT"` measured *slower*: 1.2193 against 1.1944 ms.
+
+> [!NOTE]
+> **Half of this aged badly, in both directions.** The transaction *is* a material
+> per-request cost — the benchmark suite later found that adding one to rowform's
+> engine-level read, which opened none, moved it by more than the row layer does. What
+> `AUTOCOMMIT` measured was not "no transaction", it was a different transaction mode,
+> which is a much smaller change than the one that matters. And the pool figures quoted
+> here (~0.18 ms against ~0.03–0.08 ms) were taken with the benchmark CLI importing
+> locust, whose `gevent.monkey.patch_all()` moved every timing by ~30%; they are
+> withdrawn. See `PLAN_SQLA_API.md` §2 and `RUNS.md` 2026-08-02.
 
 **A hand-written converter table cannot be right.** The retired
 `SQLITE_CONVERTERS = {bool: bool}` was keyed by exact Python type, and two things follow
@@ -383,7 +390,12 @@ the cache key and pass the current statement's `CacheKey.bindparams` as
   asyncpg with `dict(record)` reaches 3877 rps against 3168 in the same isolated
   configuration. Against a competent hand-rolled loop rowform *loses* slightly, costing
   +10–25% CPU over building no objects at all. The value is ergonomics at
-  near-hand-written cost, not beating hand-written code.
+  near-hand-written cost, not beating hand-written code. The micro suite has since put a
+  number on the row layer alone: the compiled hydrator costs **+8–13%** over
+  hand-written dict-building across three shapes, and — the part worth knowing — that
+  overhead does not grow as the conversions get expensive. One column needing a `bool()`
+  and eight needing `DateTime`/`Numeric`/`Enum`/`Uuid` parsing both cost about the same
+  percentage, which is what inlining the processors into generated code buys.
 - **Nothing scales past ~c=8 on a 4-vCPU box**, and p99 degrades sharply (2.8 ms at c=8
   → 86 ms at c=64) as requests queue on a 10-connection pool. That is pool and core
   saturation, not a property of any row layer.

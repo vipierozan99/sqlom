@@ -55,10 +55,15 @@ class User(Base):
 sa_engine = create_async_engine("postgresql+asyncpg://localhost/app")
 db = rowform.Engine(sa_engine)
 try:
-    users = await db.fetch_all(sa.select(User).limit(100))
+    async with db.begin() as conn:
+        users = await conn.fetch_all(sa.select(User).limit(100))
 finally:
     await sa_engine.dispose()
 ```
+
+`db.fetch_all(...)` off the engine is the shorter spelling and does the same work, with
+one difference worth knowing before you reach for it: **it opens no transaction.** See
+[Writing and transactions](#writing-and-transactions).
 
 The engine is SQLAlchemy's. rowform wraps one; it never opens or disposes one, so
 its lifetime is whatever your application already does with it.
@@ -171,7 +176,7 @@ for what you take.
 
 Those are the accessors alone. End to end against `fetch_all()` on the same read,
 one contender per process, `.scalars().all()` **ties** with it and `.all()` costs
-**8-14%** (`docs/METHODOLOGY.md`).
+**9-17%** (`docs/METHODOLOGY.md`).
 
 So the idiomatic ORM-style read is not measurably off the hot path, and only asking
 for actual `Row` objects costs real money. Use `execute()` while porting and where
@@ -294,6 +299,23 @@ combination raises `UnsupportedError`. asyncpg streams it through a portal, and
 sqlite streams anything.
 
 ## Writing and transactions
+
+**Off the engine, a read opens no transaction.** `db.fetch_all()`, `db.fetch_one()` and
+`db.execute()` take a connection for one statement and hand it straight back. A write
+with `RETURNING` commits — it has to, or the pool's rollback on release would discard it
+— but a `SELECT` runs with no transaction around it at all, which is a weaker guarantee
+than `AsyncSession.execute()` gives you: no snapshot, so two reads in a row can see
+different data, and nothing to roll back with.
+
+That is the right default for a one-shot read and it is measurably cheaper (the
+benchmark suite prices it as a separate row). It is the wrong default the moment two
+statements have to agree. Use a scope when they do:
+
+```python
+async with db.begin() as conn:              # BEGIN ... COMMIT
+    a = await conn.fetch_all(sa.select(User))
+    b = await conn.fetch_all(sa.select(Post))   # same snapshot as `a`
+```
 
 ```python
 await db.execute(sa.insert(User.__table__).values(name="ada"))
@@ -447,9 +469,17 @@ The pool is SQLAlchemy's, so sizing it is too — `pool_size`, `max_overflow`,
 `pool_timeout`, `pool_recycle`, `pool_pre_ping`, all on `create_async_engine`:
 
 ```python
-create_async_engine("sqlite+aiosqlite:///app.db", pool_size=1, max_overflow=4)
-create_async_engine(dsn, pool_size=4, max_overflow=12, pool_timeout=5)
+create_async_engine("sqlite+aiosqlite:///app.db", pool_size=4, max_overflow=0)
+create_async_engine(dsn, pool_size=16, max_overflow=0, pool_timeout=5)
 ```
+
+**Prefer `max_overflow=0` and a `pool_size` you actually want.** `pool_size=1,
+max_overflow=4` and `pool_size=5, max_overflow=0` have the same ceiling and behave
+completely differently: SQLAlchemy *closes* overflow connections when they are returned,
+keeping only `pool_size` alive. At a sustained concurrency of five the first spelling
+re-establishes four connections per request — on sqlite an `open(2)`, on postgres a TCP
+connect plus authentication. Measured with four concurrent checkouts over two rounds,
+`1+3` reused one connection and opened three fresh; `4+0` reused all four.
 
 `cache_size` (default 500) caps the compiled statements an engine keeps, evicting
 the least recently used. Statements built per request vary in *shape* and so mint
@@ -465,10 +495,12 @@ application.
 
 Rules of thumb: `pool_size + max_overflow` at or below what the server will accept
 divided by the number of processes; count a long `fetch_iter` as a connection held
-for its whole duration; and remember that a checkout costs ~0.3–0.4 ms more than
-rowform's own pool used to, paid per checkout rather than per row — so a handler
-that holds one connection for the request pays it once
-([PLAN_SQLA_API.md](PLAN_SQLA_API.md) §2).
+for its whole duration; and remember that a checkout is paid per *checkout*, not per row
+or per statement — so a handler that holds one connection for the request pays it once,
+however many reads it does. The benchmark suite measures the checkout and the
+transaction together as roughly 0.2 ms per read on sqlite; earlier editions of this
+guide split that out as "~0.3–0.4 ms of checkout", which was measured under conditions
+since found to be broken and has not been re-derived.
 
 ## Seeing what runs
 
@@ -598,6 +630,13 @@ Pin it with `__column_order__` on a table that already exists.
 
 The declaration barely changes. What changes is that you write every join, and
 nothing is tracked.
+
+**One asymmetry to read the table through**: an `AsyncSession` autobegins, so every
+`session.*` call on the left runs inside a transaction. The `db.*` spellings on the
+right do not — they take a connection per statement and open nothing. For a single read
+that is a cheaper equivalent, not an identical one; where the session's transaction was
+load-bearing, the equivalent is `async with db.begin() as conn:` and `conn.*`. See
+[Writing and transactions](#writing-and-transactions).
 
 | ORM | rowform |
 |---|---|

@@ -10,15 +10,22 @@ compiled string and the parameter recipe. Now they no longer pool either —
 
     users = await db.fetch_all(sa.select(User))
 
-**Why give up rowform's own pool.** It was measurably cheaper — ~0.09 ms per
-checkout against SQLAlchemy's ~0.40 ms on the same box, and that gap is real and
-fixed (`docs/PLAN_SQLA_API.md` §2). It is paid per *checkout*, not per row and
-not per statement: with the connection in hand, executing on a SQLAlchemy-pooled
-connection costs what executing on rowform's own did, to within the noise. What
-it buys is the thing an own pool structurally cannot: rowform reads that run
-*inside somebody else's transaction*, so an application can adopt this one query
-at a time without giving up its engine, its sessions or its migrations
-(`CLAUDE.md`, goal 2).
+**Why give up rowform's own pool.** It was measurably cheaper, and the gap is
+real and fixed. It is paid per *checkout*, not per row and not per statement:
+with the connection in hand, executing on a SQLAlchemy-pooled connection costs
+what executing on rowform's own did, to within the noise. What it buys is the
+thing an own pool structurally cannot: rowform reads that run *inside somebody
+else's transaction*, so an application can adopt this one query at a time
+without giving up its engine, its sessions or its migrations (`CLAUDE.md`,
+goal 2).
+
+The size of that gap is currently unquantified. `docs/PLAN_SQLA_API.md` §2 put
+it at ~0.09 ms against ~0.40 ms, but every measurement behind that number was
+taken with the benchmark CLI importing locust, whose `gevent.monkey.patch_all()`
+replaced `threading.Thread` process-wide and moved every timing by ~30%. The
+suite now bounds the checkout and the transaction together at roughly 0.2 ms per
+read on sqlite (`docs/METHODOLOGY.md`, the three floors); the split between them
+has not been re-derived.
 
 rowform never opens or disposes the `AsyncEngine`. That stays the caller's, which
 is the whole point of handing one in.

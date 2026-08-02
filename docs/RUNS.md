@@ -1,11 +1,83 @@
 # Recorded runs
 
+## 2026-08-02 — transactions equalised, pools equalised, and a harness bug that invalidates every run above
+
+Branch `type-the-rest-of-the-read-path`, **not recorded to a `bench/` branch**: these
+numbers are provisional and should be replaced rather than indexed. sqlite and mock
+only; postgres was not run.
+
+```bash
+for s in flat join wide; do
+  just bench micro run --shape=$s --iterations=1500 --warmup=200 --trials=3 --isolate --record
+done
+uv run python scripts/publish_tables.py benchmarks/results/runs/*/run.json
+```
+
+200,000 rows, 1000 per read, 1500 iterations after 200 warmup, 3 trials, one contender
+per process, gc off, pinned to cpus 6-9. Worst trial-to-trial spread anywhere: **15.2%**.
+
+`quotable=False` on the usual clause (cpu boost needs root to disable) — and on a second
+one the gate cannot see: a browser, an editor and a music player were scheduled onto the
+pinned cores throughout. `--pin` pins the benchmark *onto* cores; it cannot keep anything
+else *off* them. That is most of the 15.2%.
+
+**1. The harness was measuring itself wrong, and had been for every run in this file.**
+`python -m benchmarks` mounted every subcommand eagerly, `benchmarks.cli.load` imports
+`benchmarks.load.locust`, and importing locust runs `gevent.monkey.patch_all()`. That
+replaces `threading.Thread` process-wide; aiosqlite gives every connection a worker
+thread, so the driver was not using real threads. Measured A/B, one process per arm,
+three reps:
+
+| | gevent off | gevent on | |
+|---|---|---|---|
+| hand-rolled floor, sqlite flat | 1.2940 ms | 1.6451 ms | +27% |
+| rowform, sqlite flat | 1.3580 ms | 1.8076 ms | +33% |
+| ratio | 1.05x | 1.10x | |
+
+Absolutes ~30% slow, ratios skewed ~5% because it does not hit both arms equally.
+`load`/`profile` are now mounted lazily and `timing.assert_unpatched_threading()` fails
+the run rather than quietly inflating it. **Every earlier entry in this file, and every
+table published from one, was taken under the patch.**
+
+**2. Every contender now reads inside `BEGIN`…`COMMIT`.** SQLAlchemy autobegins on first
+statement and rolls back on release, so Core and the ORM were always paying for a
+transaction while rowform's engine-level `fetch_all()` opened none. Part of rowform's
+published margin was a weaker isolation guarantee scored as row-layer speed. The
+one-shot path is still registered, as `rowform (no transaction)`, and priced separately:
+0.83x on flat.
+
+**3. Pools equalised at `pool_size=4, max_overflow=0`.** rowform ran `1+3`, the
+SQLAlchemy contenders ran the engine default `5+10`, and the asyncpg floor ran
+`min1/max4`. `1+3` and `4+0` have the same ceiling and different behaviour — SQLAlchemy
+closes overflow connections on return, asyncpg retains them. Four concurrent checkouts
+over two rounds reused **1** connection under `1+3` and **4** under `4+0`, so the
+asyncpg floor was holding four alive while every SQLAlchemy contender re-established
+three per request.
+
+**4. A third floor, because "floor" was answering two questions.** `floor: hand-rolled`
+(no SQLAlchemy at all) bounds the stack; `floor: on SQLAlchemy` (its pool, its
+transaction, hand-written dicts) prices the abstraction for someone already on
+SQLAlchemy. The gap between them — ~0.21 ms on flat — is the plumbing, and it used to be
+published as though it were row-layer cost. A `hand-written dict (mock)` arm was added
+as the parsing floor.
+
+**5. Retractions from the entries below.** "The Core ratios narrowed" (1.26x/1.16x/1.13x)
+and "the postgres floor ties at `~0.96x`, the honest reading of *as fast as hand-rolling
+the driver*" are both withdrawn: measured under the gevent patch, before the transaction
+change, and against a floor that paid neither a checkout nor a transaction.
+
+**Do not quote this entry either.** It is the first sweep of the right *kind*, on a box
+too busy for the numbers to mean much. A quiet re-run replaces it.
+
 ## 2026-08-01 (later) — re-run after two contender fixes
 
 Commit `31974e5`, branch `bench/2026-08-01-contender-fixes` (all eight `run.json`s).
-**This is the sweep [METHODOLOGY.md](METHODOLOGY.md) now publishes**, replacing the one
-below. Same command, same box, same `quotable=False` clause. It was re-taken because
-two contenders were not running the same race as the rest:
+**Superseded, and by more than a re-measurement** — see the 2026-08-02 entry above: this
+sweep ran under `gevent.monkey.patch_all()`, so its absolutes are ~30% slow, and it
+predates the transaction and pool changes. Findings 2 and 3 below are retracted there.
+It was, until then, the sweep METHODOLOGY.md published. Same command, same box, same
+`quotable=False` clause. It was re-taken because two contenders were not running the
+same race as the rest:
 
 * the `MappedAsDataclass` rows built their payload with `dataclasses.asdict()` — a
   recursive deep copy inside the timed region — where every sibling used a `getattr`
