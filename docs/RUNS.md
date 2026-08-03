@@ -1,5 +1,58 @@
 # Recorded runs
 
+## 2026-08-03 — naked-sqla registered as a contender
+
+Branch `claude/sqlom-naked-sqla-comparison-k16wt4`, commits `ad6bd3d` (sqlite flat and
+join) and `d26bf92` (sqlite wide, mock flat and join). All five `quotable=True`.
+Written up in [COMPARISON_NAKED_SQLA.md](COMPARISON_NAKED_SQLA.md).
+
+```bash
+for s in flat join wide; do
+  just bench micro run --shape=$s --backend=sqlite --rows=200000 --limit=1000 \
+    --iterations=500 --warmup=100 --trials=3 --isolate --pin=0,1,2,3 --record
+done
+for s in flat join; do
+  just bench micro run --shape=$s --backend=mock --limit=1000 \
+    --iterations=500 --warmup=100 --trials=3 --isolate --pin=0,1,2,3 --record
+done
+```
+
+200 000 rows, 1 000 per read, 500 iterations after 100 warmup, 3 trials, one contender
+per process, gc off, pinned to cpus 0-3 on a 4-core box. Worst trial-to-trial spread
+20.0%; most cells under 10%. **Iterations are a third of the entry below and the box is
+smaller, so the absolutes here are not comparable to any other entry** — the ratios
+are, and rowform's against Core and the ORM reproduce (~1.06x / 3.8x on flat).
+
+sqlite medians, ms:
+
+| | flat | join | wide |
+|---|---|---|---|
+| rowform `fetch_all()` | 2.2694 | 3.5620 | 5.9523 |
+| SQLAlchemy Core (positional) | 2.4046 | 3.7411 | 6.1401 |
+| naked-sqla | 5.0945 | 9.6531 | 10.1110 |
+| SQLAlchemy ORM | 8.6512 | 14.2168 | 14.2166 |
+
+Row layer alone (`mock` backend, zero driver cost), ms per 1 000 rows:
+
+| | flat | join |
+|---|---|---|
+| hand-written dicts | 0.1874 | 0.4361 |
+| rowform | 0.2748 | 0.5770 |
+| SQLAlchemy Core (positional) | 0.4590 | — |
+| naked-sqla | 2.7340 | 6.3373 |
+| SQLAlchemy ORM | 4.0664 | 7.9547 |
+
+**The finding.** naked-sqla keeps SQLAlchemy's ORM row processors and drops only the
+session state, so its row layer lands nearer the ORM than Core: 1.49x cheaper than the
+ORM on flat, 6.0x more expensive than Core, and 10x rowform's. End to end on sqlite it
+is 1.7x-2.7x rowform and 1.41x-1.70x faster than the ORM — its README claims "nearly
+twice as fast as ORMs", which holds only on the simplest shape.
+
+Two earlier runs in `benchmarks/results/runs/` from the same session are
+`quotable=False` (dirty tree) and are superseded by the above:
+`2026-08-03T07-27-13Z_micro-flat_d875f8b` (a 150-iteration smoke run) and
+`2026-08-03T07-34-47Z_micro-wide_ad6bd3d`.
+
 ## 2026-08-02 — transactions equalised, pools equalised, and a harness bug that invalidates every run above
 
 Branch `type-the-rest-of-the-read-path`, **not recorded to a `bench/` branch**: these

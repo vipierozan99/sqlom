@@ -99,7 +99,10 @@ low N against a local database, lazy loading is fine; this is a read path for th
 services where it is not.
 
 [naked-sqla](https://github.com/ManiMozaffar/naked-sqla) forecloses the same list from
-the other direction — correctness rather than latency — and is worth reading.
+the other direction — correctness rather than latency — and is worth reading. It is
+measured against rowform on all four axes in
+[COMPARISON_NAKED_SQLA.md](docs/COMPARISON_NAKED_SQLA.md), including as a registered
+`bench micro` contender.
 
 ---
 
@@ -170,6 +173,7 @@ Full numbers, and a log of **thirteen published claims that turned out to be wro
 | [GUIDE.md](docs/GUIDE.md) | recipes — FastAPI, pagination, streaming, testing, pool sizing, migrating off the ORM |
 | [API.md](docs/API.md) | every public name, and what it returns |
 | [METHODOLOGY.md](docs/METHODOLOGY.md) · [FINDINGS.md](docs/FINDINGS.md) | the numbers and how they were taken; what turned out to be fast and what didn't |
+| [COMPARISON_NAKED_SQLA.md](docs/COMPARISON_NAKED_SQLA.md) | rowform vs naked-sqla: compatibility, ergonomics, maintenance, speed |
 | [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) | how to work on it; what the codegen can and cannot reach |
 
 ---
