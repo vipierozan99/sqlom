@@ -1139,6 +1139,120 @@ async def wide_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 # ==========================================================================
+# naked-sqla (https://github.com/ManiMozaffar/naked-sqla) — sqlite
+#
+# The other "ORM without the ORM" library, and the closest thing to a peer this
+# suite has. It reuses SQLAlchemy's *ORM* declarations and compile state and
+# replaces only `orm.loading.instances`, dropping the identity map, dirty
+# tracking and post-load hooks; rowform replaces the declaration too and
+# generates a hydrator per statement shape. Registering it here is what turns
+# "which approach costs less" into a measurement.
+#
+# It reads through its own `AsyncSessionFactory`, which is `engine.begin()` plus
+# a commit, so it satisfies this file's every-contender-in-a-transaction rule
+# without special casing. The models are `UserORM`/`AuthorORM`/`EventORM` — its
+# whole input is a stock declarative class, so it shares the ORM contenders'
+# declarations rather than adding a fifth.
+#
+# Skipped, not failed, when the package is absent: it is in the `bench`
+# dependency group, and a `uv sync` without that group must still be able to run
+# `bench micro`.
+# ==========================================================================
+
+#: Declared `Any` rather than left to inference: the factories below are defined
+#: only when this is not None, but that narrowing does not reach inside them, so
+#: the inferred `type[...] | None` would read as an optional call at every use.
+_NakedFactory: Any
+try:
+    from naked_sqla.om.asession import AsyncSessionFactory as _NakedFactory
+except ImportError:  # pragma: no cover -- optional contender
+    _NakedFactory = None
+
+
+if _NakedFactory is not None:
+
+    @contender(
+        "naked-sqla",
+        backend="sqlite",
+        shape="flat",
+        description="naked-sqla: SQLAlchemy's ORM row processors, no identity map or session state.",
+    )
+    async def flat_naked_sqla(init: ContenderInit) -> tuple[Target, Teardown]:
+        engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+        db = _NakedFactory(engine)
+        stmt = flat_stmt(init.limit, UserORM)
+
+        async def target() -> bytes:
+            async with db.begin() as session:
+                users = (await session.scalars(stmt)).all()
+                return dumps([{f: getattr(u, f) for f in FLAT_FIELDS} for u in users])
+
+        return target, engine.dispose
+
+    @contender(
+        "naked-sqla (DC)",
+        backend="sqlite",
+        shape="flat",
+        description="naked-sqla over a MappedAsDataclass model — the same shape rowform returns.",
+    )
+    async def flat_naked_sqla_dc(init: ContenderInit) -> tuple[Target, Teardown]:
+        engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+        db = _NakedFactory(engine)
+        stmt = flat_stmt(init.limit, UserDC)
+
+        async def target() -> bytes:
+            async with db.begin() as session:
+                users = (await session.scalars(stmt)).all()
+                return dumps([{f: getattr(u, f) for f in FLAT_FIELDS} for u in users])
+
+        return target, engine.dispose
+
+    @contender(
+        "naked-sqla",
+        backend="sqlite",
+        shape="join",
+        description="naked-sqla, two entities per row.",
+    )
+    async def join_naked_sqla(init: ContenderInit) -> tuple[Target, Teardown]:
+        engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+        db = _NakedFactory(engine)
+        stmt = join_stmt(init.limit, AuthorORM, PostORM)
+
+        async def target() -> bytes:
+            async with db.begin() as session:
+                rows = (await session.execute(stmt)).all()
+                return dumps(
+                    [
+                        [
+                            {f: getattr(a, f) for f in AUTHOR_FIELDS},
+                            {f: getattr(p, f) for f in POST_FIELDS},
+                        ]
+                        for a, p in rows
+                    ]
+                )
+
+        return target, engine.dispose
+
+    @contender(
+        "naked-sqla",
+        backend="sqlite",
+        shape="wide",
+        description="naked-sqla over the widened shape — the same per-column processors.",
+    )
+    async def wide_naked_sqla(init: ContenderInit) -> tuple[Target, Teardown]:
+        engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+        db = _NakedFactory(engine)
+        stmt = wide_stmt(init.limit, EventORM)
+
+        async def target() -> bytes:
+            async with db.begin() as session:
+                rows = (await session.scalars(stmt)).all()
+                return dumps([{f: getattr(e, f) for f in WIDE_FIELDS} for e in rows])
+
+        return target, engine.dispose
+
+
+# ==========================================================================
 # postgres
 # ==========================================================================
 

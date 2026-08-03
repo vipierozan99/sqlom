@@ -114,6 +114,10 @@ dev = [
 bench = [
     "fastapi>=0.115",
     "locust>=2.32",
+    # The peer library `bench micro` measures against — see the naked-sqla
+    # section of benchmarks/micro/contenders.py. Its contenders are registered
+    # only when it imports, so this group is what makes them appear.
+    "naked-sqla>=0.1",
     "psutil>=6.0",
     "rich>=13.0",
     # Matches the project floor, so a lowest-direct resolution installs one
