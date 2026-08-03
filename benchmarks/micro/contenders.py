@@ -1234,6 +1234,75 @@ if _NakedFactory is not None:
         return target, engine.dispose
 
     @contender(
+        "naked-sqla (mock)",
+        backend="mock",
+        shape="flat",
+        tags=("mapper-floor",),
+        description="naked-sqla's hydration cost alone, via mock_sqlalchemy_engine.",
+    )
+    async def flat_naked_sqla_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+        """The cell that answers "which mapper is cheaper", with the driver gone.
+
+        Same seam and same hoisted checkout as `SQLAlchemy ORM (mock)`, so those
+        two are directly comparable — both go through a real `CursorResult` and
+        differ only in what turns it into objects. Reading it against
+        `rowform (mock)` carries the caveat in `engines/mock.py`: rowform's mock
+        cans the driver one layer higher, so the two floors bound their own
+        libraries rather than pricing one against the other.
+        """
+        from naked_sqla.om.asession import AsyncSession as NakedSession
+
+        from benchmarks.engines.mock import mock_sqlalchemy_engine
+
+        engine = mock_sqlalchemy_engine(FLAT_FIELDS, init.handle)
+        stmt = flat_stmt(init.limit, UserORM)
+        conn = await engine.connect()
+
+        async def target() -> bytes:
+            users = (await NakedSession(conn).scalars(stmt)).all()
+            return dumps([{f: getattr(u, f) for f in FLAT_FIELDS} for u in users])
+
+        async def teardown() -> None:
+            await conn.close()
+            await engine.dispose()
+
+        return target, teardown
+
+    @contender(
+        "naked-sqla (mock)",
+        backend="mock",
+        shape="join",
+        tags=("mapper-floor",),
+        description="naked-sqla's join hydration cost alone — zero driver cost.",
+    )
+    async def join_naked_sqla_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+        from naked_sqla.om.asession import AsyncSession as NakedSession
+
+        from benchmarks.engines.mock import mock_sqlalchemy_engine
+
+        engine = mock_sqlalchemy_engine(AUTHOR_FIELDS + POST_FIELDS, init.handle)
+        stmt = join_stmt(init.limit, AuthorORM, PostORM)
+        conn = await engine.connect()
+
+        async def target() -> bytes:
+            rows = (await NakedSession(conn).execute(stmt)).all()
+            return dumps(
+                [
+                    [
+                        {f: getattr(a, f) for f in AUTHOR_FIELDS},
+                        {f: getattr(p, f) for f in POST_FIELDS},
+                    ]
+                    for a, p in rows
+                ]
+            )
+
+        async def teardown() -> None:
+            await conn.close()
+            await engine.dispose()
+
+        return target, teardown
+
+    @contender(
         "naked-sqla",
         backend="sqlite",
         shape="wide",
