@@ -102,3 +102,35 @@ class TestEvictionOrder:
         for _ in range(10):
             await db.fetch_all(sa.select(Author).where(Author.id > 1))
         assert db.cached_statements == 1
+
+
+class TestUncacheableStatements:
+    """SQLAlchemy declines to cache some constructs, and says so by returning no
+    cache key at all. Those must still run.
+
+    `postgresql.insert()` sets `inherit_cache = False`, so *every* ON CONFLICT
+    upsert lands here — reading `.key` off the None crashed with an
+    `AttributeError` naming neither the statement nor the cause.
+    """
+
+    async def test_a_statement_with_no_cache_key_still_runs(self, db):
+        class Uncacheable(sa.sql.expression.Select):
+            inherit_cache = False
+
+        stmt = sa.select(Author).where(Author.id > 0)
+        stmt.__class__ = Uncacheable
+        assert stmt._generate_cache_key() is None, "precondition: not cacheable"
+
+        rows = await db.fetch_all(stmt)
+        assert rows, "an uncacheable statement must still return its rows"
+
+    async def test_an_uncacheable_statement_is_not_cached(self, db):
+        class Uncacheable(sa.sql.expression.Select):
+            inherit_cache = False
+
+        stmt = sa.select(Author).where(Author.id > 0)
+        stmt.__class__ = Uncacheable
+
+        for _ in range(3):
+            await db.fetch_all(stmt)
+        assert db.cached_statements == 0, "a keyless statement must not enter the cache"

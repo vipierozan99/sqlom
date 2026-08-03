@@ -203,6 +203,15 @@ class Engine:
         if isinstance(statement, CoreQuery):
             return statement, None
         cache_key = statement._generate_cache_key()
+        if cache_key is None:
+            # SQLAlchemy declines to cache some constructs, and says so by
+            # returning no cache key at all — `postgresql.insert()` sets
+            # `inherit_cache = False`, so every ON CONFLICT upsert arrives here,
+            # as does any user construct that has not opted in. Compile it fresh
+            # rather than crash on `cache_key.key`: the compiled object then
+            # holds *this* statement's literals, which is exactly the case where
+            # `extracted` is unnecessary.
+            return self.prepare(statement), None
         queries = self._queries
         query = queries.get(cache_key.key)
         if query is None:
