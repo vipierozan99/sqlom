@@ -3,8 +3,8 @@
 [naked-sqla](https://github.com/ManiMozaffar/naked-sqla) is the closest thing this
 project has to a peer: same diagnosis — the ORM's identity map, dirty tracking and
 implicit loading cost more than they are worth in a service — and a different cure.
-This is a measured comparison across the four axes that matter, run on this machine,
-at commit `d26bf92`, against SQLAlchemy 2.0.51.
+This explains the two designs, then compares them on the four axes that matter, with
+measurements taken on this machine at commit `d26bf92` against SQLAlchemy 2.0.51.
 
 Everything below is reproducible. The performance numbers come from `bench micro`
 with naked-sqla registered as a contender, so it runs the same SQL, the same payload
@@ -20,33 +20,249 @@ headline features has been broken by upstream for every SQLAlchemy release since
 
 ---
 
-## The architectural difference, in one paragraph
+## The approaches
 
-Both libraries let SQLAlchemy Core compile the statement. They diverge in what
-replaces the ORM's `loading.instances()`.
+Read this section before the four axes. Almost everything measured below follows
+mechanically from one decision made two different ways, and knowing which decision it
+is turns the tables from a list of results into a list of consequences.
 
-**naked-sqla keeps SQLAlchemy's ORM machinery and removes the session.** Your model
-is a stock `DeclarativeBase`; the statement is compiled by `ORMCompileState`; the
-per-entity row processors are SQLAlchemy's own (`_MapperEntity.row_processor`,
-`_ColumnEntity.row_processor`, `_BundleEntity.row_processor`); rows are assembled with
-`mapper.class_manager.new_instance()` and handed back inside a real
-`ChunkedIteratorResult`. What is dropped is the identity map, dirty tracking, the
-post-load hooks and every populator bucket except `"quick"`
-(`naked_sqla/om/loading.py:187`). Roughly 1 400 lines, most of it a fork of
-`sqlalchemy/orm/loading.py` and `context.py` with the state removed.
+### The one decision: where to cut SQLAlchemy's read stack
 
-**rowform replaces the declaration too and generates a hydrator per statement.**
-There is no `Mapper`, no `_sa_instance_state`, no instrumented attribute. The model is
-one class serving as `sa.Table` and stdlib dataclass; the planner reads
-`stmt.selected_columns` to decide what the rows mean; and `compile.py` `exec()`s a
-function specialised to that statement shape whose field writes are plain
-`STORE_ATTR`. Type conversion still comes from SQLAlchemy — each column's
-`_cached_result_processor` is inlined — so values decode exactly as they would through
-`Row`. Roughly 3 200 lines.
+SQLAlchemy's ORM read path is five layers:
 
-That difference explains every number below. naked-sqla's row layer is SQLAlchemy's
-row layer minus bookkeeping, so it lands between the ORM and Core. rowform's is
-generated code, so it lands next to hand-written dict building.
+| | layer | what it does |
+|---|---|---|
+| 1 | Declarative + `Mapper` | class → `Table`, instrumented attributes, and a `_prop_set` of mapped properties |
+| 2 | `ORMCompileState` | `select(User)` → SQL, plus a list of `_QueryEntity` objects saying what the columns *mean* |
+| 3 | `orm.loading.instances()` | `CursorResult` → objects: per-entity row processors, then identity map, post-load, dedupe |
+| 4 | `CursorResult` / `Row` | Core's result layer: result metadata and per-column type processors |
+| 5 | DBAPI cursor | raw tuples |
+
+Both libraries agree on three things. Core owns the SQL and the schema — neither
+generates SQL. The session's bookkeeping is what has to go. And — arrived at
+independently, which is worth noting — `execute()` should return a **real**
+`sqlalchemy.Result` rather than a lookalike: naked-sqla feeds upstream's
+`ChunkedIteratorResult`, rowform feeds `IteratorResult`/`ChunkedIteratorResult`, so on
+both sides `.scalars()`, `.mappings()`, `.unique()`, `Row` attribute access and
+`NoResultFound` are upstream's implementations and cannot drift. That is the single
+most valuable compatibility property either library has and they share it.
+
+They differ in where the knife goes.
+
+**naked-sqla cuts inside layer 3.** Layers 1 and 2 survive intact, the per-entity row
+processors *within* 3 are upstream's (`_MapperEntity.row_processor`,
+`_ColumnEntity.row_processor`, `_BundleEntity.row_processor`), and only 3's stateful
+tail is deleted. `naked_sqla/om/loading.py` is a fork of upstream's with the identity
+map, post-load hooks, dedupe and all but one populator bucket removed. Rows are
+assembled with `mapper.class_manager.new_instance()`. Roughly 1 400 lines.
+
+**rowform cuts above layer 1.** It replaces 1 with its own metaclass (a real `sa.Table`
+plus a stdlib dataclass, no `Mapper`, no `_sa_instance_state`, no instrumented
+attribute), replaces 2 with a positional planner over `stmt.selected_columns`, replaces
+3 with a code generator, and skips `Row`/`CursorResult` construction in 4 — keeping
+exactly one thing out of that layer: the per-column type processors, inlined. Roughly
+3 200 lines.
+
+### What follows from naked-sqla's cut
+
+Because layers 1 and 2 survive, everything *computed by upstream* keeps working for
+free: `Mapped`, `mapped_column`, `MappedAsDataclass`, `__mapper_args__`,
+`sa.orm.aliased()`, `Bundle`, `composite()`, `column_property()`, label styles,
+`aliased(User, cte)`, Alembic. That is the real win, and it is why the adoption story
+is "change your session import". Sync and async both work almost for free, because the
+only difference is which connection object gets passed in — the mapping code is
+identical, which is why `session.py` and `asession.py` are near-mirrors.
+
+Two things follow just as directly, and neither is incidental.
+
+**It requires an ORM entity to exist.** `instances()` reads
+`compile_state._entities`. A plain `select(sa_table)`, a `union()`, a
+`select(literal(1))` or a `text()` compiles to a non-ORM compile state that has no such
+attribute, so it does not produce a wrong answer — it produces an `AttributeError` from
+inside the library. The cut sits *below* the layer that knows what a row means, so a
+statement that never entered that layer has nowhere to land.
+
+**Its savings are bounded by what it kept.** Per row it still pays
+`mapper.class_manager.new_instance()`, a dict of populator closures, and one
+`getter(row)` call per column, then assembles through `ChunkedIteratorResult`. What it
+removed — identity-key computation, dirty tracking, post-load — is real bookkeeping,
+but it is the minority of the ORM's per-row cost. That is a structural ceiling rather
+than a tuning gap: the row processors *are* the expensive part, and they are the part
+it deliberately reuses. It is why the measured row layer lands nearer the ORM than
+Core.
+
+#### Why three ORM features fail silently, in one diff
+
+This is the most important thing to understand about the design, and it is visible in
+about fifteen lines. Upstream's `_instance_processor` loop
+(`sqlalchemy/orm/loading.py:887`) has six populator buckets, explicit handling for the
+deferred/raise-load sentinels, and an `else` branch:
+
+```python
+for prop in props:
+    if prop in quick_populators:
+        col = quick_populators[prop]
+        if col is _DEFER_FOR_STATE:   ...        # deferred column
+        elif col is _SET_DEFERRED_EXPIRED: ...
+        elif col is _RAISE_FOR_STATE: ...        # lazy="raise"
+        else:
+            getter = result._getter(col, False)
+            ...
+    else:
+        todo.append(prop)            # relationships and loader strategies
+```
+
+naked-sqla's version (`naked_sqla/om/loading.py:187`) has one bucket, no sentinel
+handling, and no `else`:
+
+```python
+cached_populators = {"quick": []}
+for prop in props:
+    if prop in quick_populators:
+        col = quick_populators[prop]
+        getter = result._getter(col, False)
+        ...
+```
+
+Every mapped property that is not a plain column present in the result falls off the
+end of the loop — no processor, no error, no note. That single omission is the whole
+explanation for four separate findings in the compatibility section:
+
+* a **`relationship()`** is never populated, so the attribute falls through to the
+  class-level lazy loader on an instance that was never given an identity key; a
+  transient object has nothing to load from, so it reads as `[]`;
+* **`selectinload()`** is a loader option consumed in the missing `todo` pass, so it is
+  accepted, emits no second query, and yields `[]`;
+* **polymorphic loading** lives in the sub-mapper recursion this version does not
+  have, so it always instantiates the mapper the entity named — a `dog` row becomes an
+  `Animal`;
+* **`deferred=True`** is the one case where "ignore" becomes a crash instead of
+  silence: the property *is* in `quick_populators`, but its value is a sentinel rather
+  than a `Column`, and with upstream's sentinel branches gone that sentinel reaches
+  `result._getter()`, where the lookup raises `IndexError` out of
+  `sqlalchemy/engine/cursor.py`.
+
+None of this is sloppiness — it is the cut. Keeping layer 1 means every ORM declaration
+remains *expressible*; gutting layer 3 means only some of those declarations have
+anything that runs. **The gap between "declarable" and "loadable" is where the silent
+failures live, and it exists by construction.**
+
+### What follows from rowform's cut
+
+Removing layer 1 means there is no `Mapper`, so `sa.orm.aliased()` cannot work — it
+inspects for one — and there is no entity system for a `Bundle` to resolve through.
+Hence `rf.alias()`, and hence a `Bundle` degrading to a plain tuple. You re-declare
+your models. The metaclass costs `ABC` and `Protocol` composition.
+
+What that buys is that nothing sits between a driver tuple and the object. Layer 3
+becomes a function `exec()`'d once per statement shape (`compile.py`):
+
+```python
+for f0, f1, f2, in rows:      # one UNPACK_SEQUENCE per row
+    o0 = _new(_c0)            # object.__new__, no __init__ dispatch
+    o0.id = f0                # plain STORE_ATTR — PEP 659 quickens it
+    o0.active = _p2(f2)       # a call only where a processor exists
+```
+
+No populator dict, no per-column closure call, no `Row`, no `CursorResult`. The
+generated source is attached to the function as `__source__`, so the codegen stays
+inspectable rather than magic.
+
+And because rowform owns the declaration layer, it cannot be handed a declaration it
+will not load. There is no `relationship()`, no loader options, no polymorphic mapping;
+`Mapped[Kid]` is a `DeclarationError` at class-creation time. The failure mode above is
+unreachable rather than defended against — with one live counterexample,
+`Mapped[list[X]]` silently becoming a `JSON()` column, which is the same species of bug
+and is recorded as a defect below.
+
+### The two questions they answer differently
+
+**"What is a row?"** naked-sqla: *whatever the mapper says*. The entity list comes from
+`ORMCompileState` and the mapping is authoritative. rowform: *whatever the statement
+selected*, positionally — `planner.py` walks `stmt.selected_columns`, and a contiguous
+run that is exactly some model's full column list becomes that model (compared by
+identity, since `Column.__eq__` builds SQL rather than comparing); anything else is a
+scalar.
+
+That one difference accounts for most of the compatibility table in both directions.
+rowform can hydrate a bare `Table`, a CTE, a union or a literal because it never needs
+a mapper; naked-sqla cannot. Conversely naked-sqla gets `aliased(User, cte)` for free
+where rowform needs `rf.alias(of=cte)` to *assert* that a CTE's columns are a model's —
+and then validates the assertion, refusing an extra column rather than mis-assigning
+fields. It is also why rowform's result shape is decided by arity: that is the only
+rule the type system can express, so `select(User.name, User.id)` returns `(str, int)`
+in that order and `fetch_all` can be typed exactly (`planner.py:41`).
+
+**"Where does type conversion happen?"** Both answer "SQLAlchemy", which is the part a
+hand-rolled mapper usually gets wrong and neither does. But:
+
+* naked-sqla goes through `result._getter(col, False)` on a real `CursorResult`, so
+  conversion is Core's metadata plus its type processors, as a closure call **per column
+  per row**;
+* rowform asks `column.type._cached_result_processor(dialect, coltype)` **once**, at
+  hydrator-build time, and inlines the result into the generated source — and where the
+  processor is `None`, which is most columns on asyncpg, the field compiles to a bare
+  store with no call at all.
+
+Identical answers; a different number of function calls, by a factor of the row count.
+That is the mechanism behind the order-of-magnitude row-layer difference, not a
+micro-optimisation. It is also why rowform builds the hydrator lazily on first execute
+rather than at compile time: it needs the DBAPI type code from `cursor.description`,
+and postgres `Numeric.result_processor` *raises* without one.
+
+### Where each library's "no" lives
+
+naked-sqla's boundary is implicit — it is wherever upstream's compile state and the
+`"quick"` bucket happen to reach. Outside it you get SQLAlchemy's internal exceptions
+(`AttributeError: attributes`, `AssertionError`, `IndexError`) or nothing at all. It
+has two error classes of its own.
+
+rowform's boundary is a place it can stand on. Because it owns the declaration layer it
+refuses at class creation (`DeclarationError`), at plan time (`PlanError`), and at
+execute (`StatementError: this statement produces no rows…` for a bare `text()`) — a
+named hierarchy, plus an `observer` hook and DEBUG logging that carries the generated
+source.
+
+That is the maintainability argument in design terms rather than in test counts:
+**owning a layer is what gives you a vocabulary to say no in.** Wrapping one leaves you
+speaking upstream's error messages about internals your caller never touched.
+
+### The maintenance shape of each bet
+
+Both libraries read SQLAlchemy's private surface heavily and neither is safe. The
+*kind* differs, and it matters more than the count:
+
+* naked-sqla depends on the ORM's **structure** — entity classes, populator
+  dictionaries, compile-state attributes, the path/registry system,
+  `Column._make_proxy`. That is SQLAlchemy's most actively developed and most
+  internally coupled subsystem, and the dependency is a **fork**: upstream refactors
+  have to be mirrored, not merely tolerated. `_make_proxy` gaining two required
+  arguments is exactly this failure, and it is what broke views in 2.0.36.
+* rowform depends on the **compiler and result plumbing** — `_generate_cache_key`,
+  `construct_params`, `positiontup`, `_bind_processors`,
+  `_process_parameters_for_postcompile`, `_cached_result_processor`,
+  `SimpleResultMetaData`. Narrower, and every one is a **leaf call** rather than a
+  structure it must stay in step with. It is also the surface every dialect exercises,
+  so it moves slowly in practice.
+
+A fork has to be re-synced; a set of calls only has to keep resolving. Neither
+justifies going unpinned, which is separately why rowform caps at `<2.1` with a weekly
+canary against SQLAlchemy `main`.
+
+### Which design is better positioned for what
+
+naked-sqla's cut has one genuine long-run advantage: **it inherits improvements**.
+Anything the ORM's entity system learns — a new bundle type, a new label style, a new
+construct legal inside `select()` — works there without a line of code, where rowform
+would have to implement it. If SQLAlchemy ever exposed a supported "load without a
+session" entry point, naked-sqla collapses into a thin shim and rowform does not.
+
+rowform's cut has the advantage that it is **finished**. The set of things it must
+understand is "columns, and which runs of them are a model", and that set does not grow
+with SQLAlchemy's ORM. The price is that its hardest 150 lines write Python at runtime,
+so correctness has to come from an oracle suite rather than from reading the code —
+which is the honest inversion of naked-sqla's position, where every line is readable
+and the risk is in what upstream does next.
 
 ---
 
@@ -131,7 +347,9 @@ a capability gap.
 
 This is the sharpest edge in naked-sqla, and it follows directly from "your models
 are unchanged": every ORM mapping feature is *declarable*, and only some of them
-work. One model per feature, so each result is attributable:
+work. The mechanism is the missing `else` branch in its `_instance_processor` — see
+[Why three ORM features fail silently](#why-three-orm-features-fail-silently-in-one-diff);
+what follows is what that costs, one model per feature so each result is attributable:
 
 | declared on a stock ORM model | naked-sqla |
 |---|---|
@@ -142,13 +360,13 @@ work. One model per feature, so each result is attributable:
 | `.options(selectinload(...))` | **silently returns `[]`** — the option is accepted, no second query is emitted |
 | joined/single-table polymorphic identity | **silently returns the base class** — a row whose discriminator says `dog` hydrates as `Animal` |
 
-The three "silently" rows are the problem. Under stock SQLAlchemy asyncio, touching an
-unloaded `relationship()` raises `MissingGreenlet`; under naked-sqla it returns an
-empty collection, because the instance is never given an identity key and a transient
-object has nothing to load from. An explicit `selectinload()` — the documented way to
-eager-load under asyncio — is accepted and does nothing. Neither is documented as
-unsupported; naked-sqla's README says relationships "are not supported", which is
-true, but "not supported" here means "reads as empty", not "raises".
+The three "silently" rows are the problem, and the comparison to make is against stock
+SQLAlchemy rather than against nothing: under SQLAlchemy asyncio, touching an unloaded
+`relationship()` raises `MissingGreenlet`. Under naked-sqla it returns an empty
+collection. An explicit `selectinload()` — the documented way to eager-load under
+asyncio — is accepted and does nothing at all. Neither is documented as unsupported;
+the README says relationships "are not supported", which is true, but "not supported"
+here means "reads as empty", not "raises".
 
 rowform cannot reach these failure modes because it cannot express them: there is no
 `relationship()`, no loader options, no polymorphic mapping, and `Mapped[Kid]` raises
@@ -322,8 +540,10 @@ right, so it has to be verified against something.
 
 ### Reliance on SQLAlchemy's private surface
 
-Both libraries do it. This is not a difference in kind; it is a difference in how the
-bet is managed.
+Both libraries do it. [The maintenance shape of each
+bet](#the-maintenance-shape-of-each-bet) argues why the two dependencies are different
+in kind — a fork of the ORM's structure against a set of leaf calls into the compiler.
+This is the evidence for it, plus how each project manages the bet.
 
 naked-sqla imports `ORMCompileState`, `FromStatement`, `_MapperEntity`,
 `_ColumnEntity`, `_BundleEntity`, `_QueryEntity`, `SimpleResultMetaData`,
@@ -482,12 +702,13 @@ So the honest characterisation of naked-sqla's row layer:
   than to Core.
 * **10.0x rowform's** on flat, **11.0x** on join.
 
-An order of magnitude is not a tuning difference; it is the two designs. naked-sqla
-pays, per row, for `mapper.class_manager.new_instance()`, a dict of populator
-closures, a `getter(row)` call per column, and assembly through
-`ChunkedIteratorResult`. rowform's generated function pays one `UNPACK_SEQUENCE` per
-row and one quickened `STORE_ATTR` per field, with the type processor inlined only
-where the column needs one.
+An order of magnitude is not a tuning difference; it is the cut, and this cell is where
+[the approaches](#the-approaches) show up as a number. naked-sqla pays per row for
+`new_instance()`, a populator dict and a `getter(row)` call per column, then assembles
+through `ChunkedIteratorResult`. rowform pays one `UNPACK_SEQUENCE` per row and one
+quickened `STORE_ATTR` per field, with the type processor inlined only where the column
+needs one. Both get their conversion from the same place; one of them asks per row and
+the other asked once.
 
 Caveat, from `benchmarks/engines/mock.py`: rowform's mock cans the driver one layer
 higher than SQLAlchemy's, so `rowform (mock)` and the SQLAlchemy-side mocks are each
