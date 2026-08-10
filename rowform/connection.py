@@ -372,6 +372,16 @@ class Connection:
 
     @overload
     def fetch_iter(
+        self, statement: Select[tuple[R, R2, R3]], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[tuple[R, R2, R3]]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Select[tuple[R, R2, R3, R4]], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[tuple[R, R2, R3, R4]]: ...
+
+    @overload
+    def fetch_iter(
         self, statement: Any, *, chunk: int = ..., **params: Any
     ) -> AsyncIterator[Any]: ...
 
