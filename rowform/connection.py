@@ -70,10 +70,12 @@ _ACTIVE: contextvars.ContextVar[Connection | None] = contextvars.ContextVar(
 def active_connection() -> Connection | None:
     """The innermost `Connection` scope open in this task, or None.
 
-    Only scopes rowform opened register here. One bound to a caller's connection
-    with `connect(bind=...)` does not: that transaction's lifetime is theirs, and
-    claiming it would make the engine's one-shots refuse to run for the rest of
-    the task.
+    Every scope registers for the life of its block, one bound with
+    `connect(bind=...)` included: an `engine.fetch_*` one-shot inside a bound
+    scope would take a *different* pooled connection and miss the bound
+    transaction's uncommitted writes, so the guard has to see the bound scope to
+    refuse it. try/finally scopes the registration to the block, so one-shots are
+    refused only inside the scope, not for the rest of the task.
     """
     return _ACTIVE.get()
 
