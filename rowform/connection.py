@@ -397,24 +397,27 @@ class Connection:
         """One compiled statement, many parameter sets, one round trip. Returns
         the driver's own report; `execute(stmt, [ ... ])` wraps the same thing in
         a `Result`."""
+        if not params:
+            return None
         engine = self._engine
         await self._autobegin()
         query, extracted = engine._query_for(statement)
         if query._expanding:
-            # One SQL string is sent for every set, but an expanding bind rewrites
-            # the string from its own values: two sets with different list lengths
+            # executemany sends one SQL string for every set, but a post-compile
+            # bind rewrites that string from its own values — an expanding IN over
+            # a list, or a literal-execute bind — so sets that render differently
             # need different SQL. sqlite then fails with a binding count the caller
             # cannot trace back to this, and psycopg's dict paramstyle ignores the
             # surplus keys and writes the wrong rows without complaining.
             raise StatementError(
-                "execute_many cannot run a statement with an expanding bind "
-                "parameter (an IN over a list): each parameter set would need its "
-                "own SQL, and executemany sends one statement for all of them. "
-                "Call execute() once per set instead."
+                "execute_many cannot run a statement whose SQL is rewritten per "
+                "parameter set by a post-compile bind — an expanding bind (an IN "
+                "over a list) or a literal-execute bind: each set would need its "
+                "own SQL, and executemany sends one statement for all of them. Run "
+                "each set with its own execute(), under one transaction if they "
+                "must stay atomic."
             )
         shaped = [query.bind(each, extracted) for each in params]
-        if not shaped:
-            return None
         sql = shaped[0][0]
         start = perf_counter() if engine.observer is not None else 0.0
         report = await engine.driver.execute_many(

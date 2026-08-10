@@ -340,6 +340,12 @@ class TestWrites:
         labels = await engine.fetch_all(sa.select(Tag.label).order_by(Tag.id))
         assert labels == ["classic", "classic"]
 
+        # An empty batch is the documented no-op even for an expanding statement:
+        # there is no set to rewrite the SQL from, so the guard must not fire on
+        # either entrance.
+        assert await engine.execute_many(statement, []) is None
+        await engine.execute(statement, [])  # same guard, via execute(); must not raise
+
 
 class TestSchema:
     async def test_drop_all_then_create_all_round_trips(self, engine):
