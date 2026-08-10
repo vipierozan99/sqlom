@@ -400,6 +400,18 @@ class Connection:
         engine = self._engine
         await self._autobegin()
         query, extracted = engine._query_for(statement)
+        if query._expanding:
+            # One SQL string is sent for every set, but an expanding bind rewrites
+            # the string from its own values: two sets with different list lengths
+            # need different SQL. sqlite then fails with a binding count the caller
+            # cannot trace back to this, and psycopg's dict paramstyle ignores the
+            # surplus keys and writes the wrong rows without complaining.
+            raise StatementError(
+                "execute_many cannot run a statement with an expanding bind "
+                "parameter (an IN over a list): each parameter set would need its "
+                "own SQL, and executemany sends one statement for all of them. "
+                "Call execute() once per set instead."
+            )
         shaped = [query.bind(each, extracted) for each in params]
         if not shaped:
             return None
