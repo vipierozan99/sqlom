@@ -201,6 +201,16 @@ class Engine:
         cost against the flat micro shape.
         """
         if isinstance(statement, CoreQuery):
+            # A query compiled for another driver carries the wrong paramstyle and
+            # would run as a cryptic driver error. The `bind=` path checks the same
+            # parity in `_resolve`; this is its equivalent for the CoreQuery track.
+            if statement.dialect.driver != self.dialect.driver:
+                raise ConfigurationError(
+                    f"this CoreQuery was compiled for {statement.dialect.name}+"
+                    f"{statement.dialect.driver} and this engine is {self.dialect.name}+"
+                    f"{self.dialect.driver}; the compiled SQL would use the wrong "
+                    f"paramstyle. prepare() the statement on this engine."
+                )
             return statement, None
         cache_key = statement._generate_cache_key()
         if cache_key is None:

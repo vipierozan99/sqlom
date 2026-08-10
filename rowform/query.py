@@ -40,11 +40,16 @@ class CoreQuery(Generic[R]):
         "_metadata",
         "_plan",
         "_positional",
+        "dialect",
         "is_select",
         "sql",
     )
 
     def __init__(self, statement: Any, dialect: Any):
+        #: The dialect this statement was compiled for. Kept so an engine can
+        #: refuse a `CoreQuery` prepared for another driver — its SQL carries the
+        #: wrong paramstyle and would die with a cryptic driver error (`_query_for`).
+        self.dialect = dialect
         # Compiling *with* the cache key is what later lets `bind()` accept
         # another statement's literals: it records which bind parameters were
         # abstracted away by the key, so they can be substituted per call.

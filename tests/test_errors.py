@@ -123,6 +123,17 @@ class TestConfigurationError:
         with pytest.raises(rowform.ConfigurationError, match="cache_size"):
             rowform.Engine(create_async_engine(sqlite_url(sqlite_path)), cache_size=0)
 
+    async def test_a_core_query_from_another_driver_is_refused(self, sqlite_engine):
+        """A CoreQuery compiled for another driver carries the wrong paramstyle,
+        so running it would surface as a cryptic driver error. The engine refuses
+        it up front — the CoreQuery-track equivalent of the parity check the bind=
+        path does in `_resolve` (F6)."""
+        from sqlalchemy.dialects.postgresql import asyncpg as pg_asyncpg
+
+        foreign = rowform.CoreQuery(sa.select(Author), pg_asyncpg.dialect())
+        with pytest.raises(rowform.ConfigurationError, match="paramstyle"):
+            await sqlite_engine.fetch_all(foreign)
+
 
 # --------------------------------------------------------------------------
 # Statements
