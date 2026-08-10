@@ -1,24 +1,29 @@
 """Decide what a statement's rows mean, from the statement rather than the model.
 
-Planning hydration from a model's declaration order is a silent-corruption
-hazard: `select(User.name, User.id)` yields a different column order, and because
-the generated hydrator unpacks positionally (`compile.py`) the fields would be
-mis-assigned with nothing to catch it.
+Two hazards shape this module.
 
-So the plan comes from `stmt.selected_columns`: a contiguous run of selected
-columns that *is* some model's full column list becomes a model entity, and
-anything else is a scalar. That mirrors SQLAlchemy, which is what makes it fall
-out without an error path — `select(User.name, User.id)` simply degrades to a
-`(str, int)` tuple, exactly what SQLAlchemy returns for that query.
-
-Columns are compared **by identity**. `Column.__eq__` builds a SQL expression; it
+Planning hydration from a model's *declaration order* is silent corruption:
+`select(User.name, User.id)` selects a different column order, and the generated
+hydrator unpacks positionally (`compile.py`), so the fields would be mis-assigned
+with nothing to catch it. So the shape is planned from the statement's own
+columns, matched **by identity** — `Column.__eq__` builds a SQL expression, it
 does not compare.
+
+But the columns alone cannot tell a model from a tuple: `select(User)` and
+`select(User.id, User.name, User.active)` expand to the *same* selected columns,
+while SQLAlchemy yields a `User`-entity row for the first and a tuple of scalars
+for the second (R7). Only the raw select list distinguishes them — a whole
+`FromClause` (`Select._raw_columns`, or a write's `_returning`) versus
+hand-listed `Column`s. So a model entity is planned only where a from clause was
+selected whole; a hand-written full-column list stays scalars, matching both
+SQLAlchemy and rowform's typed overloads.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import FromClause
 from sqlalchemy.sql.expression import Join
 
 from .errors import PlanError
@@ -64,11 +69,12 @@ def plan(stmt: Any) -> Plan:
         stmt.selected_columns if getattr(stmt, "is_select", False) else stmt.exported_columns
     )
     nullable_froms = _nullable_froms(stmt)
+    entity_starts = _entity_starts(stmt)
 
     entities: list[Entity] = []
     index = 0
     while index < len(columns):
-        matched = _match_model(columns, index, nullable_froms)
+        matched = _match_model(columns, index, nullable_froms) if index in entity_starts else None
         if matched is None:
             entities.append(("column", columns[index]))
             index += 1
@@ -85,7 +91,12 @@ def plan(stmt: Any) -> Plan:
 def _match_model(
     columns: list[Any], index: int, nullable_froms: set[int]
 ) -> tuple[Entity, int] | None:
-    """Is the run starting at `index` exactly some model's full column list?"""
+    """Does the from clause selected whole at `index` yield a model?
+
+    Only reached at an `_entity_starts` index, so the run is known to be one
+    whole-entity selection; the identity check below still earns its keep for
+    aliases, whose columns are distinct objects proxying the table's.
+    """
     from_clause = getattr(columns[index], "table", None)
     if from_clause is None:
         return None
@@ -114,6 +125,31 @@ def _match_model(
         return None
 
     return ("model", model, pairs, id(from_clause) in nullable_froms), width
+
+
+def _entity_starts(stmt: Any) -> set[int]:
+    """Selected-column indices where a from clause was selected as a whole entity.
+
+    `select(User)` and `select(User.id, User.name, User.active)` expand to the
+    same `selected_columns`, so promotion to a model can only be told from the
+    *raw* select list: a `FromClause` there was selected whole, a `Column` was
+    hand-listed. Each raw from clause expands to its `exported_columns`, so its
+    width is what advances the index (R7). A write's entities live on
+    `_returning` instead of `_raw_columns`.
+    """
+    raw = getattr(stmt, "_raw_columns", None)
+    if raw is None:
+        raw = getattr(stmt, "_returning", ()) or ()
+
+    starts: set[int] = set()
+    index = 0
+    for element in raw:
+        if isinstance(element, FromClause):
+            starts.add(index)
+            index += len(list(element.exported_columns))
+        else:
+            index += 1
+    return starts
 
 
 def _nullable_froms(stmt: Any) -> set[int]:
