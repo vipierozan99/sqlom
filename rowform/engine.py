@@ -451,6 +451,12 @@ class Engine:
         it commits too.
         """
         self._reject_if_in_transaction("execute")
+        return await self._execute_scoped(statement, parameters, params)
+
+    async def _execute_scoped(self, statement: Any, parameters: Any, params: dict[str, Any]) -> Any:
+        """`execute()` past the in-transaction guard, so `scalar()`/`scalars()`
+        can run that guard once under their own name and still share the body,
+        rather than each running it and then triggering `execute`'s too (F11)."""
         resolved = self._query_for(statement)
         many = isinstance(parameters, (list, tuple))
         async with self._scope(commit=many or not resolved[0].is_select) as conn:
@@ -459,13 +465,13 @@ class Engine:
     async def scalar(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
         """`execute(...).scalar()`, in a scope of its own."""
         self._reject_if_in_transaction("scalar")
-        return (await self.execute(statement, parameters, **params)).scalar()
+        return (await self._execute_scoped(statement, parameters, params)).scalar()
 
     async def scalars(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
         """`execute(...).scalars()`, in a scope of its own. The rows are already
         buffered, so the `ScalarResult` outlives the connection."""
         self._reject_if_in_transaction("scalars")
-        return (await self.execute(statement, parameters, **params)).scalars()
+        return (await self._execute_scoped(statement, parameters, params)).scalars()
 
     async def execute_many(self, statement: Any, params: Sequence[dict[str, Any]]) -> Any:
         """One compiled statement, many parameter sets, one driver round trip.
