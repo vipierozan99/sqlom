@@ -314,6 +314,32 @@ class TestWrites:
     async def test_execute_many_with_no_rows_is_a_no_op(self, engine):
         assert await engine.execute_many(sa.insert(Tag.__table__), []) is None
 
+    async def test_execute_many_refuses_an_expanding_bind(self, engine):
+        """An expanding IN rewrites the SQL per parameter set; executemany sends
+        one string for all of them.
+
+        It used to bind every set and execute the *first* set's SQL. With the
+        widest set last, sqlite and asyncpg failed with a binding count naming
+        neither the statement nor the cause; psycopg's dict paramstyle ignored the
+        surplus keys, so the second set updated the first set's rows and reported
+        success — the sets below are ordered to hit that silent case.
+        """
+        statement = (
+            sa.update(Tag.__table__)
+            .where(Tag.id.in_(sa.bindparam("ids", expanding=True)))
+            .values(label=sa.bindparam("new_label"))
+        )
+        sets = [
+            {"ids": [100], "new_label": "a"},
+            {"ids": [100, 101], "new_label": "b"},
+        ]
+        with pytest.raises(rf.StatementError, match="expanding bind"):
+            await engine.execute_many(statement, sets)
+        with pytest.raises(rf.StatementError, match="expanding bind"):
+            await engine.execute(statement, sets)
+        labels = await engine.fetch_all(sa.select(Tag.label).order_by(Tag.id))
+        assert labels == ["classic", "classic"]
+
 
 class TestSchema:
     async def test_drop_all_then_create_all_round_trips(self, engine):
