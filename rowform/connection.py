@@ -223,16 +223,20 @@ class Connection:
         """
         engine = self._engine
         await self._autobegin()
-        if isinstance(parameters, (list, tuple)):
-            if params:
-                raise StatementError(
-                    "**params cannot be combined with a sequence of parameter sets; "
-                    "each set is its own, so there is nothing for them to merge into. "
-                    f"Put {', '.join(sorted(params))} in every dict instead."
-                )
-            return _result.no_rows(await self.execute_many(statement, parameters))
-        bound = {**(parameters or {}), **params}
+        many = isinstance(parameters, (list, tuple))
+        if many and params:
+            raise StatementError(
+                "**params cannot be combined with a sequence of parameter sets; "
+                "each set is its own, so there is nothing for them to merge into. "
+                f"Put {', '.join(sorted(params))} in every dict instead."
+            )
         query, extracted = resolved if resolved is not None else engine._query_for(statement)
+        if many:
+            # `resolved` is reused here too, not just on the row path: the
+            # executemany used to re-resolve the statement, the exact second
+            # structural cache-key computation `resolved` exists to avoid (F8).
+            return _result.no_rows(await self._execute_many(query, extracted, parameters))
+        bound = {**(parameters or {}), **params}
         if not query.returns_rows:
             return _result.no_rows(await self._execute(query, bound, extracted))
         rows, hydrate = await engine._run(query, bound, self._pinned, extracted)
@@ -406,9 +410,14 @@ class Connection:
         """One compiled statement, many parameter sets, one round trip. Returns
         the driver's own report; `execute(stmt, [ ... ])` wraps the same thing in
         a `Result`."""
-        engine = self._engine
         await self._autobegin()
-        query, extracted = engine._query_for(statement)
+        query, extracted = self._engine._query_for(statement)
+        return await self._execute_many(query, extracted, params)
+
+    async def _execute_many(self, query: Any, extracted: Any, params: Sequence[dict[str, Any]]) -> Any:
+        """`execute_many`, with the query already resolved — so the `execute()`
+        executemany path can pass down the one it already has (F8)."""
+        engine = self._engine
         shaped = [query.bind(each, extracted) for each in params]
         if not shaped:
             return None

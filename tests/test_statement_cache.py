@@ -104,6 +104,30 @@ class TestEvictionOrder:
         assert db.cached_statements == 1
 
 
+class TestResolveOnce:
+    async def test_the_executemany_path_resolves_the_statement_once(self, db, monkeypatch):
+        """`execute(stmt, [sets])` used to resolve the statement in `Engine.execute`
+        and again in `Connection.execute_many` — the second structural cache-key
+        computation `resolved` exists to avoid (F8)."""
+        calls = 0
+        original = db._query_for
+
+        def counting(statement):
+            nonlocal calls
+            calls += 1
+            return original(statement)
+
+        monkeypatch.setattr(db, "_query_for", counting)
+        await db.execute(
+            sa.insert(Author.__table__),
+            [
+                {"id": 8001, "name": "a", "active": True},
+                {"id": 8002, "name": "b", "active": True},
+            ],
+        )
+        assert calls == 1
+
+
 class TestUncacheableStatements:
     """SQLAlchemy declines to cache some constructs, and says so by returning no
     cache key at all. Those must still run.
