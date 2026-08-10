@@ -230,6 +230,16 @@ class TestStreaming:
             sizes = [len(p) async for p in result.partitions(3)]
         assert sizes == [3, 1]
 
+    async def test_a_zero_yield_per_is_refused_not_defaulted(self, engine):
+        """`yield_per(0)` reaches the chunk factory as an explicit 0, a bad size —
+        it must hit the same guard `fetch_iter(chunk=0)` does rather than silently
+        fall back to the stream's `chunk=` the way an unset (None) size does (T4)."""
+        async with engine.connect() as conn:
+            result = (await conn.stream(sa.select(Author).order_by(Author.id))).yield_per(0)
+            with pytest.raises(rf.ConfigurationError, match="chunk must be at least 1"):
+                async for _ in result:
+                    pass
+
     async def test_stream_scalars_shorthand(self, engine):
         async with engine.connect() as conn:
             result = await conn.stream_scalars(sa.select(Author).order_by(Author.id))

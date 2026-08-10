@@ -803,7 +803,10 @@ class Engine:
         """
 
         async def chunks(size: int | None) -> AsyncIterator[list[Any]]:
-            wanted = size or default_chunk
+            # `size if size is not None`, not `size or`: an explicit 0 is a bad
+            # size and must reach the guard below, not fall back to the default
+            # the way None does — the sibling `fetch_iter` path already rejects it.
+            wanted = size if size is not None else default_chunk
             if wanted < 1:
                 raise ConfigurationError(f"chunk must be at least 1, got {wanted}")
             sql, bound = query.bind(params, extracted)
