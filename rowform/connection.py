@@ -43,7 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncResult, AsyncScalarResult
 
 from . import result as _result
 from .errors import EngineStateError, StatementError
-from .query import CoreQuery
+from .query import CoreQuery, _one_row
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -354,9 +354,7 @@ class Connection:
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
         """The first row, or None — narrowed to `LIMIT 1` where that is safe, as
-        on the engine (`engine._one_row`)."""
-        from .engine import _one_row
-
+        on the engine (`query._one_row`)."""
         rows = await self.fetch_all(_one_row(statement), **params)
         return rows[0] if rows else None
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Generic, TypeVar
 
+from sqlalchemy import Select
 from sqlalchemy.engine.result import SimpleResultMetaData
 
 from .compile import compile_hydrator
@@ -198,3 +199,27 @@ class CoreQuery(Generic[R]):
 def _returns_rows(statement: Any) -> bool:
     """A SELECT, or a write with RETURNING. Anything else hydrates to nothing."""
     return bool(getattr(statement, "is_select", False) or getattr(statement, "_returning", None))
+
+
+def _one_row(statement: Any) -> Any:
+    """`statement`, narrowed to a single row where that is safe to do.
+
+    `fetch_one` read the whole result and threw away everything after the first
+    row, so "get me this user" transferred and hydrated the entire table. Adding
+    the LIMIT is the fix, but only for a `Select` that sets none of its own:
+
+    * a caller's `.limit()` may be a bind parameter, and replacing it would leave
+      their value with nothing to bind to;
+    * a `CoreQuery` is already compiled, so there is no statement left to narrow —
+      hoist it with `.limit(1)` already applied if you want that.
+
+    An OFFSET without a LIMIT is narrowed too: the first row of *that* statement
+    is still what the caller asked for.
+
+    `_limit_clause` is SQLAlchemy-private, like the rest of the compiler surface
+    this library reads; there is no public way to ask a Select whether it is
+    limited.
+    """
+    if isinstance(statement, Select) and statement._limit_clause is None:
+        return statement.limit(1)
+    return statement
