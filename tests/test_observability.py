@@ -111,6 +111,31 @@ class TestObserver:
         assert engine.observer is None
         assert await engine.fetch_all(sa.select(Author))
 
+    async def test_an_observer_attached_mid_statement_reports_no_uptime(self, sqlite_engine):
+        """The observer is captured once, at the start of the operation. If it was
+        None then, attaching one before the statement finishes must not make
+        `_observe` fire with a `start` of 0.0 and report the whole process uptime
+        as the duration — the statement began before any observer existed, so it
+        is simply not reported (F4)."""
+        seen: list[tuple[str, float, int | None]] = []
+        original = sqlite_engine.driver.fetch
+
+        async def attach_then_fetch(*args, **kwargs):
+            sqlite_engine.observer = lambda *call: seen.append(call)
+            return await original(*args, **kwargs)
+
+        sqlite_engine.driver.fetch = attach_then_fetch
+        assert sqlite_engine.observer is None
+
+        await sqlite_engine.fetch_all(sa.select(Author))
+        assert seen == [], "the in-flight statement predates the observer"
+
+        # The next statement is wholly inside the observer's lifetime, so it is
+        # reported — with a real duration, not the uptime the bug produced.
+        await sqlite_engine.fetch_all(sa.select(Author))
+        assert len(seen) == 1
+        assert 0 <= seen[0][1] < 10
+
     async def test_a_slow_query_log_is_the_shape_this_is_for(self, engine, caplog):
         """The motivating use case, wired end to end."""
         log = logging.getLogger("myapp.sql")

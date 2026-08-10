@@ -279,9 +279,10 @@ class Connection:
         hydrate — this always reports rather than returns."""
         engine = self._engine
         await self._autobegin()
-        start = perf_counter() if engine.observer is not None else 0.0
+        observer = engine.observer
+        start = perf_counter() if observer is not None else 0.0
         report = await engine.driver.execute(self.connection, sql, parameters)
-        engine._observe(sql, start, None)
+        engine._observe(observer, sql, start, None)
         return _result.no_rows(report)
 
     # --- hot track -----------------------------------------------------------
@@ -412,11 +413,12 @@ class Connection:
         if not shaped:
             return None
         sql = shaped[0][0]
-        start = perf_counter() if engine.observer is not None else 0.0
+        observer = engine.observer
+        start = perf_counter() if observer is not None else 0.0
         report = await engine.driver.execute_many(
             self.connection, sql, [bound for _, bound in shaped]
         )
-        engine._observe(sql, start, None)
+        engine._observe(observer, sql, start, None)
         return report
 
     # --- extensions ----------------------------------------------------------
@@ -460,9 +462,10 @@ class Connection:
     async def _execute(self, query: Any, params: dict[str, Any], extracted: Any) -> Any:
         engine = self._engine
         sql, bound = query.bind(params, extracted)
-        start = perf_counter() if engine.observer is not None else 0.0
+        observer = engine.observer
+        start = perf_counter() if observer is not None else 0.0
         report = await engine.driver.execute(self.connection, sql, bound)
-        engine._observe(sql, start, None)
+        engine._observe(observer, sql, start, None)
         return report
 
     def _pinned(self) -> AbstractAsyncContextManager[Any]:

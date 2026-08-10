@@ -362,7 +362,8 @@ class Engine:
         if acquire is None:
             acquire = self._acquire_for(query)
         sql, bound = query.bind(params, extracted)
-        start = perf_counter() if self.observer is not None else 0.0
+        observer = self.observer
+        start = perf_counter() if observer is not None else 0.0
         total = 0
         try:
             async with acquire() as conn:
@@ -384,7 +385,7 @@ class Engine:
             # generator, and an abandoned export is exactly the stream an
             # observer wants to hear about. It reports the rows actually
             # delivered, not the rows the statement would have produced.
-            self._observe(sql, start, total)
+            self._observe(observer, sql, start, total)
 
     @overload
     async def fetch_one(self, statement: CoreQuery[R], **params: Any) -> R | None: ...
@@ -532,10 +533,11 @@ class Engine:
             )
             for row in rows
         ]
-        start = perf_counter() if self.observer is not None else 0.0
+        observer = self.observer
+        start = perf_counter() if observer is not None else 0.0
         label = f"COPY {table.name} ({', '.join(names)})"
         copied = await self.driver.copy_in(conn, table, [c.name for c in selected], records)
-        self._observe(label, start, copied)
+        self._observe(observer, label, start, copied)
         return copied
 
     # --- schema -------------------------------------------------------------
@@ -796,12 +798,15 @@ class Engine:
         """
         sql, bound = query.bind(params, extracted)
         hydrate = query._hydrate
-        start = perf_counter() if self.observer is not None else 0.0
+        observer = self.observer
         async with acquire() as conn:
+            # Timed from here, not before the checkout: the observer's contract is
+            # the driver round trip, and the pool checkout is not part of it (F4).
+            start = perf_counter() if observer is not None else 0.0
             rows, description = await self.driver.fetch(conn, sql, bound, hydrate is None)
         if hydrate is None:
             hydrate = query.hydrator(self.dialect, description)
-        self._observe(sql, start, len(rows))
+        self._observe(observer, sql, start, len(rows))
         return rows, hydrate
 
     def _chunks(self, query: CoreQuery[Any], params: dict[str, Any], extracted: Any,
@@ -820,7 +825,8 @@ class Engine:
             if wanted < 1:
                 raise ConfigurationError(f"chunk must be at least 1, got {wanted}")
             sql, bound = query.bind(params, extracted)
-            start = perf_counter() if self.observer is not None else 0.0
+            observer = self.observer
+            start = perf_counter() if observer is not None else 0.0
             total = 0
             async with acquire() as conn:
                 async for rows, description in self.driver.stream(
@@ -831,17 +837,21 @@ class Engine:
                         hydrate = query.hydrator(self.dialect, description)
                     total += len(rows)
                     yield hydrate(rows)
-            self._observe(sql, start, total)
+            self._observe(observer, sql, start, total)
 
         return chunks
 
-    def _observe(self, sql: str, start: float, rows: int | None) -> None:
-        """Hand one completed statement to the `observer`, if there is one.
+    def _observe(self, observer: Observer | None, sql: str, start: float, rows: int | None) -> None:
+        """Hand one completed statement to `observer`, if there is one.
+
+        `observer` is captured by the caller at the start of the operation and
+        passed in, not re-read here: an observer attached *between* start and now
+        would otherwise fire with a `start` of 0.0 and report the whole process
+        uptime as the duration.
 
         Timing covers the driver round trip, not hydration: hydration is the part
         this library controls and benchmarks, while the round trip is what a
         slow-query log is actually about.
         """
-        observer = self.observer
         if observer is not None:
             observer(sql, perf_counter() - start, rows)
