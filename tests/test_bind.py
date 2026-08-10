@@ -213,10 +213,17 @@ class TestItRefusesWhatItCannotDo:
         finally:
             await other.dispose()
 
-    async def test_it_does_not_claim_the_active_connection(self, pair):
-        """A bound scope is one the caller owns and ends, so registering it would
-        make the engine's one-shots refuse for the rest of the task."""
+    async def test_a_one_shot_inside_a_bound_scope_is_refused(self, pair):
+        """A bound scope registers, so an `engine.fetch_*` one-shot inside it is
+        refused (R2): it would take a *different* pooled connection and miss the
+        bound transaction's uncommitted writes — the silent-wrong-read this guard
+        exists to stop. The registration is block-scoped, so `active_connection()`
+        is the bound conn inside and None the moment the block exits."""
         db, sa_engine = pair
-        async with sa_engine.connect() as their, db.connect(bind=their):
-            assert rf.active_connection() is None
-            assert await db.fetch_all(sa.select(Author))
+        async with sa_engine.connect() as their, db.connect(bind=their) as conn:
+            assert rf.active_connection() is conn
+            with pytest.raises(rf.EngineStateError, match=r"conn\.fetch_all"):
+                await db.fetch_all(sa.select(Author))
+            # The bound conn's own track still works inside the scope.
+            assert [a.name for a in await conn.fetch_all(sa.select(Author))] == ["ada"]
+        assert rf.active_connection() is None

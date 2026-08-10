@@ -685,7 +685,17 @@ class Engine:
                     "open; configure them where the connection was opened"
                 )
             sa_conn = await self._resolve(bind)
-            yield Connection(self, sa_conn, await self._driver_connection(sa_conn), owns=False)
+            conn = Connection(self, sa_conn, await self._driver_connection(sa_conn), owns=False)
+            # Register even though it is bound: an `engine.fetch_*` one-shot inside
+            # this block would take a *different* pooled connection and miss the
+            # bound transaction's uncommitted writes, so the guard has to see it.
+            # try/finally scopes the registration to the block — it refuses
+            # one-shots only inside, not for the rest of the task.
+            conn._enter()
+            try:
+                yield conn
+            finally:
+                conn._exit()
             return
         async with self._checkout() as (sa_conn, driver_conn):
             if execution_options:

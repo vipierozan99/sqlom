@@ -247,8 +247,10 @@ statement autobegins, and leaving without `commit()` rolls back.
 `bind=` runs on a connection somebody else owns — an `AsyncConnection` or an
 `AsyncSession`. Statements then run on the same physical connection, so they see
 that transaction's uncommitted writes and roll back with it. rowform neither
-begins nor ends anything in that case, and for the same reason a bound scope does
-not register in `active_connection()`. A connection from a different driver is
+begins nor ends the transaction in that case: the caller's block is the scope.
+The scope does register in `active_connection()`, so an `engine.fetch_*` one-shot
+inside it is refused — it would take a different pooled connection and miss the
+bound transaction's uncommitted writes. A connection from a different driver is
 refused: the compiled SQL carries one paramstyle.
 
 ```python
@@ -353,7 +355,9 @@ sqlite is a local file with no round trip to hide.
 
 The innermost `Connection` scope open in this task, from a `ContextVar`. This is
 what `engine.fetch_all()` consults in order to refuse to run inside one. A scope
-opened with `bind=` does not register: its transaction belongs to the caller.
+opened with `bind=` registers too, for the life of its block: a one-shot inside
+it would take a different pooled connection and miss the bound transaction's
+uncommitted writes, so the guard has to see it.
 
 ---
 
