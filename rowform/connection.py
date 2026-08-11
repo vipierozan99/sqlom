@@ -416,11 +416,28 @@ class Connection:
 
     async def _execute_many(self, query: Any, extracted: Any, params: Sequence[dict[str, Any]]) -> Any:
         """`execute_many`, with the query already resolved — so the `execute()`
-        executemany path can pass down the one it already has (F8)."""
-        engine = self._engine
-        shaped = [query.bind(each, extracted) for each in params]
-        if not shaped:
+        executemany path can pass down the one it already has (F8). Both entrances
+        pass through here, so the empty-batch no-op and the expanding-bind refusal
+        cover `execute(stmt, [ ... ])` as well."""
+        if not params:
             return None
+        engine = self._engine
+        if query._expanding:
+            # executemany sends one SQL string for every set, but a post-compile
+            # bind rewrites that string from its own values — an expanding IN over
+            # a list, or a literal-execute bind — so sets that render differently
+            # need different SQL. sqlite then fails with a binding count the caller
+            # cannot trace back to this, and psycopg's dict paramstyle ignores the
+            # surplus keys and writes the wrong rows without complaining.
+            raise StatementError(
+                "execute_many cannot run a statement whose SQL is rewritten per "
+                "parameter set by a post-compile bind — an expanding bind (an IN "
+                "over a list) or a literal-execute bind: each set would need its "
+                "own SQL, and executemany sends one statement for all of them. Run "
+                "each set with its own execute(), under one transaction if they "
+                "must stay atomic."
+            )
+        shaped = [query.bind(each, extracted) for each in params]
         sql = shaped[0][0]
         observer = engine.observer
         start = perf_counter() if observer is not None else 0.0

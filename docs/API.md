@@ -208,6 +208,18 @@ it returns the driver's report rather than a `Result`. The SQLAlchemy spelling o
 the same thing is `execute(stmt, [ ... ])`. An empty sequence returns `None`
 without touching the database.
 
+A statement whose SQL is rewritten per parameter set by a post-compile bind — an
+expanding IN (`col.in_(bindparam(..., expanding=True))`) or a literal-execute bind
+— is refused with `StatementError`: each set would render a different string, and
+one is sent for all of them. Run each set with its own `execute()`; because that
+opens a scope apiece, wrap the loop in one transaction if the sets must stay atomic:
+
+```python
+async with engine.begin() as conn:
+    for values in sets:
+        await conn.execute(statement, values)
+```
+
 #### `await engine.copy_in(table, rows, *, columns=None) -> int`
 
 Bulk-load through the server's COPY path, in a scope of its own. postgres only;
