@@ -54,33 +54,9 @@ from .errors import (
     EngineStateError,
     StatementError,
 )
-from .query import CoreQuery
+from .query import CoreQuery, _one_row
 
 _LOG = logging.getLogger("rowform")
-
-
-def _one_row(statement: Any) -> Any:
-    """`statement`, narrowed to a single row where that is safe to do.
-
-    `fetch_one` read the whole result and threw away everything after the first
-    row, so "get me this user" transferred and hydrated the entire table. Adding
-    the LIMIT is the fix, but only for a `Select` that sets none of its own:
-
-    * a caller's `.limit()` may be a bind parameter, and replacing it would leave
-      their value with nothing to bind to;
-    * a `CoreQuery` is already compiled, so there is no statement left to narrow —
-      hoist it with `.limit(1)` already applied if you want that.
-
-    An OFFSET without a LIMIT is narrowed too: the first row of *that* statement
-    is still what the caller asked for.
-
-    `_limit_clause` is SQLAlchemy-private, like the rest of the compiler surface
-    this library reads; there is no public way to ask a Select whether it is
-    limited.
-    """
-    if isinstance(statement, Select) and statement._limit_clause is None:
-        return statement.limit(1)
-    return statement
 
 
 #: What an `observer` is handed after every statement: the SQL as executed, how
@@ -201,6 +177,16 @@ class Engine:
         cost against the flat micro shape.
         """
         if isinstance(statement, CoreQuery):
+            # A query compiled for another driver carries the wrong paramstyle and
+            # would run as a cryptic driver error. The `bind=` path checks the same
+            # parity in `_resolve`; this is its equivalent for the CoreQuery track.
+            if statement.dialect.driver != self.dialect.driver:
+                raise ConfigurationError(
+                    f"this CoreQuery was compiled for {statement.dialect.name}+"
+                    f"{statement.dialect.driver} and this engine is {self.dialect.name}+"
+                    f"{self.dialect.driver}; the compiled SQL would use the wrong "
+                    f"paramstyle. prepare() the statement on this engine."
+                )
             return statement, None
         cache_key = statement._generate_cache_key()
         if cache_key is None:
@@ -352,7 +338,8 @@ class Engine:
         if acquire is None:
             acquire = self._acquire_for(query)
         sql, bound = query.bind(params, extracted)
-        start = perf_counter() if self.observer is not None else 0.0
+        observer = self.observer
+        start = perf_counter() if observer is not None else 0.0
         total = 0
         try:
             async with acquire() as conn:
@@ -374,7 +361,7 @@ class Engine:
             # generator, and an abandoned export is exactly the stream an
             # observer wants to hear about. It reports the rows actually
             # delivered, not the rows the statement would have produced.
-            self._observe(sql, start, total)
+            self._observe(observer, sql, start, total)
 
     @overload
     async def fetch_one(self, statement: CoreQuery[R], **params: Any) -> R | None: ...
@@ -440,6 +427,12 @@ class Engine:
         it commits too.
         """
         self._reject_if_in_transaction("execute")
+        return await self._execute_scoped(statement, parameters, params)
+
+    async def _execute_scoped(self, statement: Any, parameters: Any, params: dict[str, Any]) -> Any:
+        """`execute()` past the in-transaction guard, so `scalar()`/`scalars()`
+        can run that guard once under their own name and still share the body,
+        rather than each running it and then triggering `execute`'s too (F11)."""
         resolved = self._query_for(statement)
         many = isinstance(parameters, (list, tuple))
         async with self._scope(commit=many or not resolved[0].is_select) as conn:
@@ -448,13 +441,13 @@ class Engine:
     async def scalar(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
         """`execute(...).scalar()`, in a scope of its own."""
         self._reject_if_in_transaction("scalar")
-        return (await self.execute(statement, parameters, **params)).scalar()
+        return (await self._execute_scoped(statement, parameters, params)).scalar()
 
     async def scalars(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
         """`execute(...).scalars()`, in a scope of its own. The rows are already
         buffered, so the `ScalarResult` outlives the connection."""
         self._reject_if_in_transaction("scalars")
-        return (await self.execute(statement, parameters, **params)).scalars()
+        return (await self._execute_scoped(statement, parameters, params)).scalars()
 
     async def execute_many(self, statement: Any, params: Sequence[dict[str, Any]]) -> Any:
         """One compiled statement, many parameter sets, one driver round trip.
@@ -522,10 +515,11 @@ class Engine:
             )
             for row in rows
         ]
-        start = perf_counter() if self.observer is not None else 0.0
+        observer = self.observer
+        start = perf_counter() if observer is not None else 0.0
         label = f"COPY {table.name} ({', '.join(names)})"
         copied = await self.driver.copy_in(conn, table, [c.name for c in selected], records)
-        self._observe(label, start, copied)
+        self._observe(observer, label, start, copied)
         return copied
 
     # --- schema -------------------------------------------------------------
@@ -796,12 +790,15 @@ class Engine:
         """
         sql, bound = query.bind(params, extracted)
         hydrate = query._hydrate
-        start = perf_counter() if self.observer is not None else 0.0
+        observer = self.observer
         async with acquire() as conn:
+            # Timed from here, not before the checkout: the observer's contract is
+            # the driver round trip, and the pool checkout is not part of it (F4).
+            start = perf_counter() if observer is not None else 0.0
             rows, description = await self.driver.fetch(conn, sql, bound, hydrate is None)
         if hydrate is None:
             hydrate = query.hydrator(self.dialect, description)
-        self._observe(sql, start, len(rows))
+        self._observe(observer, sql, start, len(rows))
         return rows, hydrate
 
     def _chunks(self, query: CoreQuery[Any], params: dict[str, Any], extracted: Any,
@@ -813,11 +810,15 @@ class Engine:
         """
 
         async def chunks(size: int | None) -> AsyncIterator[list[Any]]:
-            wanted = size or default_chunk
+            # `size if size is not None`, not `size or`: an explicit 0 is a bad
+            # size and must reach the guard below, not fall back to the default
+            # the way None does — the sibling `fetch_iter` path already rejects it.
+            wanted = size if size is not None else default_chunk
             if wanted < 1:
                 raise ConfigurationError(f"chunk must be at least 1, got {wanted}")
             sql, bound = query.bind(params, extracted)
-            start = perf_counter() if self.observer is not None else 0.0
+            observer = self.observer
+            start = perf_counter() if observer is not None else 0.0
             total = 0
             async with acquire() as conn:
                 async for rows, description in self.driver.stream(
@@ -828,17 +829,21 @@ class Engine:
                         hydrate = query.hydrator(self.dialect, description)
                     total += len(rows)
                     yield hydrate(rows)
-            self._observe(sql, start, total)
+            self._observe(observer, sql, start, total)
 
         return chunks
 
-    def _observe(self, sql: str, start: float, rows: int | None) -> None:
-        """Hand one completed statement to the `observer`, if there is one.
+    def _observe(self, observer: Observer | None, sql: str, start: float, rows: int | None) -> None:
+        """Hand one completed statement to `observer`, if there is one.
+
+        `observer` is captured by the caller at the start of the operation and
+        passed in, not re-read here: an observer attached *between* start and now
+        would otherwise fire with a `start` of 0.0 and report the whole process
+        uptime as the duration.
 
         Timing covers the driver round trip, not hydration: hydration is the part
         this library controls and benchmarks, while the round trip is what a
         slow-query log is actually about.
         """
-        observer = self.observer
         if observer is not None:
             observer(sql, perf_counter() - start, rows)

@@ -233,6 +233,11 @@ async def scopes() -> None:
         async for author in conn.fetch_iter(sa.select(Author), chunk=100):
             assert_type(author, Author)
 
+        # The connection track carries the same per-arity overloads as the engine,
+        # up to four selected entities (F3).
+        async for triple in conn.fetch_iter(sa.select(Author, Book, Author.name)):
+            assert_type(triple, tuple[Author, Book, str])
+
         # The compatibility track is SQLAlchemy's own types, deliberately: these
         # are `Result` and friends, not anything rowform defines.
         assert_type(await conn.execute(sa.select(Author)), sa.Result[Any])

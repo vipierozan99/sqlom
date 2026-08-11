@@ -186,6 +186,12 @@ class SqliteDriver(Driver):
         await conn.interrupt()
 
     async def fetch(self, conn, sql, params, describe):
+        # Cursor left unclosed here and in execute/execute_many: a sqlite3 cursor
+        # holds no server-side resource (there is no server) and is finalized on
+        # GC, while `aiosqlite.Cursor.close` is a round trip to the worker thread.
+        # `stream` below *does* close, in a finally — an incremental cursor holds
+        # an open result set — and psycopg context-manages its cursors for the same
+        # reason this one need not.
         cursor = await conn.execute(sql, params)
         rows = await cursor.fetchall()
         # sqlite3 reports no type codes at all — `description[i][1]` is always
@@ -208,11 +214,11 @@ class SqliteDriver(Driver):
             await cursor.close()
 
     async def execute(self, conn, sql, params):
-        cursor = await conn.execute(sql, params or ())
+        cursor = await conn.execute(sql, params or ())  # unclosed — see fetch()
         return cursor.rowcount
 
     async def execute_many(self, conn, sql, params):
-        cursor = await conn.executemany(sql, params)
+        cursor = await conn.executemany(sql, params)  # unclosed — see fetch()
         return cursor.rowcount
 
 

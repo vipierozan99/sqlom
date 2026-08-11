@@ -43,7 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncResult, AsyncScalarResult
 
 from . import result as _result
 from .errors import EngineStateError, StatementError
-from .query import CoreQuery
+from .query import CoreQuery, _one_row
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -225,16 +225,20 @@ class Connection:
         """
         engine = self._engine
         await self._autobegin()
-        if isinstance(parameters, (list, tuple)):
-            if params:
-                raise StatementError(
-                    "**params cannot be combined with a sequence of parameter sets; "
-                    "each set is its own, so there is nothing for them to merge into. "
-                    f"Put {', '.join(sorted(params))} in every dict instead."
-                )
-            return _result.no_rows(await self.execute_many(statement, parameters))
-        bound = {**(parameters or {}), **params}
+        many = isinstance(parameters, (list, tuple))
+        if many and params:
+            raise StatementError(
+                "**params cannot be combined with a sequence of parameter sets; "
+                "each set is its own, so there is nothing for them to merge into. "
+                f"Put {', '.join(sorted(params))} in every dict instead."
+            )
         query, extracted = resolved if resolved is not None else engine._query_for(statement)
+        if many:
+            # `resolved` is reused here too, not just on the row path: the
+            # executemany used to re-resolve the statement, the exact second
+            # structural cache-key computation `resolved` exists to avoid (F8).
+            return _result.no_rows(await self._execute_many(query, extracted, parameters))
+        bound = {**(parameters or {}), **params}
         if not query.returns_rows:
             return _result.no_rows(await self._execute(query, bound, extracted))
         rows, hydrate = await engine._run(query, bound, self._pinned, extracted)
@@ -281,9 +285,10 @@ class Connection:
         hydrate — this always reports rather than returns."""
         engine = self._engine
         await self._autobegin()
-        start = perf_counter() if engine.observer is not None else 0.0
+        observer = engine.observer
+        start = perf_counter() if observer is not None else 0.0
         report = await engine.driver.execute(self.connection, sql, parameters)
-        engine._observe(sql, start, None)
+        engine._observe(observer, sql, start, None)
         return _result.no_rows(report)
 
     # --- hot track -----------------------------------------------------------
@@ -351,9 +356,7 @@ class Connection:
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
         """The first row, or None — narrowed to `LIMIT 1` where that is safe, as
-        on the engine (`engine._one_row`)."""
-        from .engine import _one_row
-
+        on the engine (`query._one_row`)."""
         rows = await self.fetch_all(_one_row(statement), **params)
         return rows[0] if rows else None
 
@@ -371,6 +374,16 @@ class Connection:
     def fetch_iter(
         self, statement: Select[tuple[R, R2]], *, chunk: int = ..., **params: Any
     ) -> AsyncIterator[tuple[R, R2]]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Select[tuple[R, R2, R3]], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[tuple[R, R2, R3]]: ...
+
+    @overload
+    def fetch_iter(
+        self, statement: Select[tuple[R, R2, R3, R4]], *, chunk: int = ..., **params: Any
+    ) -> AsyncIterator[tuple[R, R2, R3, R4]]: ...
 
     @overload
     def fetch_iter(
@@ -397,18 +410,24 @@ class Connection:
         """One compiled statement, many parameter sets, one round trip. Returns
         the driver's own report; `execute(stmt, [ ... ])` wraps the same thing in
         a `Result`."""
-        engine = self._engine
         await self._autobegin()
-        query, extracted = engine._query_for(statement)
+        query, extracted = self._engine._query_for(statement)
+        return await self._execute_many(query, extracted, params)
+
+    async def _execute_many(self, query: Any, extracted: Any, params: Sequence[dict[str, Any]]) -> Any:
+        """`execute_many`, with the query already resolved — so the `execute()`
+        executemany path can pass down the one it already has (F8)."""
+        engine = self._engine
         shaped = [query.bind(each, extracted) for each in params]
         if not shaped:
             return None
         sql = shaped[0][0]
-        start = perf_counter() if engine.observer is not None else 0.0
+        observer = engine.observer
+        start = perf_counter() if observer is not None else 0.0
         report = await engine.driver.execute_many(
             self.connection, sql, [bound for _, bound in shaped]
         )
-        engine._observe(sql, start, None)
+        engine._observe(observer, sql, start, None)
         return report
 
     # --- extensions ----------------------------------------------------------
@@ -452,9 +471,10 @@ class Connection:
     async def _execute(self, query: Any, params: dict[str, Any], extracted: Any) -> Any:
         engine = self._engine
         sql, bound = query.bind(params, extracted)
-        start = perf_counter() if engine.observer is not None else 0.0
+        observer = engine.observer
+        start = perf_counter() if observer is not None else 0.0
         report = await engine.driver.execute(self.connection, sql, bound)
-        engine._observe(sql, start, None)
+        engine._observe(observer, sql, start, None)
         return report
 
     def _pinned(self) -> AbstractAsyncContextManager[Any]:

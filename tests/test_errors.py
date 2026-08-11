@@ -123,6 +123,17 @@ class TestConfigurationError:
         with pytest.raises(rowform.ConfigurationError, match="cache_size"):
             rowform.Engine(create_async_engine(sqlite_url(sqlite_path)), cache_size=0)
 
+    async def test_a_core_query_from_another_driver_is_refused(self, sqlite_engine):
+        """A CoreQuery compiled for another driver carries the wrong paramstyle,
+        so running it would surface as a cryptic driver error. The engine refuses
+        it up front — the CoreQuery-track equivalent of the parity check the bind=
+        path does in `_resolve` (F6)."""
+        from sqlalchemy.dialects.postgresql import asyncpg as pg_asyncpg
+
+        foreign = rowform.CoreQuery(sa.select(Author), pg_asyncpg.dialect())
+        with pytest.raises(rowform.ConfigurationError, match="paramstyle"):
+            await sqlite_engine.fetch_all(foreign)
+
 
 # --------------------------------------------------------------------------
 # Statements
@@ -184,11 +195,12 @@ class TestEngineStateError:
             with pytest.raises(rowform.EngineStateError, match="different pooled connection"):
                 await engine.fetch_all(sa.select(Author))
 
-    @pytest.mark.parametrize("method", ["fetch_all", "fetch_one"])
+    @pytest.mark.parametrize("method", ["fetch_all", "fetch_one", "scalar", "scalars"])
     async def test_it_names_the_method_that_was_called(self, engine, method):
         """The message ends "Use conn.X() instead", so X has to be the method the
         caller reached for. `fetch_one` routed through `fetch_all` and inherited
-        its name, telling the caller to fix a call they had not made."""
+        its name, telling the caller to fix a call they had not made; `scalar` and
+        `scalars` must likewise name themselves rather than `execute` (F11)."""
         async with engine.begin():
             with pytest.raises(rowform.EngineStateError, match=f"conn\\.{method}"):
                 await getattr(engine, method)(sa.select(Author))
