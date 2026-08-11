@@ -424,8 +424,11 @@ One statement compiled for one dialect. `engine.prepare()` returns it.
 
 ### `rf.plan(statement) -> Plan`
 
-What a statement's rows mean: a contiguous run of selected columns that *is* some
-model's full column list becomes that model, anything else is a scalar. Columns are
+What a statement's rows mean: a from clause selected as a whole entity
+(`select(User)`, `.returning(User)`) becomes that model, anything else is a
+scalar. A hand-written full-column list (`select(User.id, User.name, ...)`) stays
+a tuple of scalars — the same shape SQLAlchemy and the `fetch_*` overloads give
+it — since only the raw select list tells it from `select(User)`. Columns are
 compared by identity, since `Column.__eq__` builds SQL rather than comparing.
 Raises `PlanError` for a statement selecting nothing.
 

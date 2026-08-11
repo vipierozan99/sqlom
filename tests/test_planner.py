@@ -63,9 +63,13 @@ class TestScalars:
         p = rf.plan(sa.select(Author.name, Author.id, Author.active))
         assert kinds(p) == ["column"] * 3
 
-    def test_a_full_column_list_in_declaration_order_does_become_a_model(self):
+    def test_a_hand_written_full_column_list_stays_scalar(self):
+        """R7: `select(User.id, User.name, User.active)` lists every column, but
+        by hand — SQLAlchemy returns a tuple of scalars, and the `fetch_all`
+        overloads type it as one, so it must not promote to the model. Only a
+        whole-entity `select(User)` does (`_entity_starts`)."""
         p = rf.plan(sa.select(Author.id, Author.name, Author.active))
-        assert kinds(p) == ["model"]
+        assert kinds(p) == ["column", "column", "column"]
 
     def test_a_partial_column_list_stays_scalar(self):
         p = rf.plan(sa.select(Author.id, Author.name))
