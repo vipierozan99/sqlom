@@ -1,6 +1,6 @@
 """cProfile adapter: instrumented, CPU clock
-(`process_time_ns`), whole-loop — no native per-coroutine breakdown, that is
-yappi's job. Keeps its CPU timer deliberately: a wall profile of an asyncio
+(`process_time_ns`), whole-loop — no per-coroutine breakdown. Keeps its CPU
+timer deliberately: a wall profile of an asyncio
 loop is dominated by `epoll_wait`.
 
 Known bias to preserve, never resolve by picking the flattering number:

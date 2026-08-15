@@ -1,17 +1,15 @@
-"""Normalise cProfile/yappi output to speedscope JSON + folded stacks.
+"""Normalise cProfile output to speedscope JSON + folded stacks.
 
 pyinstrument and py-spy emit speedscope themselves, and austin's own tooling
 converts to it (`mojo2austin` then `austin2speedscope` — see `austin.py`), so
-this module is the generic converter for the two that have no such path.
+this module is the generic converter for the one that has no such path.
 
-Both `pstats.Stats` and yappi's `YFuncStats` describe a *call graph*
-(caller/callee edges with aggregate times), not literal per-sample stacks, so
-there is no single "the" stack per function. The folded-stack line for each
-function is reconstructed by walking its most-frequent caller chain (cProfile)
-or its call tree from every root function (yappi) — a standard, if
-approximate, way to turn aggregate profiler output into flame-graph input;
-tools like `pyprof2calltree`/`flameprof` make the same call-graph-to-stack
-approximation.
+`pstats.Stats` describes a *call graph* (caller/callee edges with aggregate
+times), not literal per-sample stacks, so there is no single "the" stack per
+function. The folded-stack line for each function is reconstructed by walking
+its most-frequent caller chain — a standard, if approximate, way to turn
+aggregate profiler output into flame-graph input; tools like
+`pyprof2calltree`/`flameprof` make the same call-graph-to-stack approximation.
 """
 
 from __future__ import annotations
@@ -56,33 +54,6 @@ def _pstats_label(key: tuple[str, int, str]) -> str:
     filename, lineno, funcname = key
     short = filename.rsplit("/", 1)[-1]
     return f"{funcname} ({short}:{lineno})"
-
-
-def yappi_to_folded(stats: Any) -> list[str]:
-    """Same idea as `pstats_to_folded`, but yappi's `YFuncStats` gives a
-    proper callee tree (`.children`) instead of a caller map, so this walks
-    down from every root function (one with no incoming call recorded) rather
-    than up from every leaf."""
-    called = {child.index for func in stats for child in func.children}
-    roots = [func for func in stats if func.index not in called]
-    by_index = {func.index: func for func in stats}
-
-    lines = []
-
-    def walk(func, path, seen):
-        label = f"{func.name} ({func.module}:{func.lineno})"
-        new_path = [*path, label]
-        if func.tsub > 0:
-            weight_us = max(1, round(func.tsub * 1_000_000))
-            lines.append(f"{';'.join(new_path)} {weight_us}")
-        for child in func.children:
-            target = by_index.get(child.index)
-            if target is not None and target.index not in seen and len(new_path) < MAX_STACK_DEPTH:
-                walk(target, new_path, seen | {target.index})
-
-    for root in roots:
-        walk(root, [], {root.index})
-    return lines
 
 
 def folded_to_speedscope(folded_lines: list[str], profile_name: str) -> dict[str, Any]:

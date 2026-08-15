@@ -110,10 +110,6 @@ def read_back(pid: int) -> list[int]:
     return sorted(os.sched_getaffinity(pid))
 
 
-def verify(pid: int, expected_cpus: list[int]) -> bool:
-    return read_back(pid) == sorted(set(expected_cpus))
-
-
 @contextmanager
 def pin_current_process(cpus: list[int]):
     """Restrict the calling process to `cpus` for the block, restoring the

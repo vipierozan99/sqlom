@@ -132,7 +132,6 @@ profile = [
     "austin-python>=2.2",
     "py-spy>=0.4.2",
     "pyinstrument>=5.0",
-    "yappi>=1.6.10",
 ]
 
 

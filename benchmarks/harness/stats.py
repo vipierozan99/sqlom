@@ -1,5 +1,5 @@
-"""Medians, spread, and tie-grouping: report both, and group ties instead of
-ranking them. Consolidates two duplicate percentile implementations
+"""Medians, spread, and tie-aware ratios: report both, and flag ties instead
+of ranking them. Consolidates two duplicate percentile implementations
 and the `summarize()`/`print_table()` pair that only differed in column widths.
 """
 
@@ -103,32 +103,6 @@ def sample_shape(values: Sequence[float]) -> SampleShape:
         outliers_severe=severe,
         max_over_p50=max(values) / med if med else float("nan"),
     )
-
-
-def tie_group(cells: Sequence[float], threshold_pct: float = DEFAULT_TIE_THRESHOLD_PCT) -> list[list[int]]:
-    """Group cell *medians* (already one number per contender) into tie groups:
-    indices whose values are within `threshold_pct` of each other, chained
-    transitively (A ties B, B ties C -> A/B/C are one group even if A and C
-    alone would not).
-
-    Returns groups of indices into `cells`, ordered by group median descending
-    (fastest first) — the presentation `bench report` wants, not a numbered
-    ranking within a tie.
-    """
-    if not cells:
-        return []
-    order = sorted(range(len(cells)), key=lambda i: -cells[i])
-    groups: list[list[int]] = []
-    for i in order:
-        placed = False
-        for group in groups:
-            if any(_within(cells[i], cells[j], threshold_pct) for j in group):
-                group.append(i)
-                placed = True
-                break
-        if not placed:
-            groups.append([i])
-    return groups
 
 
 def _within(a: float, b: float, threshold_pct: float) -> bool:
