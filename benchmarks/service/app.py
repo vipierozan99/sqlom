@@ -153,8 +153,8 @@ async def sqlite_flat_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Resp
     return Response(content=orjson.dumps(rows), media_type=JSON)
 
 
-@app.get("/sqlite-flat-raw-aiosqlite-dict")
-async def sqlite_flat_raw_aiosqlite_dict(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
+@app.get("/sqlite-flat-floor-hand-rolled-dict")
+async def sqlite_flat_floor_hand_rolled_dict(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     sql = "SELECT id, name, email, is_active FROM users WHERE is_active = 1 AND id > 100 LIMIT ?"
     async with app.state.aiosqlite.acquire() as conn:
         cur = await conn.execute(sql, (limit,))
@@ -174,8 +174,8 @@ async def sqlite_flat_raw_aiosqlite_dict(limit: int = Query(default=DEFAULT_LIMI
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/sqlite-flat-sqlalchemy-async-core-mappings")
-async def sqlite_flat_sqlalchemy_async_core_mappings(
+@app.get("/sqlite-flat-sqlalchemy-core-mappings")
+async def sqlite_flat_sqlalchemy_core_mappings(
     limit: int = Query(default=DEFAULT_LIMIT),
 ) -> Response:
     stmt = (
@@ -190,8 +190,8 @@ async def sqlite_flat_sqlalchemy_async_core_mappings(
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/sqlite-flat-sqlalchemy-async-core-positional")
-async def sqlite_flat_sqlalchemy_async_core_positional(
+@app.get("/sqlite-flat-sqlalchemy-core-positional")
+async def sqlite_flat_sqlalchemy_core_positional(
     limit: int = Query(default=DEFAULT_LIMIT),
 ) -> Response:
     stmt = (
@@ -214,8 +214,8 @@ async def sqlite_flat_sqlalchemy_async_core_positional(
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/sqlite-flat-sqlalchemy-async-orm")
-async def sqlite_flat_sqlalchemy_async_orm(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
+@app.get("/sqlite-flat-sqlalchemy-orm")
+async def sqlite_flat_sqlalchemy_orm(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     stmt = select(UserORM).where(UserORM.is_active == True).where(UserORM.id > 100).limit(limit)
     names = [str(c.name) for c in UserORM.__table__.columns]
     async with AsyncSession(app.state.sa_engine) as session, session.begin():
@@ -244,8 +244,8 @@ async def sqlite_join_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Resp
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/sqlite-join-sqlalchemy-async-core-positional")
-async def sqlite_join_sqlalchemy_async_core_positional(
+@app.get("/sqlite-join-sqlalchemy-core-positional")
+async def sqlite_join_sqlalchemy_core_positional(
     limit: int = Query(default=DEFAULT_LIMIT),
 ) -> Response:
     stmt = (
@@ -279,8 +279,8 @@ async def sqlite_join_sqlalchemy_async_core_positional(
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/sqlite-join-sqlalchemy-async-orm")
-async def sqlite_join_sqlalchemy_async_orm(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
+@app.get("/sqlite-join-sqlalchemy-orm")
+async def sqlite_join_sqlalchemy_orm(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     stmt = (
         select(AuthorORM, PostORM)
         .join(PostORM, PostORM.author_id == AuthorORM.id)
@@ -313,8 +313,8 @@ async def postgres_flat_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Re
     return Response(content=orjson.dumps(rows), media_type=JSON)
 
 
-@app.get("/postgres-flat-raw-asyncpg-dict")
-async def postgres_flat_raw_asyncpg_dict(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
+@app.get("/postgres-flat-floor-hand-rolled-dict")
+async def postgres_flat_floor_hand_rolled_dict(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     sql = "SELECT id, name, email, is_active FROM users WHERE is_active AND id > 100 LIMIT $1"
     async with app.state.pg_asyncpg.acquire() as conn, conn.transaction():
         rows = await conn.fetch(sql, limit)

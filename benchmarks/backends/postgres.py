@@ -80,7 +80,14 @@ class EphemeralPostgres:
         if not ssl:
             dsn += "?sslmode=disable"
         instance = cls(container_id=container_id, dsn=dsn, port=port, cpuset=cpuset, image=image)
-        await instance._wait_ready()
+        try:
+            await instance._wait_ready()
+        except BaseException:
+            # A container that never became ready (timeout, Ctrl-C during
+            # polling) would otherwise outlive the failed start and hold the
+            # port against every later provision.
+            await instance.stop()
+            raise
         return instance
 
     async def _wait_ready(self, timeout: float = 30.0) -> None:

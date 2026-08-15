@@ -44,6 +44,7 @@ from pathlib import Path
 
 import typer
 
+import benchmarks.micro.contenders  # noqa: F401 -- @contender registration side-effects
 from benchmarks.backends.provision import Teardown, provision
 from benchmarks.harness import cpuacct, registry
 from benchmarks.harness import env as env_module
@@ -70,14 +71,20 @@ async def _provision(
     pg_port: int,
 ) -> tuple[Teardown, list[ServiceWorker]]:
     env, teardown = await provision(spec.backend, spec.shape, rows, pg_port=pg_port)
-    workers_list = await launch(
-        "benchmarks.service.app:app",
-        base_port=port,
-        workers=workers,
-        cores=server_cores,
-        env=env,
-        quiet=True,
-    )
+    try:
+        workers_list = await launch(
+            "benchmarks.service.app:app",
+            base_port=port,
+            workers=workers,
+            cores=server_cores,
+            env=env,
+            quiet=True,
+        )
+    except BaseException:
+        # The caller's try/finally hasn't begun yet — a failed launch must tear
+        # the backend down here or the postgres container outlives the run.
+        await teardown()
+        raise
     return teardown, workers_list
 
 

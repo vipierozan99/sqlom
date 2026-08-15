@@ -2,7 +2,7 @@
 
 from benchmarks.load.locust import CaseUser
 
-CASE = "sqlite-flat-sqlalchemy-async-core-mappings"
+CASE = "sqlite-flat-sqlalchemy-core-mappings"
 
 
 class User(CaseUser):

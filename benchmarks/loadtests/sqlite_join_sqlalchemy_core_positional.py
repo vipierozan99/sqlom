@@ -2,7 +2,7 @@
 
 from benchmarks.load.locust import CaseUser
 
-CASE = "sqlite-join-sqlalchemy-async-core-positional"
+CASE = "sqlite-join-sqlalchemy-core-positional"
 
 
 class User(CaseUser):

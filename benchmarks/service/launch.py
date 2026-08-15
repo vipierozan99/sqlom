@@ -58,38 +58,47 @@ async def launch(
     import os
 
     workers_list: list[ServiceWorker] = []
-    for i in range(workers):
-        port = base_port + i
-        # Checked *before* spawning, not just polled for readiness afterward:
-        # an already-occupied port still accepts TCP connections (just from
-        # whatever else is listening), so a bare "can I connect" readiness
-        # check cannot tell "our worker is up" from "something unrelated was
-        # already there" — it would silently pass and every request would go
-        # to the wrong process. Observed on a shared dev box where port 8000
-        # was already bound by an unrelated service.
-        if _port_in_use(port):
-            raise RuntimeError(
-                f"port {port} is already in use by another process — pass a "
-                f"different --port (or --base-port). A uvicorn worker failing to "
-                f"bind here would be indistinguishable from a slow-starting one "
-                f"under a plain 'can I connect' readiness check, so this fails "
-                f"before spawning rather than after."
+    try:
+        for i in range(workers):
+            port = base_port + i
+            # Checked *before* spawning, not just polled for readiness afterward:
+            # an already-occupied port still accepts TCP connections (just from
+            # whatever else is listening), so a bare "can I connect" readiness
+            # check cannot tell "our worker is up" from "something unrelated was
+            # already there" — it would silently pass and every request would go
+            # to the wrong process. Observed on a shared dev box where port 8000
+            # was already bound by an unrelated service.
+            if _port_in_use(port):
+                raise RuntimeError(
+                    f"port {port} is already in use by another process — pass a "
+                    f"different --port (or --base-port). A uvicorn worker failing to "
+                    f"bind here would be indistinguishable from a slow-starting one "
+                    f"under a plain 'can I connect' readiness check, so this fails "
+                    f"before spawning rather than after."
+                )
+            worker_cores = [cores[i % len(cores)]] if cores else []
+            cmd = []
+            if worker_cores:
+                cmd += ["taskset", "-c", ",".join(str(c) for c in worker_cores)]
+            cmd += [
+                "uvicorn", app_target, "--port", str(port), "--loop", loop,
+                "--http", "httptools", "--no-access-log",
+            ]
+            worker_env = {**os.environ, **(env or {})}
+            stdout = asyncio.subprocess.DEVNULL if quiet else None
+            stderr = asyncio.subprocess.DEVNULL if quiet else None
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, env=worker_env, stdout=stdout, stderr=stderr
             )
-        worker_cores = [cores[i % len(cores)]] if cores else []
-        cmd = []
-        if worker_cores:
-            cmd += ["taskset", "-c", ",".join(str(c) for c in worker_cores)]
-        cmd += [
-            "uvicorn", app_target, "--port", str(port), "--loop", loop,
-            "--http", "httptools", "--no-access-log",
-        ]
-        worker_env = {**os.environ, **(env or {})}
-        stdout = asyncio.subprocess.DEVNULL if quiet else None
-        stderr = asyncio.subprocess.DEVNULL if quiet else None
-        proc = await asyncio.create_subprocess_exec(*cmd, env=worker_env, stdout=stdout, stderr=stderr)
-        workers_list.append(ServiceWorker(proc=proc, port=port, cores=worker_cores))
+            workers_list.append(ServiceWorker(proc=proc, port=port, cores=worker_cores))
 
-    await _wait_ready(workers_list)
+        await _wait_ready(workers_list)
+    except BaseException:
+        # A port check or readiness wait failing for worker i must not leave
+        # workers 0..i-1 running — nothing else knows their pids yet.
+        for worker in workers_list:
+            await worker.stop()
+        raise
     return workers_list
 
 
