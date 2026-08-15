@@ -1,5 +1,30 @@
 # Recorded runs
 
+## 2026-08-15 (third sweep) — postgres join floors: the join column becomes a measurement
+
+Branch **`bench/2026-08-15-pg-join-floors`** (runs taken at `5a46d61` — the PR
+#19–#27 stack). Adds `floor: hand-rolled (dict)` and `floor: on SQLAlchemy (dict)` at
+join/postgres — the column carrying the suite's strongest ORM claim previously had no
+postgres floor under it, so its headroom figure was extrapolated from sqlite. Same
+recipe and full matrix as the sweeps below. Worst trial spread: **4.0% sqlite / 4.9%
+postgres / 4.3% mock**; `quotable=False` on the boost clause, plus 5 thermal-throttle
+events during the mock/join run (spread stayed within 4.3%).
+
+**What it measured.** Idiomatic rowform at join/postgres sits **16% above the
+same-plumbing dict floor** (0.8822 vs 0.7610 ms) — the sqlite-derived ~13% guess was
+close, and now it's a number. The pool finding reproduces at arity two: the
+same-plumbing floor again undercuts the raw asyncpg-pool floor (0.7610 vs 0.7797).
+On flat, this sweep read SQLAlchemy's checkout at *zero* against the no-pool floor
+(0.3653 vs 0.3661 — inside noise; the previous sweep read +0.008 ms), tightening the
+claim to "indistinguishable from no pool at all, ≤0.01 ms across sweeps".
+
+**Calibration log** (see the boost caveat in METHODOLOGY): Core positional
+flat/sqlite has now read 0.89x → 0.82x → 0.77x across three same-day, same-code-shape
+sweeps while every rowform row held within ~1%. That is a monotonic drift in one
+contender, not symmetric jitter — worth one boost-off (root) session to settle
+whether flat/sqlite Core genuinely sits nearer 0.8x than 0.9x. Until then the
+equal-work Core margin on that one cell should be quoted as a range.
+
 ## 2026-08-15 (later) — the decomposition sweep: both oddities resolved
 
 Branch **`bench/2026-08-15-decomposition`** (commit `89fc9d0`, runs taken at
