@@ -1,5 +1,16 @@
 # Recorded runs
 
+## 2026-08-15 — contender families split (methodology break, no runs recorded)
+
+No numbers — a marker: correction 14 (see METHODOLOGY.md) split every `rowform` row
+into an equal-work `rowform` (unprepared statement, the same per-row payload pass the
+ORM rows pay) and a `rowform (idiomatic)` row (prepared once, dataclasses straight to
+orjson), retired the cross-mapper mock ratios, and made the mock rowform arm exercise
+the cache-key path it claimed to. **No run recorded before this date is comparable to
+one recorded after it.** First equal-work smoke runs put rowform at a tie with
+SQLAlchemy Core (positional) on flat/sqlite; the idiomatic row carries the old margin.
+A clean recorded sweep with the split contenders is the next entry to write here.
+
 ## 2026-08-02 — transactions equalised, pools equalised, and a harness bug that invalidates every run above
 
 Branch `type-the-rest-of-the-read-path`, **not recorded to a `bench/` branch**: these

@@ -57,13 +57,21 @@ def up(
     ssl: bool = typer.Option(False, help="require SSL on the connection"),
     port: int = typer.Option(5432, help="host port; host networking binds it directly"),
     attach_dsn: str | None = typer.Option(
-        None, "--attach", help="use an already-running server instead of docker"
+        None,
+        "--attach",
+        help="use an already-running server instead of docker. `bench db seed` (and "
+        "`bench micro --pg-dsn`) DROP and recreate the shape's tables on it",
     ),
 ) -> None:
     """Start an ephemeral Postgres (docker, --network host, --cpuset-cpus), or
     attach to an existing one with --attach."""
     if _load_state() is not None:
-        typer.echo("a database is already up — run `bench db down` first", err=True)
+        typer.echo(
+            f"a database is already up according to {_STATE_PATH} — run `bench db down` "
+            f"first. If the container is actually gone (reboot, `docker system prune`), "
+            f"`down` still clears the stale state file.",
+            err=True,
+        )
         raise typer.Exit(1)
 
     instance = (
