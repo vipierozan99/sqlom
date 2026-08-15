@@ -40,10 +40,12 @@ BACKENDS = ("sqlite", "postgres", "mock")
 #: floors stay above the thing they bound and rowform's three rows stay adjacent.
 ROW_ORDER = (
     "hand-written dict (mock)",
+    "floor: no pool (dict)",
     "floor: hand-rolled (dict)",
     "floor: hand-rolled (hydrator)",
     "floor: on SQLAlchemy (dict)",
     "rowform",
+    "rowform (prepared)",
     "rowform (idiomatic)",
     "rowform (no transaction)",
     "rowform compat (.scalars())",
@@ -61,10 +63,12 @@ ROW_ORDER = (
 #: either too terse or carry a backend suffix the table's own heading supplies.
 LABELS = {
     "hand-written dict (mock)": "hand-written dicts *(parsing floor)*",
+    "floor: no pool (dict)": "one dedicated connection → dicts *(floor: no pool)*",
     "floor: hand-rolled (dict)": "raw driver → dicts *(floor: no SQLAlchemy)*",
     "floor: hand-rolled (hydrator)": "raw driver + the same hydrator *(floor: no SQLAlchemy)*",
     "floor: on SQLAlchemy (dict)": "same pool + transaction → dicts *(floor: same plumbing)*",
     "rowform": "**rowform** `fetch_all()` *(equal work)*",
+    "rowform (prepared)": "rowform *(prepared, equal payload — prices the cache key)*",
     "rowform (idiomatic)": "rowform *(idiomatic: prepared once, direct to orjson)*",
     "rowform (no transaction)": "rowform `fetch_all()` off the engine *(no transaction)*",
     "rowform compat (.scalars())": "rowform `execute().scalars()`",

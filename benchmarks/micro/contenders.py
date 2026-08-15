@@ -355,6 +355,32 @@ async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
+    "rowform (prepared)",
+    backend="sqlite",
+    shape="flat",
+    tags=("decomposition",),
+    description="Equal work except prepare-once — the middle rung that decomposes the "
+    "idiomatic delta into cache-key vs serialization.",
+)
+async def flat_rowform_prepared(init: ContenderInit) -> tuple[Target, Teardown]:
+    """The decomposition ladder, one variable per rung: `rowform` (unprepared,
+    equal payload) minus this row is the structural cache-key cost; this row
+    minus `rowform (idiomatic)` is the Python payload pass vs orjson's C
+    dataclass path. Added because the recorded join/postgres gap between the
+    equal-work and idiomatic rows (0.73x) bundled both and could not be read.
+    """
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(flat_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_flat_objs(await conn.fetch_all(query)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
     "rowform (idiomatic)",
     backend="sqlite",
     shape="flat",
@@ -774,6 +800,25 @@ async def join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with engine.begin() as conn:
             return dumps(_join_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (prepared)",
+    backend="sqlite",
+    shape="join",
+    tags=("decomposition",),
+    description="Equal work except prepare-once, at arity two — see the flat twin.",
+)
+async def join_rowform_prepared(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(join_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_join_objs(await conn.fetch_all(query)))
 
     return target, sa_engine.dispose
 
@@ -1248,6 +1293,25 @@ async def pg_flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
+    "rowform (prepared)",
+    backend="postgres",
+    shape="flat",
+    tags=("decomposition",),
+    description="Equal work except prepare-once, on asyncpg — see the sqlite flat twin.",
+)
+async def pg_flat_rowform_prepared(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(flat_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_flat_objs(await conn.fetch_all(query)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
     "rowform (idiomatic)",
     backend="postgres",
     shape="flat",
@@ -1347,6 +1411,38 @@ async def pg_flat_raw_asyncpg(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
+    "floor: no pool (dict)",
+    backend="postgres",
+    shape="flat",
+    shipped=False,
+    tags=("floor", "decomposition"),
+    description="One dedicated asyncpg connection, no pool at all — isolates the "
+    "checkout cost the other two floors disagree about.",
+)
+async def pg_flat_no_pool(init: ContenderInit) -> tuple[Target, Teardown]:
+    """The 2026-08-15 sweep put the same-plumbing floor *below* the raw-asyncpg
+    floor — SQLAlchemy's checkout apparently cheaper than asyncpg's own pool.
+    The two differ in pool AND everything around it, so neither number
+    attributes the gap. This floor removes the pool entirely: the distance from
+    here to each pooled floor is that pool's per-request acquire/release cost,
+    nothing else (same statement, same transaction spelling, same payload)."""
+    import asyncpg
+
+    conn = await asyncpg.connect(init.handle)
+    sql, params = _compiled(flat_stmt(init.limit), _PG_DIALECT)
+
+    async def target() -> bytes:
+        async with conn.transaction():
+            rows = await conn.fetch(sql, *params)
+        return dumps(_flat(rows))
+
+    async def teardown() -> None:
+        await conn.close()
+
+    return target, teardown
+
+
+@contender(
     "floor: on SQLAlchemy (dict)",
     backend="postgres",
     shape="flat",
@@ -1439,6 +1535,26 @@ async def pg_join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with engine.begin() as conn:
             return dumps(_join_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (prepared)",
+    backend="postgres",
+    shape="join",
+    tags=("decomposition",),
+    description="Equal work except prepare-once, arity two on asyncpg — the cell the "
+    "recorded 0.73x idiomatic delta demanded.",
+)
+async def pg_join_rowform_prepared(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(join_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_join_objs(await conn.fetch_all(query)))
 
     return target, sa_engine.dispose
 
