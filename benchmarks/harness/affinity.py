@@ -104,6 +104,18 @@ def set_affinity(pid: int, cpus: list[int]) -> None:
     os.sched_setaffinity(pid, cpus)
 
 
+def resolve_pin(pin: str | None) -> tuple[list[int], list[str]]:
+    """Turn a `--pin` option value into concrete cpu ids: `"auto"` plans two
+    whole physical cores from this machine's own topology (never hardcoded
+    indices — see the module docstring), `""`/None disables pinning, anything
+    else is comma-separated logical ids taken literally. Returns the ids plus
+    any planner warnings (e.g. a small machine having to share cores)."""
+    if pin == "auto":
+        auto = plan({"bench": 2})
+        return auto.roles["bench"], list(auto.warnings)
+    return ([int(c) for c in pin.split(",")] if pin else []), []
+
+
 def read_back(pid: int) -> list[int]:
     """Read back the mask the kernel actually has for `pid`, rather than
     trusting the one that was requested — only the former is evidence."""
