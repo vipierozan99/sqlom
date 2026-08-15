@@ -11,11 +11,15 @@ there is only one generator left to cross-check against itself). The postgres
 container is always torn down in a `finally`, win or lose — never left
 running after a `bench load run` exits.
 
-`--case` is a contender slug (`bench contenders list`) resolved two ways:
-`harness/registry.py` says which shape/backend to provision and which route
-it serves; `load/registry.py` says which locustfile drives traffic at it
-(each contender is a locust file, discovered by scanning `benchmarks/loadtests/`
-rather than by importing `contenders.py`).
+`--case` is a contender slug (`bench contenders list`): `harness/registry.py`
+says which shape/backend to provision, `load/registry.py` (derived from
+`service/app.py`'s own route table) says which route locust drives traffic
+at. Before any level runs, the case's response is fetched once and
+byte-compared against the rowform reference route for the same
+backend/shape — the HTTP counterpart of `bench micro`'s equivalence gate —
+and its byte length is then enforced on *every* response via
+`LOCUST_EXPECT`, so a run that silently returns the wrong payload cannot be
+reported as throughput.
 
 `--workers` (how many uvicorn processes are spawned) and `--levels` (how many
 locust users are kept in flight) are deliberately separate knobs: each worker
@@ -40,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import urllib.request
 from pathlib import Path
 
 import typer
@@ -155,7 +160,7 @@ def _aggregate_locust(results: list[LocustResult]) -> LocustResult:
 
 async def _locust_across(
     workers_list: list[ServiceWorker],
-    locustfile: str,
+    route: str,
     total_users: int,
     duration: float,
     expect_bytes: int,
@@ -177,7 +182,8 @@ async def _locust_across(
     results = await asyncio.gather(*[
         locust_module.run(
             host=f"http://127.0.0.1:{w.port}",
-            locustfile=locustfile,
+            locustfile=load_registry.locustfile(),
+            route=route,
             users=n,
             duration=duration,
             expect_bytes=expect_bytes,
@@ -189,6 +195,13 @@ async def _locust_across(
         if n > 0
     ])
     return _aggregate_locust(list(results))
+
+
+def _fetch(url: str) -> bytes:
+    # Loopback only — every URL here is built from 127.0.0.1 and a worker
+    # port this process just spawned.
+    with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310
+        return response.read()
 
 
 def _save(name: str, payload: dict) -> Path:
@@ -252,7 +265,7 @@ def run(
 
         async def go(case: str) -> bool:
             spec, load_case = _resolve_case(case)
-            route = f"/{spec.slug}"
+            route = load_case.route
             teardown, workers_list = await _provision(spec, rows, port, [], workers, pg_port)
             env_start = env_module.capture()
             server_pids = [w.proc.pid for w in workers_list]
@@ -271,16 +284,33 @@ def run(
                     f"case={case!r} ({route}) — {workers} worker(s) on ports "
                     f"{[w.port for w in workers_list]}\n"
                 )
+                # The HTTP counterpart of `bench micro`'s equivalence gate:
+                # fetch the case's response once, byte-compare it against the
+                # rowform reference route for the same backend/shape, and then
+                # have locust enforce that byte length on every response
+                # (LOCUST_EXPECT). A route that silently returns the wrong
+                # payload is refused before a single level is measured.
+                base = f"http://127.0.0.1:{workers_list[0].port}"
+                payload = _fetch(f"{base}{route}?limit={limit}")
+                expect_bytes = len(payload)
+                reference_route = f"/{spec.backend}-{spec.shape}-rowform"
+                if route != reference_route:
+                    reference_payload = _fetch(f"{base}{reference_route}?limit={limit}")
+                    if payload != reference_payload:
+                        typer.echo(
+                            f"equivalence: FAIL — {route} returned {len(payload)} bytes, "
+                            f"{reference_route} returned {len(reference_payload)}; "
+                            f"refusing to measure inequivalent work"
+                        )
+                        return False
+                typer.echo(
+                    f"equivalence: {route} == {reference_route} — every response "
+                    f"must now be exactly {expect_bytes} bytes\n"
+                )
                 typer.echo(
                     f"{'c':>4} {'sockets':>8} {'rps':>10} {'in-flight':>10} "
                     f"{'server_cpu%':>11} client_cpu% little's law"
                 )
-                # locust's CSV summary exposes no per-response byte count, so
-                # unlike the old httpload-based gate this cannot cross-check every
-                # response's size against an expected value — `CaseUser.hit()`'s
-                # `LOCUST_EXPECT` check is available (see `load/locust.py`) but
-                # has nothing to compare against here; a wrong-shaped response
-                # would still surface as an HTTP-level failure below.
                 for level in parsed_levels:
                     # Sample /proc/net/tcp mid-run, not after: the generator
                     # closes every connection when it returns, so sampling
@@ -291,10 +321,10 @@ def run(
                     task = asyncio.ensure_future(
                         _locust_across(
                             workers_list,
-                            load_case.file,
+                            route,
                             level,
                             duration,
-                            expect_bytes=0,
+                            expect_bytes=expect_bytes,
                             monitor=monitor,
                             limit=limit,
                             warmup=warmup,
@@ -348,10 +378,10 @@ def run(
 
                 noop = await _locust_across(
                     workers_list,
-                    load_registry.noop_file(),
+                    "/noop",
                     parsed_levels[-1],
                     duration,
-                    expect_bytes=0,
+                    expect_bytes=len(b"[]"),
                     monitor=monitor,
                     limit=limit,
                     warmup=warmup,
@@ -369,10 +399,10 @@ def run(
                 if cross_check_level is not None:
                     at_level = await _locust_across(
                         workers_list,
-                        load_case.file,
+                        route,
                         cross_check_level,
                         duration,
-                        expect_bytes=0,
+                        expect_bytes=expect_bytes,
                         monitor=monitor,
                         limit=limit,
                         warmup=warmup,
@@ -407,6 +437,7 @@ def run(
                             "warmup": warmup,
                             "workers": workers,
                             "route": route,
+                            "expect_bytes": expect_bytes,
                             "cross_check_level": cross_check_level,
                         },
                         "levels": level_rows,
@@ -427,19 +458,13 @@ def run(
 
 @app.command()
 def cases() -> None:
-    """List every loadtest case discovered under `benchmarks/loadtests/` —
-    the slugs `--case` accepts. Deliberately a separate listing from `bench
-    contenders list`: the two registries (`harness/registry.py`'s decorated
-    factories, `load/registry.py`'s scanned locustfiles) can drift, and this
-    is how that drift would actually be seen."""
+    """List every load-test case — the slugs `--case` accepts, one per case
+    route in `service/app.py` (a route whose path is not a harness contender
+    slug fails this listing loudly; see `load/registry.py`)."""
     found = load_registry.discover()
     if not found:
-        typer.echo("no loadtest cases found under benchmarks/loadtests/")
+        typer.echo("no case routes found in benchmarks/service/app.py")
         raise typer.Exit(1)
     width = max(len(slug) for slug in found)
     for slug, case in sorted(found.items()):
-        import os
-
-        typer.echo(
-            f"{slug:<{width}}  {os.path.relpath(case.file, Path(__file__).resolve().parent.parent)}"
-        )
+        typer.echo(f"{slug:<{width}}  {case.route}")
