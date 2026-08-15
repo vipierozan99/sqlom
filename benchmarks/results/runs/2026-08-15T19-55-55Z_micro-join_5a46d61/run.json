@@ -1,0 +1,479 @@
+{
+  "run_id": "2026-08-15T19-55-55Z_micro-join_5a46d61",
+  "suite": "micro-join",
+  "started_at": "2026-08-15T19:55:34.410029+00:00",
+  "finished_at": "2026-08-15T19:55:55.840767+00:00",
+  "invocation": {
+    "argv": [
+      "/home/vipierozan99/code/sqlom/benchmarks/__main__.py",
+      "micro",
+      "run",
+      "--shape",
+      "join",
+      "--backend",
+      "mock",
+      "--iterations",
+      "1500",
+      "--warmup",
+      "200",
+      "--trials",
+      "3",
+      "--isolate",
+      "--record"
+    ]
+  },
+  "git": {
+    "sha": "5a46d615a095f91e3161681285128d7ec394976b",
+    "branch": "claude/bench-pr9-pg-join-floors",
+    "dirty": false
+  },
+  "env": {
+    "host": "linuxx915p",
+    "kernel": "7.1.8-200.fc44.x86_64",
+    "distro": "Fedora Linux 44 (Workstation Edition)",
+    "cpu": {
+      "model": "Intel(R) Core(TM) Ultra X7 358H",
+      "physical_cores": 16,
+      "threads": 16,
+      "smt_siblings": {
+        "0:0": [
+          0
+        ],
+        "0:4": [
+          1
+        ],
+        "0:8": [
+          2
+        ],
+        "0:12": [
+          3
+        ],
+        "0:16": [
+          4
+        ],
+        "0:17": [
+          5
+        ],
+        "0:18": [
+          6
+        ],
+        "0:19": [
+          7
+        ],
+        "0:20": [
+          8
+        ],
+        "0:21": [
+          9
+        ],
+        "0:22": [
+          10
+        ],
+        "0:23": [
+          11
+        ],
+        "0:32": [
+          12
+        ],
+        "0:33": [
+          13
+        ],
+        "0:34": [
+          14
+        ],
+        "0:35": [
+          15
+        ]
+      },
+      "governor": [
+        "powersave"
+      ],
+      "boost": true,
+      "mhz_start": [
+        400.0,
+        4700.0,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        3012.875,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        400.0
+      ],
+      "mhz_end": [
+        4305.841,
+        4424.778,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        3500.245,
+        400.0,
+        400.0,
+        400.0,
+        400.0
+      ],
+      "throttle_count_delta": 5
+    },
+    "mem_total_kb": 32338612,
+    "python": {
+      "version": "3.13.15",
+      "impl": "cpython",
+      "gil_disabled": false,
+      "gevent_monkey_patched": false
+    },
+    "packages": {
+      "rowform": "0.1.0",
+      "sqlalchemy": "2.0.51",
+      "asyncpg": "0.31.0",
+      "psycopg": "3.3.4",
+      "orjson": "3.11.9",
+      "fastapi": "0.141.1",
+      "uvicorn": "0.52.0",
+      "uvloop": "0.22.1",
+      "aiosqlite": "0.22.1",
+      "locust": "2.46.2",
+      "httptools": "0.8.0",
+      "gevent": "26.7.0",
+      "greenlet": "3.5.4"
+    },
+    "git": {
+      "sha": "5a46d615a095f91e3161681285128d7ec394976b",
+      "branch": "claude/bench-pr9-pg-join-floors",
+      "dirty": false
+    },
+    "loadavg_start": [
+      0.92,
+      0.67,
+      0.41
+    ],
+    "loadavg_end": [
+      0.95,
+      0.7,
+      0.43
+    ]
+  },
+  "plan": {
+    "isolation": "one_contender_per_process",
+    "bottleneck": "cpu"
+  },
+  "config": {
+    "shape": "join",
+    "rows": 200000,
+    "limit": 1000,
+    "iterations": 1500,
+    "warmup": 200,
+    "trials": 3,
+    "gc": [
+      "off"
+    ],
+    "only": null,
+    "backend": "mock",
+    "pin_requested": [
+      0,
+      1
+    ],
+    "pin_actual": [
+      0,
+      1
+    ]
+  },
+  "equivalence": {
+    "enforced": true,
+    "reference": "rowform (mock)",
+    "payload_sha256": "5293df6b43da0e79fdbd44da1e2fc1157b37885949ba9ac6b8e9e9bd49b12972",
+    "payload_bytes": 157172,
+    "self_consistent": true,
+    "checked_in_timed_processes": true,
+    "backend": "mock"
+  },
+  "cells": [
+    {
+      "contender": "rowform (mock)",
+      "shipped": true,
+      "params": {
+        "backend": "mock",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 0.5179295003472362,
+            "iqr_pct": 2.1800261165168475,
+            "p95_over_p50": 1.0292115096002648,
+            "outliers_mild": 16,
+            "outliers_severe": 2,
+            "max_over_p50": 1.2924133455096247,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 0.5071765008324292,
+            "iqr_pct": 1.9955575437527209,
+            "p95_over_p50": 1.0282653063017742,
+            "outliers_mild": 31,
+            "outliers_severe": 1,
+            "max_over_p50": 1.2843733931351415,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 0.5294274978950853,
+            "iqr_pct": 3.3700556674957,
+            "p95_over_p50": 1.0383499152885936,
+            "outliers_mild": 4,
+            "outliers_severe": 0,
+            "max_over_p50": 1.1013538243837708,
+            "iterations": 1500
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 0.5179295003472362,
+          "min": 0.5071765008324292,
+          "max": 0.5294274978950853,
+          "spread_pct": 4.2961439824799195
+        },
+        "iqr_pct": {
+          "median": 2.1800261165168475,
+          "min": 1.9955575437527209,
+          "max": 3.3700556674957,
+          "spread_pct": 63.04961731096568
+        },
+        "p95_over_p50": {
+          "median": 1.0292115096002648,
+          "min": 1.0282653063017742,
+          "max": 1.0383499152885936,
+          "spread_pct": 0.9798383415607311
+        },
+        "outliers_mild": {
+          "median": 16,
+          "min": 4,
+          "max": 31,
+          "spread_pct": 168.75
+        },
+        "outliers_severe": {
+          "median": 1,
+          "min": 0,
+          "max": 2,
+          "spread_pct": 200.0
+        },
+        "max_over_p50": {
+          "median": 1.2843733931351415,
+          "min": 1.1013538243837708,
+          "max": 1.2924133455096247,
+          "spread_pct": 14.875699087745788
+        },
+        "outliers_worst_trial": {
+          "mild": 31,
+          "severe": 1
+        }
+      }
+    },
+    {
+      "contender": "hand-written dict (mock)",
+      "shipped": false,
+      "params": {
+        "backend": "mock",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 0.21798850139020942,
+            "iqr_pct": 1.8702834266821737,
+            "p95_over_p50": 1.0286781142319847,
+            "outliers_mild": 24,
+            "outliers_severe": 1,
+            "max_over_p50": 1.242455456148753,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 0.21699399803765118,
+            "iqr_pct": 1.576079718267129,
+            "p95_over_p50": 1.0259961229138381,
+            "outliers_mild": 29,
+            "outliers_severe": 6,
+            "max_over_p50": 1.3902135763869934,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 0.21503999960259534,
+            "iqr_pct": 1.9545203586988913,
+            "p95_over_p50": 1.040164629368643,
+            "outliers_mild": 70,
+            "outliers_severe": 6,
+            "max_over_p50": 1.2723772366130153,
+            "iterations": 1500
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 0.21699399803765118,
+          "min": 0.21503999960259534,
+          "max": 0.21798850139020942,
+          "spread_pct": 1.3587941667872654
+        },
+        "iqr_pct": {
+          "median": 1.8702834266821737,
+          "min": 1.576079718267129,
+          "max": 1.9545203586988913,
+          "spread_pct": 20.234400574414792
+        },
+        "p95_over_p50": {
+          "median": 1.0286781142319847,
+          "min": 1.0259961229138381,
+          "max": 1.040164629368643,
+          "spread_pct": 1.3773508212900207
+        },
+        "outliers_mild": {
+          "median": 29,
+          "min": 24,
+          "max": 70,
+          "spread_pct": 158.6206896551724
+        },
+        "outliers_severe": {
+          "median": 6,
+          "min": 1,
+          "max": 6,
+          "spread_pct": 83.33333333333334
+        },
+        "max_over_p50": {
+          "median": 1.2723772366130153,
+          "min": 1.242455456148753,
+          "max": 1.3902135763869934,
+          "spread_pct": 11.612760428783114
+        },
+        "outliers_worst_trial": {
+          "mild": 70,
+          "severe": 6
+        }
+      }
+    },
+    {
+      "contender": "SQLAlchemy ORM (mock)",
+      "shipped": true,
+      "params": {
+        "backend": "mock",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 3.083750501900795,
+            "iqr_pct": 1.5934167622830664,
+            "p95_over_p50": 1.0233473809745355,
+            "outliers_mild": 28,
+            "outliers_severe": 1,
+            "max_over_p50": 1.058421553941298,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 3.078242498304462,
+            "iqr_pct": 1.459469062039322,
+            "p95_over_p50": 1.0217771992583906,
+            "outliers_mild": 23,
+            "outliers_severe": 1,
+            "max_over_p50": 1.057164600567597,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 3.0429420003201813,
+            "iqr_pct": 1.434072671115254,
+            "p95_over_p50": 1.0212876220924416,
+            "outliers_mild": 16,
+            "outliers_severe": 3,
+            "max_over_p50": 1.0774664775681848,
+            "iterations": 1500
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 3.078242498304462,
+          "min": 3.0429420003201813,
+          "max": 3.083750501900795,
+          "spread_pct": 1.3257078220150476
+        },
+        "iqr_pct": {
+          "median": 1.459469062039322,
+          "min": 1.434072671115254,
+          "max": 1.5934167622830664,
+          "spread_pct": 10.917949226354972
+        },
+        "p95_over_p50": {
+          "median": 1.0217771992583906,
+          "min": 1.0212876220924416,
+          "max": 1.0233473809745355,
+          "spread_pct": 0.20158591164383438
+        },
+        "outliers_mild": {
+          "median": 23,
+          "min": 16,
+          "max": 28,
+          "spread_pct": 52.17391304347826
+        },
+        "outliers_severe": {
+          "median": 1,
+          "min": 1,
+          "max": 3,
+          "spread_pct": 200.0
+        },
+        "max_over_p50": {
+          "median": 1.058421553941298,
+          "min": 1.057164600567597,
+          "max": 1.0774664775681848,
+          "spread_pct": 1.9181276992129177
+        },
+        "outliers_worst_trial": {
+          "mild": 28,
+          "severe": 1
+        }
+      }
+    }
+  ],
+  "ratios": [],
+  "warnings": [
+    "cpu boost enabled \u2014 a live noise source",
+    "5 thermal-throttle events during the run"
+  ],
+  "notes": "",
+  "schema_version": 1,
+  "quotable": false
+}
