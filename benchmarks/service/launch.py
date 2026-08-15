@@ -84,7 +84,12 @@ async def launch(
                 "uvicorn", app_target, "--port", str(port), "--loop", loop,
                 "--http", "httptools", "--no-access-log",
             ]
-            worker_env = {**os.environ, **(env or {})}
+            # Inherited BENCH_* vars are stripped: a stale BENCH_PG_DSN exported
+            # in the shell would otherwise reach a sqlite case's worker and make
+            # its lifespan eagerly open an asyncpg pool against an unrelated (or
+            # dead) server. Only the provisioner's own `env` decides those.
+            inherited = {k: v for k, v in os.environ.items() if not k.startswith("BENCH_")}
+            worker_env = {**inherited, **(env or {})}
             stdout = asyncio.subprocess.DEVNULL if quiet else None
             stderr = asyncio.subprocess.DEVNULL if quiet else None
             proc = await asyncio.create_subprocess_exec(

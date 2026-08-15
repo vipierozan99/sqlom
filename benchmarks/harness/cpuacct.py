@@ -85,16 +85,3 @@ class CpuAccountant:
         return utilization
 
 
-def cgroup_cpu_seconds(cgroup_path: str = "/sys/fs/cgroup") -> float | None:
-    """cgroup v2 `cpu.stat` `usage_usec`, in seconds — an alternative to
-    summing per-pid `/proc/<pid>/stat` when a role runs as short-lived
-    processes under one cgroup (e.g. a docker container). `None` if
-    unavailable (cgroup v1, no permission, not Linux)."""
-    stat_path = Path(cgroup_path) / "cpu.stat"
-    try:
-        for line in stat_path.read_text().splitlines():
-            if line.startswith("usage_usec"):
-                return int(line.split()[1]) / 1_000_000
-    except (FileNotFoundError, OSError, ValueError):
-        return None
-    return None
