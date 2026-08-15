@@ -1,45 +1,64 @@
-"""Load-test case registry — discovered from `benchmarks/loadtests/`, one
-module per case, each a real locustfile. A different registry from
-`harness/registry.py` (which `bench micro` and the FastAPI worker use); see
-`benchmarks/loadtests/__init__.py` for why they're kept separate.
+"""Load-test case registry — derived from the FastAPI app's own route table.
+
+A case *is* a `service/app.py` route whose path names a harness contender
+slug (`/{backend}-{shape}-{name}`). The hand-written routes are the ground
+truth: adding a route adds a case, and a route whose path names no registered
+contender fails discovery loudly instead of producing a case `bench load run`
+would refuse later. This replaced a directory of one-boilerplate-locustfile-
+per-case (each just `CASE = "<slug>"` + `path = f"/{CASE}"`), whose hand-
+copied slugs drifted from the harness registry until 7 of 16 cases were
+unrunnable.
+
+Which route the (single) locustfile drives comes from `LoadCase.route`,
+passed through `locust.run(route=...)` as an env var — see
+`benchmarks/load/locustfile.py`.
 """
 
 from __future__ import annotations
 
-import importlib
-import pkgutil
 from dataclasses import dataclass
 
-import benchmarks.loadtests
+import benchmarks.micro.contenders  # noqa: F401 -- @contender registration side-effects
+from benchmarks.harness import registry as harness_registry
 
-CASE_HELP = "a contender slug or 'all' — see `bench contenders list` or `bench load cases`"
+CASE_HELP = (
+    "a contender slug ('{backend}-{shape}-{name}'), or 'all'/'sqlite'/'postgres' "
+    "to sweep a group — see `bench load cases`"
+)
+
+#: Only paths shaped like a contender slug are candidate cases — everything
+#: else (`/noop`, FastAPI's own `/openapi.json`/`/docs`/...) is not a case.
+_CASE_PREFIXES = ("/sqlite-", "/postgres-", "/mock-")
 
 
 @dataclass(frozen=True, slots=True)
 class LoadCase:
     slug: str
-    module: str  # dotted module path, for error messages
-    file: str  # filesystem path — what `locust -f` takes
+    route: str  # the service/app.py path locust drives traffic at
 
 
 def discover() -> dict[str, LoadCase]:
-    """Import every module in `benchmarks.loadtests` and collect the ones
-    that declare a `CASE` slug — a module without one (`_noop.py`) isn't a
-    contender case and is silently skipped, not an error."""
+    """One `LoadCase` per case route in `service/app.py`, keyed by slug.
+
+    Imports the app lazily: fastapi lives in the `bench` dependency group, and
+    importing it at module scope would break every consumer that only wants
+    `CASE_HELP` (or a test environment without the group installed).
+    """
+    from benchmarks.service.app import app as service_app
+
     cases: dict[str, LoadCase] = {}
-    for info in pkgutil.iter_modules(benchmarks.loadtests.__path__, prefix="benchmarks.loadtests."):
-        module = importlib.import_module(info.name)
-        slug = getattr(module, "CASE", None)
-        if slug is None:
+    for route in service_app.routes:
+        path = getattr(route, "path", "")
+        if not path.startswith(_CASE_PREFIXES):
             continue
-        if slug in cases:
+        slug = path.lstrip("/")
+        if slug not in harness_registry.REGISTRY:
             raise ValueError(
-                f"loadtest case slug {slug!r} is declared by both "
-                f"{cases[slug].module!r} and {info.name!r}"
+                f"service route {path!r} names no registered contender — a case "
+                f"route's path must equal a harness slug (`bench contenders list`)"
             )
-        assert module.__file__ is not None
-        cases[slug] = LoadCase(slug=slug, module=info.name, file=module.__file__)
-    return cases
+        cases[slug] = LoadCase(slug=slug, route=path)
+    return dict(sorted(cases.items()))
 
 
 def get(slug: str) -> LoadCase:
@@ -51,10 +70,11 @@ def get(slug: str) -> LoadCase:
         raise KeyError(f"no loadtest case {slug!r}; known: {known}") from None
 
 
-def noop_file() -> str:
-    """The framework-floor locustfile (`_noop.py`) — not a case (no `CASE`
-    constant), so it's addressed directly rather than through `discover()`."""
-    import benchmarks.loadtests._noop as noop_module
+def locustfile() -> str:
+    """The one locustfile every case runs — filesystem path, what `locust -f`
+    takes. Which route it hits is per-run (`locust.run(route=...)`), not
+    per-file."""
+    import benchmarks.load.locustfile as module
 
-    assert noop_module.__file__ is not None
-    return noop_module.__file__
+    assert module.__file__ is not None
+    return module.__file__

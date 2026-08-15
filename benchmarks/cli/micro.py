@@ -21,6 +21,7 @@ purpose.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import subprocess
 import sys
@@ -216,11 +217,13 @@ def cell(
     gc: str = typer.Option("off"),
     out: Path = typer.Option(..., help="write the metrics JSON here"),
 ) -> None:
-    """Time exactly one contender and write its `SampleShape` to `--out`.
+    """Time exactly one contender and write its `SampleShape` — plus the
+    sha256 of one payload, so the parent can verify this process produced the
+    same bytes its equivalence gate approved — to `--out`.
 
     The child half of `run --isolate`. Not meant to be called by hand, and
-    hidden for that reason: it takes an already-provisioned `--handle` and does
-    no equivalence checking, both of which are the parent's job.
+    hidden for that reason: it takes an already-provisioned `--handle`; the
+    cross-contender equivalence comparison stays the parent's job.
 
     CPU affinity is inherited from the parent across `exec`, so this lands on the
     same cpus `--pin` chose without being told them (`harness/affinity.py`).
@@ -237,11 +240,21 @@ async def _cell(
     resolved = await _mock_handle(shape, limit) if spec.backend == "mock" else handle
     target, teardown = await spec.factory(ContenderInit(handle=resolved, limit=limit))
     try:
+        # One untimed call before warmup: its bytes are what the parent
+        # compares against the hash its equivalence gate approved — without
+        # this, the gated objects and the timed objects lived in different
+        # processes and child-side divergence went undetected.
+        payload = await target()
         with gc_control(gc_mode):
             samples = [s * 1000 for s in await per_iteration(target, iterations, warmup)]
     finally:
         await teardown()
-    out.write_text(json.dumps(asdict(sample_shape(samples))))
+    out.write_text(
+        json.dumps({
+            "metrics": asdict(sample_shape(samples)),
+            "payload_sha256": hashlib.sha256(payload).hexdigest(),
+        })
+    )
 
 
 async def _mock_handle(shape: str, limit: int) -> list[tuple]:
@@ -320,16 +333,19 @@ async def _measure(
     warmup: int,
     gc_mode: str,
     isolate: bool,
-) -> dict:
-    """One trial's metrics for one contender, in this process or its own."""
+) -> tuple[dict, str | None]:
+    """One trial's metrics for one contender, in this process or its own.
+    Returns `(metrics, payload_sha256)`; the hash is None in-process (the
+    equivalence gate already ran on these exact objects)."""
     if isolate:
-        return _spawn_cell(
+        cell_out = _spawn_cell(
             spec.slug, shape, handle if isinstance(handle, str) else "",
             limit, iterations, warmup, gc_mode,
         )
+        return cell_out["metrics"], cell_out["payload_sha256"]
     with gc_control(gc_mode):
         samples = [s * 1000 for s in await per_iteration(target, iterations, warmup)]
-    return asdict(sample_shape(samples))
+    return asdict(sample_shape(samples)), None
 
 
 def _reference_in(group: list[result.Cell]) -> result.Cell | None:
@@ -498,10 +514,18 @@ async def _run(
                         for trial in range(trials):
                             for spec, cell_obj in zip(backend_specs, group_cells, strict=True):
                                 target = instances[spec.name][0]
-                                metrics = await _measure(
+                                metrics, child_sha = await _measure(
                                     spec, target, shape, handle, limit,
                                     iterations, warmup, mode, isolate,
                                 )
+                                if child_sha is not None and child_sha != eq.payload_sha256:
+                                    raise RuntimeError(
+                                        f"contender {spec.name!r} produced different bytes "
+                                        f"in its timed process ({child_sha[:12]}…) than the "
+                                        f"equivalence gate approved "
+                                        f"({str(eq.payload_sha256)[:12]}…) — the gated and "
+                                        f"the timed work have diverged"
+                                    )
                                 cell_obj.trials.append(
                                     result.Trial(
                                         trial=trial,
@@ -580,6 +604,10 @@ async def _run(
             "payload_sha256": recorded_eq.payload_sha256 if recorded_eq else None,
             "payload_bytes": recorded_eq.payload_bytes if recorded_eq else 0,
             "self_consistent": recorded_eq.self_consistent if recorded_eq else False,
+            # Under --isolate every timed child also proved (by hash) that it
+            # produced the gated bytes; in-process runs are covered by the
+            # gate having run on the very objects that were timed.
+            "checked_in_timed_processes": isolate,
             "backend": recorded_backend,
         },
         cells=cells,
