@@ -151,14 +151,19 @@ the smallest win, which is why it is in the table** — it is the shape full of
 `DateTime`/`Numeric`/`Enum`/`Uuid` columns, where type processors dominate and both
 sides run the same ones.
 
-> **These are provisional.** They are the first numbers taken after a harness fix (the
-> CLI was importing locust, whose `gevent.monkey.patch_all()` made every prior
-> measurement ~30% slow), but they were taken on a box with desktop load on the pinned
-> cores: worst trial-to-trial spread **15.2%**, against the 8.1% a good run reports.
-> Ratios inside ±10% of each other are not ordered. Postgres was not re-measured at all
-> — see [METHODOLOGY.md](docs/METHODOLOGY.md).
+> **These are provisional, and now superseded.** They are the first numbers taken after
+> a harness fix (the CLI was importing locust, whose `gevent.monkey.patch_all()` made
+> every prior measurement ~30% slow), but they were taken on a box with desktop load on
+> the pinned cores: worst trial-to-trial spread **15.2%**, against the 8.1% a good run
+> reports. Ratios inside ±10% of each other are not ordered. Postgres was not
+> re-measured at all. And correction 14 has since split the `rowform` row in two: the
+> row above was measured with a prepared statement and direct-to-orjson serialization
+> its rivals didn't get; the suite now measures `rowform` at equal work (where first
+> smoke runs confirm the tie with Core) and `rowform (idiomatic)` — the code an app
+> would write — as separate labelled rows. A clean sweep with the split contenders
+> replaces this table — see [METHODOLOGY.md](docs/METHODOLOGY.md).
 
-Full numbers, and a log of **thirteen published claims that turned out to be wrong**:
+Full numbers, and a log of **fourteen published claims that turned out to be wrong**:
 [METHODOLOGY.md](docs/METHODOLOGY.md).
 
 ---

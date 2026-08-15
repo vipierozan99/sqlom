@@ -53,8 +53,10 @@ class EphemeralPostgres:
         # can reach.
         if _port_in_use(port):
             raise RuntimeError(
-                f"port {port} is already in use — pass --port to bench db up, or "
-                f"stop whatever else is listening there"
+                f"port {port} is already in use — pass a different port (--port / "
+                f"--pg-port), or stop whatever is listening there. If it's this "
+                f"suite's own leftover, `docker ps | grep rowform-bench` will show it "
+                f"(a `bench db up` server also holds its port until `bench db down`)."
             )
         image = f"postgres:{version}"
         name = f"rowform-bench-{uuid.uuid4().hex[:8]}"

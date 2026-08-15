@@ -68,6 +68,10 @@ class EphemeralSqlite:
                 seed_module.insert_sql(table, _DIALECT),
                 seed_module.bound_rows(table, data, _DIALECT),
             )
+        # Fresh planner statistics, matching the postgres backend's per-table
+        # ANALYZE after COPY — one backend planning on defaults while the
+        # other planned on real statistics was an unforced asymmetry.
+        conn.execute("ANALYZE")
 
     def close(self) -> None:
         if self._tmpdir is not None:

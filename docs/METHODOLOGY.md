@@ -1,6 +1,6 @@
 # Benchmarks, and how to trust them
 
-The numbers, the practices that produced them, and the thirteen published claims that
+The numbers, the practices that produced them, and the fourteen published claims that
 turned out to be wrong.
 
 One rule sits above the rest: **a result that flatters the thing you built is a bug
@@ -32,16 +32,18 @@ Medians of the per-trial medians, in milliseconds, lower is better. Ratios come 
 either the worst-case interval spans 1.0 or the medians are within 5%. Worst
 trial-to-trial spread anywhere below: **15.2%** (sqlite), 5.9% (mock).
 
-> **Provisional, and for two separate reasons — do not quote these.**
+> **Superseded by correction 14 — do not quote these.** Every `rowform` row below was
+> taken with a prepared statement and direct-to-orjson serialization while its rivals
+> paid a per-execute cache key and a per-row Python payload pass; the suite now measures
+> that as two labelled rows (`rowform` at equal work, `rowform (idiomatic)` as an app
+> would write it), and first equal-work smoke runs put rowform at a *tie* with Core
+> positional on `flat`/sqlite. A clean sweep with the split contenders replaces this
+> whole section.
 >
-> They are the first numbers taken after the `gevent` fix (below), so they are the first
-> that are *the right kind* of number; every table published before them was ~30% slow.
-> But they were taken on a workstation with a browser and a music player scheduled onto
-> the pinned cores, and it shows: 15.2% worst spread against the 8.1% a quiet run
-> reports. Anything inside ±10% is not ordered — which includes rowform against
-> SQLAlchemy Core on `flat` and `join`.
->
-> Postgres was not re-measured at all. A clean sweep replaces this whole section.
+> They were also provisional on their own terms: first numbers after the `gevent` fix
+> (below), taken on a workstation with a browser and a music player scheduled onto the
+> pinned cores — 15.2% worst spread against the 8.1% a quiet run reports. Postgres was
+> not re-measured at all.
 
 > **These runs report `quotable=False`, on one clause: cpu boost is enabled and cannot
 > be disabled without root on this box.** Every other gate passes — clean tree,
@@ -100,11 +102,16 @@ the rows and nothing else.
 | SQLAlchemy ORM | 3.5468 | 6.1679 | | 11.95x | 10.45x |
 
 Read the rowform row as "the compiled hydrator **plus** rowform's per-request
-bookkeeping" — the cache-key lookup and parameter bind stay in the timed region here,
-deliberately (`benchmarks/engines/mock.py`), and with the I/O gone they are a large
-share of a small number. For the hydrator on its own, use the two hand-rolled floors in
-the sqlite table, which differ only in the row layer: **+10.0% / +12.6% / +5.7%**
-(flat/join/wide) for typed objects over hand-written dicts.
+bookkeeping" — the cache-key lookup and parameter bind are meant to stay in the timed
+region here (`benchmarks/engines/mock.py`), and with the I/O gone they are a large
+share of a small number. Two caveats from correction 14: when this table was taken the
+mock rowform arm was *prepared*, so the cache-key lookup this paragraph describes was
+in fact short-circuited; and the cross-mapper ratios in the right-hand columns compare
+two mock seams that exclude *different* layers by construction, which is why the suite
+no longer computes ratios for the mock group at all — each mock row is a per-mapper
+regression floor, tracked against its own history. For the hydrator on its own, use
+the two hand-rolled floors in the sqlite table, which differ only in the row layer:
+**+10.0% / +12.6% / +5.7%** (flat/join/wide) for typed objects over hand-written dicts.
 
 ### Reading the floors
 
@@ -174,9 +181,15 @@ hand-written converter table failed 7 columns of (correction 11).
 ## Practices
 
 **Enforce output equivalence before timing.** Every harness compares each contender's
-bytes against a reference and aborts on mismatch. What it does *not* catch: identical
-output says nothing about whether one side took an expensive route to it — correction 8
-passed this gate perfectly.
+bytes against a reference and aborts on mismatch — every contender is also re-run for
+self-consistency (a lucky single run used to pass for everyone but the reference), and
+under `--isolate` each timed child proves by hash that it produced the gated bytes,
+since the gated objects and the timed objects live in different processes there. The
+HTTP path has its own gate: `bench load run` byte-compares the case's response against
+the rowform reference route before any level runs, then has locust enforce that byte
+length on every response. What none of this catches: identical output says nothing
+about whether one side took an expensive route to it — corrections 8 and 14 passed
+these gates perfectly.
 
 **Price any workaround one contender needs and the others do not.** A per-key cast, an
 encoding fix-up, a defensive copy: each is a measurement artifact until timed against
@@ -273,6 +286,10 @@ Throughput alone would not have exposed correction 3.
 of one physical core. Affinity is inherited across `fork()`, so pin before the pool
 opens — connections opened earlier keep the old mask. Pin a single-threaded client to
 *one* core, and never trust the requested cpuset as evidence it took effect.
+`bench micro`'s default is `--pin auto` — two whole physical cores chosen from the
+machine's own topology — because the old hardcoded `6,7,8,9` crashed on small boxes and
+silently landed on SMT siblings of one core on other layouts, the exact mistake this
+practice describes.
 
 **State the bottleneck.** Every ratio here is measured with the client saturated and
 the database barely loaded, which is why the row layer's cost is visible at all. Say
@@ -290,7 +307,12 @@ differently: ESTABLISHED sockets counted from `/proc/net/tcp` mid-run, which is
 external evidence rather than the generator's own counter; Little's Law, where
 `rps × mean latency` must equal the in-flight count; and scaling, since throughput must
 rise with connection count up to a knee. Recording a *passed* audit matters as much as
-a failed one.
+a failed one. "Mid-run" must be the generator's own clock: locust runs as two
+subprocesses per level (warmup, then measured) whose startup and ramp the parent cannot
+see, so the measured process reports its test_start/test_stop timestamps and the socket
+sample and both CPU denominators are aligned to that window rather than guessed from
+sleep arithmetic — the guessed version could sample the gap between the two processes
+(spurious FAIL) or the warmup process (a pass observing the wrong process).
 
 **Calibrate the generator's headroom with a do-nothing endpoint.** A `/noop` route is
 the cheapest probe available: if it is not well clear of every endpoint under test, the
@@ -303,7 +325,7 @@ came from a standard tool" is not a correctness argument.
 
 ---
 
-## The thirteen corrections
+## The fourteen corrections
 
 Each was caught by attacking the benchmark rather than trusting it, and each came from
 a distinct flaw. Figures are as-of each correction; absolute milliseconds are not
@@ -519,27 +541,87 @@ deferring that import, and the *reason* a benchmark process had a patched `threa
 all went unasked for another hour. `load`/`profile` are now mounted lazily and
 `timing.assert_unpatched_threading()` refuses to time anything under the patch.
 
+The class was declared closed here and wasn't: `bench profile micro`'s "unprofiled"
+baseline — a timed measurement printed in the same ms/req shape as `bench micro`'s —
+still ran under the patch, because `cli/profile.py` imported locust at module scope for
+its *other* subcommand. locust is now imported only inside `bench profile load`, and
+`profile micro` runs the same assertion `micro` does. The env capture also records
+gevent/greenlet and whether the patch is active, so this whole class is now visible in
+every artifact.
+
 > A benchmark's own process is part of the measurement. Anything a CLI imports on the
 > way to `main()` is inside the experiment.
 >
 > And: when a symptom is weird enough to need a workaround, the workaround is not the
 > finding. The finding is why the symptom was possible.
 
+### 14. The headline rows did less work than their rivals (flat/sqlite: a win became a tie)
+
+Found by an external audit of the suite, not by self-attack — the same blind spot as
+the two reviewer-caught corrections above. The `rowform` rows carried two structural
+advantages the comparison never priced:
+
+**Prepared once vs. compiled-cache lookup per call.** Every rowform arm hoisted
+`engine.prepare(...)` to setup, and a prepared `CoreQuery` short-circuits rowform's
+per-call structural cache key — while every SQLAlchemy arm passed a raw `select()` to
+`conn.execute()` per iteration, paying SQLAlchemy's `_generate_cache_key()` and
+execution-context construction inside the timed region. The cell was labelled "stock
+result layer"; part of its margin was prepare-once vs. execute-per-call API shape.
+
+**Serialized in C vs. a per-row Python pass.** rowform arms handed dataclasses straight
+to orjson; every comparator built a dict per row in Python first. This violated the
+payload rule written at the top of `contenders.py` itself — prose that nothing
+mechanical enforced.
+
+The fix is two labelled families, not a silent re-blend: plain `rowform` now does equal
+work (unprepared, the same shared per-shape payload builders the ORM rows use — shared
+so parity is structural, not re-reviewed), and `rowform (idiomatic)` is the code an
+application would write (prepared once, objects straight to orjson), with the delta
+between the two rows pricing the API-shape advantages explicitly. The same audit also
+retired the cross-mapper mock ratios (each mock seam excludes a different layer — the
+mock module said so while the CLI computed them anyway) and made the mock rowform arm
+unprepared, so the "catches cache-key regressions" claim is true again.
+
+> The two claims — "faster result layer" and "faster endpoint as you'd actually write
+> it" — are both real, and blending them made the first one wrong. Fairness rules that
+> live in prose drift; every rule here that could become a shared builder, a gate, or a
+> test now is one.
+
 ---
 
 ## Reproducing
 
 ```bash
-uv sync --all-extras
+# the bench harness lives in dependency *groups*, not extras — `just bench`
+# runs everything through `uv run --all-groups`, so no sync step is required;
+# to work outside just, use `uv sync --all-groups`.
 
 # correctness first: a benchmark measures whatever the library does, so a wrong
 # library is just a fast wrong answer
 just test . --pg-required
 
-just bench env check                     # machine, pinning, governor
-just bench micro run                     # the tables above
-just bench db up && just bench db seed    # ephemeral postgres in docker
-just bench load run --case <slug>        # end to end through FastAPI + locust
+just bench env check          # audits boost/turbo, dirty tree, loadavg (exits non-zero)
+
+# dev loop (fast, single trial, NOT publishable — no ratios, quotable=False):
+just bench micro run
+
+# the publishing recipe behind any recorded table:
+just bench micro run --shape flat --iterations 1500 --warmup 200 --trials 3 --isolate --record
+```
+
+Postgres is **two separate pipelines** — they collide on port 5432 if mixed:
+
+```bash
+# micro: bring up a server yourself and hand the DSN over (seeding DROPS and
+# recreates the shape's tables on it)
+just bench db up && just bench db seed
+just bench micro run --backend postgres --isolate --trials 3 --record --pg-dsn "$(just bench db dsn)"
+just bench db down            # also clears the state file after a reboot/prune
+
+# load & profile-load: provision their OWN container per run. With a
+# `bench db up` server still standing, pass --pg-port to avoid its port.
+just bench load run --case postgres-flat-rowform --pg-port 5433
+just bench load run --case all           # or sqlite / postgres, the group sweeps
 just bench profile micro                 # cProfile + pyinstrument, side by side
 ```
 
