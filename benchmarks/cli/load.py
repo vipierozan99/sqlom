@@ -390,6 +390,10 @@ def run(
             monitor.print_averages()
 
             if name:
+                # Merged with an end snapshot so the artifact records mid-run
+                # drift (throttling, frequency sag) instead of a single
+                # instant mislabeled as the whole window.
+                env_merged = env_module.merge_start_end(env_start, env_module.capture())
                 path_out = _save(
                     f"{name}-{case}",
                     {
@@ -410,7 +414,7 @@ def run(
                         "noop_headroom_ratio": headroom_ratio,
                         "ok": ok,
                         "monitor": monitor.to_dict(),
-                        "env": env_start,
+                        "env": env_merged,
                     },
                 )
                 typer.echo(f"\nwrote {path_out}")

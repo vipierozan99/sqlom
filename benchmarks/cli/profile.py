@@ -27,8 +27,8 @@ from benchmarks.backends.sqlite import EphemeralSqlite
 from benchmarks.harness import registry
 from benchmarks.harness import seed as seed_module
 from benchmarks.harness.registry import ContenderInit
+from benchmarks.harness.timing import assert_unpatched_threading
 from benchmarks.load import registry as load_registry
-from benchmarks.load.locust import run as locust_run
 from benchmarks.profiling import attribution, render
 from benchmarks.profiling.austin import AustinProfiler
 from benchmarks.profiling.cprofile import CProfileProfiler
@@ -54,6 +54,11 @@ def micro(
     pyinstrument, over the same `iterations` calls."""
     if shape not in seed_module.SHAPES:
         raise typer.BadParameter(f"shape must be one of {seed_module.SHAPES}")
+    # The baseline below is a timed measurement; it used to run inside the
+    # gevent monkey-patch (this module imported locust at module scope), where
+    # ms/req is ~30% slow, looks identical to `bench micro` output, and
+    # cProfile sees a threading model the real configuration doesn't have.
+    assert_unpatched_threading()
 
     async def go() -> bool:
         specs = registry.select(backend="sqlite", shape=shape, only=only)
@@ -167,6 +172,10 @@ def load(
 ) -> None:
     """Attach py-spy and austin to a live worker under locust traffic,
     concurrently, and each render a flamegraph (speedscope JSON)."""
+    # Imported here, not at module scope: importing locust monkey-patches the
+    # whole process with gevent, and `bench profile micro` times a baseline in
+    # this interpreter. Only this subcommand may pay that price.
+    from benchmarks.load.locust import run as locust_run
 
     async def go() -> bool:
         spec = registry.get(case)

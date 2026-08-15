@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from benchmarks.harness.cpuacct import read_pid_cpu_seconds
+from benchmarks.harness.cpuacct import pid_alive, read_pid_cpu_seconds
 
 DEFAULT_INTERVAL_S = 1.0
 
@@ -26,8 +26,9 @@ DEFAULT_INTERVAL_S = 1.0
 class ProcessMonitor:
     """`track()` every pid as you spawn it, `start()` once, `stop()` when the
     run ends. Safe to track/untrack while running — a role whose process has
-    already exited just reads 0% (via `read_pid_cpu_seconds`'s own
-    exited-process guard) rather than crashing the monitor."""
+    exited simply stops being sampled (its history stays in `samples`), rather
+    than crashing the monitor or diluting its average with 0% readings from
+    after its death."""
 
     interval: float = DEFAULT_INTERVAL_S
     print_fn: Callable[[str], None] = print
@@ -49,6 +50,10 @@ class ProcessMonitor:
     def start(self) -> None:
         self._start_wall = time.monotonic()
         self._last_wall = self._start_wall
+        # Re-baseline every tracked pid: CPU accrued between track() and
+        # start() must not be charged to the first wall interval.
+        for role, pid in self.pids.items():
+            self._last_cpu[role] = read_pid_cpu_seconds(pid)
         self._task = asyncio.ensure_future(self._loop())
 
     async def _loop(self) -> None:
@@ -61,6 +66,8 @@ class ProcessMonitor:
         elapsed = now - self._last_wall
         row: dict[str, Any] = {"t": round(now - self._start_wall, 2)}
         for role, pid in self.pids.items():
+            if not pid_alive(pid):
+                continue  # exited: keep its history, stop writing 0% rows
             cpu_now = read_pid_cpu_seconds(pid)
             previous = self._last_cpu.get(role, cpu_now)
             utilization = max(0.0, (cpu_now - previous) / elapsed) if elapsed > 0 else 0.0
@@ -81,18 +88,21 @@ class ProcessMonitor:
 
     def averages(self) -> dict[str, float]:
         """Mean utilization per role across every sample that included it —
-        a role tracked partway through the run (e.g. a locust subprocess that
-        only exists for part of it) is averaged only over the samples where
-        it was actually being measured, not diluted by samples from before it
-        existed."""
-        totals: dict[str, float] = dict.fromkeys(self.pids, 0.0)
-        counts: dict[str, int] = dict.fromkeys(self.pids, 0)
+        a role only alive for part of the run (e.g. a locust subprocess) is
+        averaged only over the samples where it was actually measured, not
+        diluted by samples from before it existed or after it exited. Roles
+        come from the recorded samples plus current tracking, so an
+        `untrack()`ed or exited role keeps its history."""
+        totals: dict[str, float] = {}
+        counts: dict[str, int] = {}
         for row in self.samples:
-            for role in self.pids:
-                if role in row:
-                    totals[role] += row[role]
-                    counts[role] += 1
-        return {role: (totals[role] / counts[role] if counts[role] else 0.0) for role in self.pids}
+            for role, value in row.items():
+                if role == "t":
+                    continue
+                totals[role] = totals.get(role, 0.0) + value
+                counts[role] = counts.get(role, 0) + 1
+        roles = set(totals) | set(self.pids)
+        return {role: (totals[role] / counts[role] if counts.get(role) else 0.0) for role in roles}
 
     def print_averages(self) -> None:
         """The one thing this monitor prints — call after `stop()`."""

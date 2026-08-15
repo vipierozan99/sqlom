@@ -31,32 +31,44 @@ def children_cpu_seconds() -> float:
 
 def read_pid_cpu_seconds(pid: int) -> float:
     """utime+stime for `pid`, in seconds. Returns 0.0 if the process has
-    already exited — a role's process ending mid-sample must not crash the
-    whole run, it should just stop contributing CPU time."""
+    already exited or its stat line can't be parsed — a role's process ending
+    mid-sample must not crash the whole run (use `pid_alive` to tell the two
+    apart)."""
     try:
-        fields = Path(f"/proc/{pid}/stat").read_text().split()
-    except (FileNotFoundError, ProcessLookupError, OSError):
+        text = Path(f"/proc/{pid}/stat").read_text()
+        # field 2 is "(comm)", which may itself contain spaces or parens; utime
+        # and stime are fields 14/15 (1-indexed) counting from the *last*
+        # closing paren — a comm containing ")" would misalign a first-paren
+        # split.
+        rest = text[text.rindex(")") + 1:].split()
+        utime, stime = int(rest[11]), int(rest[12])
+    except (FileNotFoundError, ProcessLookupError, OSError, ValueError, IndexError):
         return 0.0
-    # fields[1] is "(comm)", which may itself contain spaces or parens; utime
-    # and stime are fields 14/15 (1-indexed) counting from the *closing* paren,
-    # so locate that rather than assuming a fixed offset from the start.
-    close = next(i for i, f in enumerate(fields) if f.endswith(")"))
-    rest = fields[close + 1:]
-    utime, stime = int(rest[11]), int(rest[12])
     return (utime + stime) / _CLOCK_TICKS
 
 
+def pid_alive(pid: int) -> bool:
+    return Path(f"/proc/{pid}").exists()
+
+
 class CpuAccountant:
-    """Samples one or more pids per role across a measurement window."""
+    """Samples one or more pids per role across a measurement window.
+
+    Deltas are taken per pid and clamped at zero: a pid that exits mid-window
+    reads 0.0 at `stop()`, and subtracting its (possibly large) start baseline
+    from that used to make the whole role's utilization understated or
+    negative. Its post-`start()` CPU is still lost — `/proc` offers nowhere to
+    read it after the exit — but it can no longer erase other pids' work."""
 
     def __init__(self, role_pids: dict[str, list[int]]):
         self._role_pids = role_pids
-        self._start: dict[str, float] = {}
+        self._start: dict[int, float] = {}
 
     def start(self) -> None:
         self._start = {
-            role: sum(read_pid_cpu_seconds(pid) for pid in pids)
-            for role, pids in self._role_pids.items()
+            pid: read_pid_cpu_seconds(pid)
+            for pids in self._role_pids.values()
+            for pid in pids
         }
 
     def stop(self, elapsed_s: float) -> dict[str, float]:
@@ -66,8 +78,10 @@ class CpuAccountant:
             return dict.fromkeys(self._role_pids, 0.0)
         utilization = {}
         for role, pids in self._role_pids.items():
-            end = sum(read_pid_cpu_seconds(pid) for pid in pids)
-            utilization[role] = (end - self._start.get(role, 0.0)) / elapsed_s
+            consumed = sum(
+                max(0.0, read_pid_cpu_seconds(pid) - self._start.get(pid, 0.0)) for pid in pids
+            )
+            utilization[role] = consumed / elapsed_s
         return utilization
 
 

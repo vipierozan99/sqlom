@@ -29,10 +29,11 @@ async def check(
 ) -> EquivalenceResult:
     """Run every contender's `request()` once and compare bytes.
 
-    Also re-runs the first contender `self_consistency_runs` times: a
-    contender that is non-deterministic against itself (e.g. dict ordering, an
-    unstable sort) would otherwise pass this gate by accident on a lucky single
-    run and then silently violate it on every timed request.
+    Also re-runs *every* contender `self_consistency_runs` times: a contender
+    that is non-deterministic against itself (e.g. dict ordering, an unstable
+    sort) would otherwise pass this gate by accident on a lucky single run and
+    then silently violate it on every timed request. Checking only the
+    reference used to leave exactly that hole open for everyone else.
 
     An empty payload from every contender does not count as agreement —
     that is the empty-result guard: it makes the fairness gate pass while
@@ -63,15 +64,16 @@ async def check(
             )
 
     self_consistent = True
-    reference_request = requests[reference_name]
-    for _ in range(self_consistency_runs):
-        if await reference_request() != reference:
-            self_consistent = False
-            failures.append(
-                f"{reference_name!r} is not self-consistent — repeated calls with "
-                f"identical inputs produced different bytes"
-            )
-            break
+    for name, request in requests.items():
+        expected = outputs[name]
+        for _ in range(self_consistency_runs):
+            if await request() != expected:
+                self_consistent = False
+                failures.append(
+                    f"{name!r} is not self-consistent — repeated calls with "
+                    f"identical inputs produced different bytes"
+                )
+                break
 
     return EquivalenceResult(
         enforced=True,

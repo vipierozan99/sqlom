@@ -29,15 +29,23 @@ BENCH_DIR = str(Path(__file__).resolve().parent.parent) + os.sep
 # on name instead.
 ROWFORM_GENERATED = {"_hydrate", "_hydrate_all", "_default", "_rows_to_dicts"}
 
+# SQLAlchemy categories come before the drivers, and the driver patterns are
+# anchored to package directories: SQLAlchemy's own dialect adapters live in
+# files *named after* the driver (`/sqlalchemy/dialects/sqlite/aiosqlite.py`,
+# `.../postgresql/psycopg.py`), and a loose substring tested driver-first
+# credited that adapter work — real per-cursor/per-connection wrapping — to
+# the raw driver, inflating the driver's share for every SQLAlchemy contender.
 CATEGORIES = [
     ("orjson", [r"orjson"]),
-    ("sqlite3 driver", [r"sqlite3", r"aiosqlite"]),
-    ("asyncpg", [r"/asyncpg/"]),
-    ("psycopg", [r"/psycopg"]),
     ("SQLAlchemy ORM", [r"/sqlalchemy/orm/"]),
     ("SQLAlchemy engine", [r"/sqlalchemy/engine/", r"/sqlalchemy/pool/", r"/sqlalchemy/ext/asyncio/"]),
     ("SQLAlchemy SQL", [r"/sqlalchemy/sql/", r"/sqlalchemy/util/", r"/sqlalchemy/dialects/"]),
     ("SQLAlchemy codegen", [r"<string>"]),
+    # `'sqlite3\.` catches the C methods, which cProfile names
+    # "<method 'execute' of 'sqlite3.Connection' objects>" under filename "~".
+    ("sqlite3 driver", [r"/sqlite3/", r"_sqlite3", r"'sqlite3\.", r"/aiosqlite/"]),
+    ("asyncpg", [r"/asyncpg/"]),
+    ("psycopg", [r"/psycopg"]),
     ("asyncio / loop", [r"/asyncio/", r"selectors\.py", r"sslproto"]),
 ]
 
