@@ -1,0 +1,1089 @@
+{
+  "run_id": "2026-08-15T20-29-33Z_micro-wide_730fbe8",
+  "suite": "micro-wide",
+  "started_at": "2026-08-15T20:22:56.449113+00:00",
+  "finished_at": "2026-08-15T20:29:33.544280+00:00",
+  "invocation": {
+    "argv": [
+      "/home/vipierozan99/code/sqlom/benchmarks/__main__.py",
+      "micro",
+      "run",
+      "--shape",
+      "wide",
+      "--iterations",
+      "1500",
+      "--warmup",
+      "200",
+      "--trials",
+      "3",
+      "--isolate",
+      "--record"
+    ]
+  },
+  "git": {
+    "sha": "730fbe8ad5b5bb5ce5d5d5f7e54fac7ffe87b6ad",
+    "branch": "claude/bench-pr9-pg-join-floors",
+    "dirty": false
+  },
+  "env": {
+    "host": "linuxx915p",
+    "kernel": "7.1.8-200.fc44.x86_64",
+    "distro": "Fedora Linux 44 (Workstation Edition)",
+    "cpu": {
+      "model": "Intel(R) Core(TM) Ultra X7 358H",
+      "physical_cores": 16,
+      "threads": 16,
+      "smt_siblings": {
+        "0:0": [
+          0
+        ],
+        "0:4": [
+          1
+        ],
+        "0:8": [
+          2
+        ],
+        "0:12": [
+          3
+        ],
+        "0:16": [
+          4
+        ],
+        "0:17": [
+          5
+        ],
+        "0:18": [
+          6
+        ],
+        "0:19": [
+          7
+        ],
+        "0:20": [
+          8
+        ],
+        "0:21": [
+          9
+        ],
+        "0:22": [
+          10
+        ],
+        "0:23": [
+          11
+        ],
+        "0:32": [
+          12
+        ],
+        "0:33": [
+          13
+        ],
+        "0:34": [
+          14
+        ],
+        "0:35": [
+          15
+        ]
+      },
+      "governor": [
+        "performance"
+      ],
+      "boost": false,
+      "mhz_start": [
+        1409.949,
+        1699.293,
+        400.0,
+        400.0,
+        1499.652,
+        400.0,
+        400.0,
+        400.0,
+        883.109,
+        400.0,
+        1500.111,
+        400.0,
+        1397.623,
+        1424.861,
+        400.0,
+        400.0
+      ],
+      "mhz_end": [
+        400.058,
+        1892.684,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        1465.904,
+        728.453,
+        893.964,
+        399.961,
+        400.0,
+        400.0,
+        400.0,
+        400.0,
+        1318.306,
+        400.0
+      ],
+      "throttle_count_delta": 0
+    },
+    "mem_total_kb": 32338612,
+    "python": {
+      "version": "3.13.15",
+      "impl": "cpython",
+      "gil_disabled": false,
+      "gevent_monkey_patched": false
+    },
+    "packages": {
+      "rowform": "0.1.0",
+      "sqlalchemy": "2.0.51",
+      "asyncpg": "0.31.0",
+      "psycopg": "3.3.4",
+      "orjson": "3.11.9",
+      "fastapi": "0.141.1",
+      "uvicorn": "0.52.0",
+      "uvloop": "0.22.1",
+      "aiosqlite": "0.22.1",
+      "locust": "2.46.2",
+      "httptools": "0.8.0",
+      "gevent": "26.7.0",
+      "greenlet": "3.5.4"
+    },
+    "git": {
+      "sha": "730fbe8ad5b5bb5ce5d5d5f7e54fac7ffe87b6ad",
+      "branch": "claude/bench-pr9-pg-join-floors",
+      "dirty": false
+    },
+    "loadavg_start": [
+      1.2,
+      1.0,
+      0.79
+    ],
+    "loadavg_end": [
+      1.11,
+      1.11,
+      0.93
+    ]
+  },
+  "plan": {
+    "isolation": "one_contender_per_process",
+    "bottleneck": "cpu"
+  },
+  "config": {
+    "shape": "wide",
+    "rows": 200000,
+    "limit": 1000,
+    "iterations": 1500,
+    "warmup": 200,
+    "trials": 3,
+    "gc": [
+      "off"
+    ],
+    "only": null,
+    "backend": "sqlite",
+    "pin_requested": [
+      0,
+      1
+    ],
+    "pin_actual": [
+      0,
+      1
+    ]
+  },
+  "equivalence": {
+    "enforced": true,
+    "reference": "rowform",
+    "payload_sha256": "60c3f426d273f598859f58c009d200177618b0835bff5f74841a85838d1237d3",
+    "payload_bytes": 194647,
+    "self_consistent": true,
+    "checked_in_timed_processes": true,
+    "backend": "sqlite"
+  },
+  "cells": [
+    {
+      "contender": "rowform",
+      "shipped": true,
+      "params": {
+        "backend": "sqlite",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 6.979039495490724,
+            "iqr_pct": 2.567946559810578,
+            "p95_over_p50": 1.0322600983182109,
+            "outliers_mild": 12,
+            "outliers_severe": 2,
+            "max_over_p50": 1.161126829779803,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 6.992579001234844,
+            "iqr_pct": 1.9849758713554055,
+            "p95_over_p50": 1.0301648356988191,
+            "outliers_mild": 26,
+            "outliers_severe": 6,
+            "max_over_p50": 1.4631784640663945,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 6.991967497015139,
+            "iqr_pct": 2.0878243062393285,
+            "p95_over_p50": 1.0296129100076392,
+            "outliers_mild": 23,
+            "outliers_severe": 3,
+            "max_over_p50": 1.1856914385823507,
+            "iterations": 1500
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 6.991967497015139,
+          "min": 6.979039495490724,
+          "max": 6.992579001234844,
+          "spread_pct": 0.19364371687797607
+        },
+        "iqr_pct": {
+          "median": 2.0878243062393285,
+          "min": 1.9849758713554055,
+          "max": 2.567946559810578,
+          "spread_pct": 27.922401646201838
+        },
+        "p95_over_p50": {
+          "median": 1.0301648356988191,
+          "min": 1.0296129100076392,
+          "max": 1.0322600983182109,
+          "spread_pct": 0.25696745014363737
+        },
+        "outliers_mild": {
+          "median": 23,
+          "min": 12,
+          "max": 26,
+          "spread_pct": 60.86956521739131
+        },
+        "outliers_severe": {
+          "median": 3,
+          "min": 2,
+          "max": 6,
+          "spread_pct": 133.33333333333331
+        },
+        "max_over_p50": {
+          "median": 1.1856914385823507,
+          "min": 1.161126829779803,
+          "max": 1.4631784640663945,
+          "spread_pct": 25.47472508089742
+        },
+        "outliers_worst_trial": {
+          "mild": 26,
+          "severe": 6
+        }
+      }
+    },
+    {
+      "contender": "rowform (idiomatic)",
+      "shipped": true,
+      "params": {
+        "backend": "sqlite",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 6.485188499937067,
+            "iqr_pct": 2.5816674160170963,
+            "p95_over_p50": 1.0330240983970425,
+            "outliers_mild": 11,
+            "outliers_severe": 0,
+            "max_over_p50": 1.0792122693385338,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 6.501533498521894,
+            "iqr_pct": 2.054100078073874,
+            "p95_over_p50": 1.0308329568260564,
+            "outliers_mild": 28,
+            "outliers_severe": 6,
+            "max_over_p50": 1.1222783056290677,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 6.486635000328533,
+            "iqr_pct": 2.735686525161851,
+            "p95_over_p50": 1.0346305907133775,
+            "outliers_mild": 18,
+            "outliers_severe": 4,
+            "max_over_p50": 1.1378344853776687,
+            "iterations": 1500
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 6.486635000328533,
+          "min": 6.485188499937067,
+          "max": 6.501533498521894,
+          "spread_pct": 0.25197962555315
+        },
+        "iqr_pct": {
+          "median": 2.5816674160170963,
+          "min": 2.054100078073874,
+          "max": 2.735686525161851,
+          "spread_pct": 26.401016756043045
+        },
+        "p95_over_p50": {
+          "median": 1.0330240983970425,
+          "min": 1.0308329568260564,
+          "max": 1.0346305907133775,
+          "spread_pct": 0.3676229715467401
+        },
+        "outliers_mild": {
+          "median": 18,
+          "min": 11,
+          "max": 28,
+          "spread_pct": 94.44444444444444
+        },
+        "outliers_severe": {
+          "median": 4,
+          "min": 0,
+          "max": 6,
+          "spread_pct": 150.0
+        },
+        "max_over_p50": {
+          "median": 1.1222783056290677,
+          "min": 1.0792122693385338,
+          "max": 1.1378344853776687,
+          "spread_pct": 5.223500779182897
+        },
+        "outliers_worst_trial": {
+          "mild": 28,
+          "severe": 6
+        }
+      }
+    },
+    {
+      "contender": "rowform compat (.scalars())",
+      "shipped": true,
+      "params": {
+        "backend": "sqlite",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 7.09258699498605,
+            "iqr_pct": 2.485806660687211,
+            "p95_over_p50": 1.0300644892553679,
+            "outliers_mild": 18,
+            "outliers_severe": 4,
+            "max_over_p50": 1.47392058874031,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 7.133733004593523,
+            "iqr_pct": 2.4463770246457206,
+            "p95_over_p50": 1.0318718122359463,
+            "outliers_mild": 24,
+            "outliers_severe": 4,
+            "max_over_p50": 1.7247282720668373,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 7.036301503831055,
+            "iqr_pct": 2.574449020671029,
+            "p95_over_p50": 1.0365166981061393,
+            "outliers_mild": 16,
+            "outliers_severe": 1,
+            "max_over_p50": 2.1396773566457736,
+            "iterations": 1500
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 7.09258699498605,
+          "min": 7.036301503831055,
+          "max": 7.133733004593523,
+          "spread_pct": 1.3737089278051193
+        },
+        "iqr_pct": {
+          "median": 2.485806660687211,
+          "min": 2.4463770246457206,
+          "max": 2.574449020671029,
+          "spread_pct": 5.15213021393636
+        },
+        "p95_over_p50": {
+          "median": 1.0318718122359463,
+          "min": 1.0300644892553679,
+          "max": 1.0365166981061393,
+          "spread_pct": 0.6252917052545782
+        },
+        "outliers_mild": {
+          "median": 18,
+          "min": 16,
+          "max": 24,
+          "spread_pct": 44.44444444444444
+        },
+        "outliers_severe": {
+          "median": 4,
+          "min": 1,
+          "max": 4,
+          "spread_pct": 75.0
+        },
+        "max_over_p50": {
+          "median": 1.7247282720668373,
+          "min": 1.47392058874031,
+          "max": 2.1396773566457736,
+          "spread_pct": 38.6006757521085
+        },
+        "outliers_worst_trial": {
+          "mild": 24,
+          "severe": 4
+        }
+      }
+    },
+    {
+      "contender": "floor: hand-rolled (dict)",
+      "shipped": false,
+      "params": {
+        "backend": "sqlite",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 5.8155459992121905,
+            "iqr_pct": 1.8641758021802741,
+            "p95_over_p50": 1.0239000774589655,
+            "outliers_mild": 31,
+            "outliers_severe": 6,
+            "max_over_p50": 1.229639144032564,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 5.813495499751298,
+            "iqr_pct": 2.2029945873485506,
+            "p95_over_p50": 1.0207844833184525,
+            "outliers_mild": 7,
+            "outliers_severe": 4,
+            "max_over_p50": 2.4575615476199735,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 5.803234500490362,
+            "iqr_pct": 2.361269417689693,
+            "p95_over_p50": 1.0205503500642663,
+            "outliers_mild": 8,
+            "outliers_severe": 1,
+            "max_over_p50": 1.8580670828759576,
+            "iterations": 1500
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 5.813495499751298,
+          "min": 5.803234500490362,
+          "max": 5.8155459992121905,
+          "spread_pct": 0.21177446034585165
+        },
+        "iqr_pct": {
+          "median": 2.2029945873485506,
+          "min": 1.8641758021802741,
+          "max": 2.361269417689693,
+          "spread_pct": 22.564450151813762
+        },
+        "p95_over_p50": {
+          "median": 1.0207844833184525,
+          "min": 1.0205503500642663,
+          "max": 1.0239000774589655,
+          "spread_pct": 0.32815226420856336
+        },
+        "outliers_mild": {
+          "median": 8,
+          "min": 7,
+          "max": 31,
+          "spread_pct": 300.0
+        },
+        "outliers_severe": {
+          "median": 4,
+          "min": 1,
+          "max": 6,
+          "spread_pct": 125.0
+        },
+        "max_over_p50": {
+          "median": 1.8580670828759576,
+          "min": 1.229639144032564,
+          "max": 2.4575615476199735,
+          "spread_pct": 66.08601029015615
+        },
+        "outliers_worst_trial": {
+          "mild": 31,
+          "severe": 6
+        }
+      }
+    },
+    {
+      "contender": "floor: hand-rolled (hydrator)",
+      "shipped": false,
+      "params": {
+        "backend": "sqlite",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 6.525829001475358,
+            "iqr_pct": 1.8261129708193002,
+            "p95_over_p50": 1.0294889729440602,
+            "outliers_mild": 81,
+            "outliers_severe": 8,
+            "max_over_p50": 1.2642360063801696,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 6.053145003534155,
+            "iqr_pct": 2.519880225990109,
+            "p95_over_p50": 1.0797874484899437,
+            "outliers_mild": 186,
+            "outliers_severe": 42,
+            "max_over_p50": 1.5261246829495232,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 6.047938000847353,
+            "iqr_pct": 1.8144696735654529,
+            "p95_over_p50": 1.025830622311064,
+            "outliers_mild": 37,
+            "outliers_severe": 4,
+            "max_over_p50": 1.182616786231327,
+            "iterations": 1500
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 6.053145003534155,
+          "min": 6.047938000847353,
+          "max": 6.525829001475358,
+          "spread_pct": 7.894920745314823
+        },
+        "iqr_pct": {
+          "median": 1.8261129708193002,
+          "min": 1.8144696735654529,
+          "max": 2.519880225990109,
+          "spread_pct": 38.629075183019374
+        },
+        "p95_over_p50": {
+          "median": 1.0294889729440602,
+          "min": 1.025830622311064,
+          "max": 1.0797874484899437,
+          "spread_pct": 5.241127160845415
+        },
+        "outliers_mild": {
+          "median": 81,
+          "min": 37,
+          "max": 186,
+          "spread_pct": 183.9506172839506
+        },
+        "outliers_severe": {
+          "median": 8,
+          "min": 4,
+          "max": 42,
+          "spread_pct": 475.0
+        },
+        "max_over_p50": {
+          "median": 1.2642360063801696,
+          "min": 1.182616786231327,
+          "max": 1.5261246829495232,
+          "spread_pct": 27.171184413719313
+        },
+        "outliers_worst_trial": {
+          "mild": 186,
+          "severe": 42
+        }
+      }
+    },
+    {
+      "contender": "floor: on SQLAlchemy (dict)",
+      "shipped": false,
+      "params": {
+        "backend": "sqlite",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 6.005532002745895,
+            "iqr_pct": 3.209624121907346,
+            "p95_over_p50": 1.1279307145609503,
+            "outliers_mild": 71,
+            "outliers_severe": 108,
+            "max_over_p50": 2.007568021752607,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 5.94585500221001,
+            "iqr_pct": 2.4254208119236944,
+            "p95_over_p50": 1.03415454869877,
+            "outliers_mild": 8,
+            "outliers_severe": 4,
+            "max_over_p50": 1.8837001565735911,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 6.006946499837795,
+            "iqr_pct": 2.7012726809127363,
+            "p95_over_p50": 1.0299017976621003,
+            "outliers_mild": 8,
+            "outliers_severe": 6,
+            "max_over_p50": 2.762817015241385,
+            "iterations": 1500
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 6.005532002745895,
+          "min": 5.94585500221001,
+          "max": 6.006946499837795,
+          "spread_pct": 1.0172537187355377
+        },
+        "iqr_pct": {
+          "median": 2.7012726809127363,
+          "min": 2.4254208119236944,
+          "max": 3.209624121907346,
+          "spread_pct": 29.030882943615893
+        },
+        "p95_over_p50": {
+          "median": 1.03415454869877,
+          "min": 1.0299017976621003,
+          "max": 1.1279307145609503,
+          "spread_pct": 9.479136075182893
+        },
+        "outliers_mild": {
+          "median": 8,
+          "min": 8,
+          "max": 71,
+          "spread_pct": 787.5
+        },
+        "outliers_severe": {
+          "median": 6,
+          "min": 4,
+          "max": 108,
+          "spread_pct": 1733.3333333333333
+        },
+        "max_over_p50": {
+          "median": 2.007568021752607,
+          "min": 1.8837001565735911,
+          "max": 2.762817015241385,
+          "spread_pct": 43.79014056521607
+        },
+        "outliers_worst_trial": {
+          "mild": 71,
+          "severe": 108
+        }
+      }
+    },
+    {
+      "contender": "SQLAlchemy Core (positional)",
+      "shipped": true,
+      "params": {
+        "backend": "sqlite",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 6.7508759966585785,
+            "iqr_pct": 1.8140164207853657,
+            "p95_over_p50": 1.0283450627315898,
+            "outliers_mild": 34,
+            "outliers_severe": 4,
+            "max_over_p50": 1.0788053290157074,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 6.662021998636192,
+            "iqr_pct": 2.0284982842822723,
+            "p95_over_p50": 1.0326454937993108,
+            "outliers_mild": 29,
+            "outliers_severe": 12,
+            "max_over_p50": 1.504783682510787,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 6.650556500972016,
+            "iqr_pct": 1.7133303061062903,
+            "p95_over_p50": 1.022158972321341,
+            "outliers_mild": 12,
+            "outliers_severe": 7,
+            "max_over_p50": 1.9981222620185564,
+            "iterations": 1500
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 6.662021998636192,
+          "min": 6.650556500972016,
+          "max": 6.7508759966585785,
+          "spread_pct": 1.5058415554181528
+        },
+        "iqr_pct": {
+          "median": 1.8140164207853657,
+          "min": 1.7133303061062903,
+          "max": 2.0284982842822723,
+          "spread_pct": 17.37404218422302
+        },
+        "p95_over_p50": {
+          "median": 1.0283450627315898,
+          "min": 1.022158972321341,
+          "max": 1.0326454937993108,
+          "spread_pct": 1.0197473453234267
+        },
+        "outliers_mild": {
+          "median": 29,
+          "min": 12,
+          "max": 34,
+          "spread_pct": 75.86206896551724
+        },
+        "outliers_severe": {
+          "median": 7,
+          "min": 4,
+          "max": 12,
+          "spread_pct": 114.28571428571428
+        },
+        "max_over_p50": {
+          "median": 1.504783682510787,
+          "min": 1.0788053290157074,
+          "max": 1.9981222620185564,
+          "spread_pct": 61.0929626422407
+        },
+        "outliers_worst_trial": {
+          "mild": 29,
+          "severe": 12
+        }
+      }
+    },
+    {
+      "contender": "SQLAlchemy ORM",
+      "shipped": true,
+      "params": {
+        "backend": "sqlite",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 14.620474499679403,
+            "iqr_pct": 2.53338566507978,
+            "p95_over_p50": 1.0317538599716072,
+            "outliers_mild": 10,
+            "outliers_severe": 4,
+            "max_over_p50": 1.6151998350469527,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 14.585221997549525,
+            "iqr_pct": 2.4144919035868875,
+            "p95_over_p50": 1.0300678317825052,
+            "outliers_mild": 11,
+            "outliers_severe": 4,
+            "max_over_p50": 1.2016703623350165,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 14.551242002198705,
+            "iqr_pct": 2.359413755328123,
+            "p95_over_p50": 1.0293946731578103,
+            "outliers_mild": 8,
+            "outliers_severe": 2,
+            "max_over_p50": 1.298240726984433,
+            "iterations": 1500
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 14.585221997549525,
+          "min": 14.551242002198705,
+          "max": 14.620474499679403,
+          "spread_pct": 0.4746756510962242
+        },
+        "iqr_pct": {
+          "median": 2.4144919035868875,
+          "min": 2.359413755328123,
+          "max": 2.53338566507978,
+          "spread_pct": 7.205321728070829
+        },
+        "p95_over_p50": {
+          "median": 1.0300678317825052,
+          "min": 1.0293946731578103,
+          "max": 1.0317538599716072,
+          "spread_pct": 0.22903218030936526
+        },
+        "outliers_mild": {
+          "median": 10,
+          "min": 8,
+          "max": 11,
+          "spread_pct": 30.0
+        },
+        "outliers_severe": {
+          "median": 4,
+          "min": 2,
+          "max": 4,
+          "spread_pct": 50.0
+        },
+        "max_over_p50": {
+          "median": 1.298240726984433,
+          "min": 1.2016703623350165,
+          "max": 1.6151998350469527,
+          "spread_pct": 31.853065777137253
+        },
+        "outliers_worst_trial": {
+          "mild": 11,
+          "severe": 4
+        }
+      }
+    },
+    {
+      "contender": "SQLAlchemy ORM (DC)",
+      "shipped": true,
+      "params": {
+        "backend": "sqlite",
+        "gc": "off",
+        "limit": 1000
+      },
+      "trials": [
+        {
+          "trial": 0,
+          "metrics": {
+            "median_ms": 14.93026850221213,
+            "iqr_pct": 4.068453292046455,
+            "p95_over_p50": 1.0316653045146122,
+            "outliers_mild": 0,
+            "outliers_severe": 0,
+            "max_over_p50": 1.067009946866104,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 1,
+          "metrics": {
+            "median_ms": 14.532064502418507,
+            "iqr_pct": 2.5116046089626307,
+            "p95_over_p50": 1.03807473444461,
+            "outliers_mild": 24,
+            "outliers_severe": 3,
+            "max_over_p50": 1.7283018524985017,
+            "iterations": 1500
+          }
+        },
+        {
+          "trial": 2,
+          "metrics": {
+            "median_ms": 14.51291099874652,
+            "iqr_pct": 2.221463399979501,
+            "p95_over_p50": 1.0293546209155096,
+            "outliers_mild": 11,
+            "outliers_severe": 0,
+            "max_over_p50": 1.0588914243940977,
+            "iterations": 1500
+          }
+        }
+      ],
+      "summary": {
+        "median_ms": {
+          "median": 14.532064502418507,
+          "min": 14.51291099874652,
+          "max": 14.93026850221213,
+          "spread_pct": 2.8719766788548915
+        },
+        "iqr_pct": {
+          "median": 2.5116046089626307,
+          "min": 2.221463399979501,
+          "max": 4.068453292046455,
+          "spread_pct": 73.53824266271822
+        },
+        "p95_over_p50": {
+          "median": 1.0316653045146122,
+          "min": 1.0293546209155096,
+          "max": 1.03807473444461,
+          "spread_pct": 0.845246369238241
+        },
+        "outliers_mild": {
+          "median": 11,
+          "min": 0,
+          "max": 24,
+          "spread_pct": 218.18181818181816
+        },
+        "outliers_severe": {
+          "median": 0,
+          "min": 0,
+          "max": 3,
+          "spread_pct": NaN
+        },
+        "max_over_p50": {
+          "median": 1.067009946866104,
+          "min": 1.0588914243940977,
+          "max": 1.7283018524985017,
+          "spread_pct": 62.73703727603641
+        },
+        "outliers_worst_trial": {
+          "mild": 24,
+          "severe": 3
+        }
+      }
+    }
+  ],
+  "ratios": [
+    {
+      "contender": "rowform (idiomatic)",
+      "against": "rowform",
+      "gc": "off",
+      "value": 0.9277267096990466,
+      "low": 0.9274387173590494,
+      "high": 0.9315799835668855,
+      "interval_pct": 0.4463885931644236,
+      "tie": false
+    },
+    {
+      "contender": "rowform compat (.scalars())",
+      "against": "rowform",
+      "gc": "off",
+      "value": 1.0143907273616282,
+      "low": 1.006252700554186,
+      "high": 1.0221654439988124,
+      "interval_pct": 1.5686996159768318,
+      "tie": true
+    },
+    {
+      "contender": "floor: hand-rolled (dict)",
+      "against": "rowform",
+      "gc": "off",
+      "value": 0.831453450296082,
+      "low": 0.8299133266089018,
+      "high": 0.8332874463555785,
+      "interval_pct": 0.4058098195966526,
+      "tie": false
+    },
+    {
+      "contender": "floor: hand-rolled (hydrator)",
+      "against": "rowform",
+      "gc": "off",
+      "value": 0.8657284242408498,
+      "low": 0.8649080689369868,
+      "high": 0.9350611936917405,
+      "interval_pct": 8.103363917647773,
+      "tie": false
+    },
+    {
+      "contender": "floor: on SQLAlchemy (dict)",
+      "against": "rowform",
+      "gc": "off",
+      "value": 0.8589187528845991,
+      "low": 0.8503093066463762,
+      "high": 0.860712495425622,
+      "interval_pct": 1.2111959069827847,
+      "tie": false
+    },
+    {
+      "contender": "SQLAlchemy Core (positional)",
+      "against": "rowform",
+      "gc": "off",
+      "value": 0.9528107791519626,
+      "low": 0.9510877888969964,
+      "high": 0.9673073208742312,
+      "interval_pct": 1.702282586650709,
+      "tie": true
+    },
+    {
+      "contender": "SQLAlchemy ORM",
+      "against": "rowform",
+      "gc": "off",
+      "value": 2.085996824752966,
+      "low": 2.080954966633777,
+      "high": 2.0949121306916143,
+      "interval_pct": 0.6690884613158491,
+      "tie": false
+    },
+    {
+      "contender": "SQLAlchemy ORM (DC)",
+      "against": "rowform",
+      "gc": "off",
+      "value": 2.0783941728307838,
+      "low": 2.0754732976464956,
+      "high": 2.139301333924078,
+      "interval_pct": 3.071026521915626,
+      "tie": false
+    }
+  ],
+  "warnings": [],
+  "notes": "",
+  "schema_version": 1,
+  "quotable": true
+}
