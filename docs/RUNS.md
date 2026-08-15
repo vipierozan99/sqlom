@@ -24,6 +24,9 @@ sweeps while every rowform row held within ~1%. That is a monotonic drift in one
 contender, not symmetric jitter — worth one boost-off (root) session to settle
 whether flat/sqlite Core genuinely sits nearer 0.8x than 0.9x. Until then the
 equal-work Core margin on that one cell should be quoted as a range.
+`sudo scripts/bench_sweep_boost_off.sh` runs exactly that session: boost off and
+governors pinned for the duration (both restored on exit), the full publishing
+matrix as the invoking user, and the tables rendered from that sweep alone.
 
 ## 2026-08-15 (later) — the decomposition sweep: both oddities resolved
 
