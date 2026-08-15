@@ -22,6 +22,17 @@ re-run at the same sha; the published table takes the re-run. **Both artifacts a
 the branch rather than one discarded**, because they agree within 1.6% on every row,
 which is stronger evidence than either one's spread figure.
 
+**The calibration log is settled, and the answer was "neither".** Core positional
+flat/sqlite read 0.89x → 0.82x → 0.77x across three boost-on sweeps while every rowform
+row held within ~1% — a monotonic drift in one contender, which is why the previous entry
+asked for a boost-off session to decide whether that cell sat nearer 0.8x or 0.9x. With
+boost off it reads **0.94x**, outside the whole boost-on range. So the drift was clock
+behaviour rather than either endpoint being the true value, and the boost-on sweeps were
+*flattering Core* on that cell by 5–17%. `sudo scripts/bench_sweep_boost_off.sh` runs
+this session end to end — boost off and governors pinned for the duration (both restored
+on exit), the full publishing matrix as the invoking user, tables rendered from that
+sweep alone.
+
 ### The retraction: the pool finding was a bug in a floor
 
 The previous entry's headline — *"SQLAlchemy's pool checkout adds 0.008 ms/request
