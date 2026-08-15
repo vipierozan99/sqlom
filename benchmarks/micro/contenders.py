@@ -23,14 +23,30 @@ and what this file is organised around:
   cost from the hydrator's. Keeping only the first is how an earlier run produced
   a "floor" slower than the thing it was bounding.
 
-**Every contender builds its payload the same way**, with a
-`{field: getattr(obj, field)}` comprehension over the shape's field list. That is
+**Two claims, two spellings of rowform — never blended.** The plain `rowform`
+rows make the *result-layer* claim, so they do the same work as every rival:
+the statement goes in unprepared (paying rowform's structural cache-key per
+call, as `conn.execute(stmt)` pays SQLAlchemy's) and the payload is built by
+the same per-row pass the ORM rows pay. The `rowform (idiomatic)` rows
+(`tags=("idiomatic",)`) make the *endpoint* claim — the code an application
+would actually write: statement prepared once at startup, dataclasses handed
+straight to orjson's C serializer. The delta between the two rows prices the
+prepare-once and direct-serialization advantages explicitly, instead of
+smuggling them into the result-layer ratio (which an earlier version of this
+file did, in violation of its own rule below).
+
+**Every non-floor contender builds its payload the same way**, with a
+`{field: getattr(obj, field)}` comprehension over the shape's field list —
+shared per shape (`_flat_objs`/`_join_objs`/`_wide_objs`) so the parity is
+structural rather than a rule someone has to keep re-verifying. That is
 not a style rule: the `MappedAsDataclass` rows used `dataclasses.asdict()`, which
 deep-copies recursively, and on `wide` that cost more than the ORM work the row
 was there to measure — 14 ms of a 17 ms cell, for byte-identical JSON. The row
 registered to *avoid* overstating the win was carrying the largest handicap in
-the file. If a contender needs a different payload builder, the difference
-belongs in the timed region of every contender or none.
+the file. If a contender needs a different payload builder — Core positional's
+unpacking builders (cheaper than getattr: the generosity runs toward the
+rival), `.mappings()`'s priced `str()` cast, the idiomatic rows' direct dumps —
+the difference is deliberate and priced, never incidental.
 
 **Every contender runs its read inside `BEGIN`...`COMMIT`**, because that is what
 the code this library is measured against looks like — `async with session.begin():
@@ -290,6 +306,30 @@ def _wide(rows):
     ]
 
 
+# The equal-work payload pass every non-floor, non-idiomatic contender pays —
+# one shared builder per shape, so "same payload builder" is enforced by
+# construction rather than by review (see the module docstring's payload rule,
+# which the rowform arms had silently drifted from before these existed).
+
+
+def _flat_objs(objs):
+    return [{f: getattr(u, f) for f in FLAT_FIELDS} for u in objs]
+
+
+def _join_objs(pairs):
+    return [
+        [
+            {f: getattr(a, f) for f in AUTHOR_FIELDS},
+            {f: getattr(p, f) for f in POST_FIELDS},
+        ]
+        for a, p in pairs
+    ]
+
+
+def _wide_objs(objs):
+    return [{f: getattr(e, f) for f in WIDE_FIELDS} for e in objs]
+
+
 # ==========================================================================
 # flat shape (`users`) — sqlite
 # ==========================================================================
@@ -299,9 +339,33 @@ def _wide(rows):
     "rowform",
     backend="sqlite",
     shape="flat",
-    description="Core compiles, rowform hydrates: compiled hydrator into plain dataclasses.",
+    description="The result-layer claim: compiled hydrator, equal work — unprepared "
+    "statement, same payload pass as the ORM rows.",
 )
 async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = flat_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_flat_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (idiomatic)",
+    backend="sqlite",
+    shape="flat",
+    tags=("idiomatic",),
+    description="The endpoint claim: rowform as an app writes it — prepared once, "
+    "dataclasses straight to orjson.",
+)
+async def flat_rowform_idiomatic(init: ContenderInit) -> tuple[Target, Teardown]:
+    """The other family (module docstring): the delta between this row and
+    plain `rowform` is what prepare-once plus direct C serialization are
+    worth, priced instead of blended into the result-layer ratio."""
     sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(flat_stmt(init.limit))
@@ -333,10 +397,10 @@ async def flat_rowform_oneshot(init: ContenderInit) -> tuple[Target, Teardown]:
     """
     sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
-    query = engine.prepare(flat_stmt(init.limit))
+    stmt = flat_stmt(init.limit)
 
     async def target() -> bytes:
-        return dumps(await engine.fetch_all(query))
+        return dumps(_flat_objs(await engine.fetch_all(stmt)))
 
     return target, sa_engine.dispose
 
@@ -360,11 +424,11 @@ async def flat_rowform_oneshot(init: ContenderInit) -> tuple[Target, Teardown]:
 async def flat_rowform_compat_scalars(init: ContenderInit) -> tuple[Target, Teardown]:
     sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
-    query = engine.prepare(flat_stmt(init.limit))
+    stmt = flat_stmt(init.limit)
 
     async def target() -> bytes:
         async with engine.begin() as conn:
-            return dumps((await conn.execute(query)).scalars().all())
+            return dumps(_flat_objs((await conn.execute(stmt)).scalars().all()))
 
     return target, sa_engine.dispose
 
@@ -378,11 +442,11 @@ async def flat_rowform_compat_scalars(init: ContenderInit) -> tuple[Target, Tear
 async def flat_rowform_compat_rows(init: ContenderInit) -> tuple[Target, Teardown]:
     sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
-    query = engine.prepare(flat_stmt(init.limit))
+    stmt = flat_stmt(init.limit)
 
     async def target() -> bytes:
         async with engine.begin() as conn:
-            return dumps([row[0] for row in (await conn.execute(query)).all()])
+            return dumps(_flat_objs([row[0] for row in (await conn.execute(stmt)).all()]))
 
     return target, sa_engine.dispose
 
@@ -395,13 +459,18 @@ async def flat_rowform_compat_rows(init: ContenderInit) -> tuple[Target, Teardow
     description="rowform's row-layer cost alone, via MockEngine — zero driver cost.",
 )
 async def flat_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+    """Unprepared, like the real `rowform` row it is the floor of — this is
+    also what makes `engines/mock.py`'s "including the per-request cache-key
+    lookup" claim true: a prepared `CoreQuery` short-circuits that lookup
+    entirely, so the earlier prepared spelling could never have caught a
+    cache-key regression."""
     from benchmarks.engines.mock import MockEngine
 
     engine = MockEngine(init.handle, FLAT_FIELDS)
-    query = engine.prepare(flat_stmt(init.limit))
+    stmt = flat_stmt(init.limit)
 
     async def target() -> bytes:
-        return dumps(await engine.fetch_all(query))
+        return dumps(_flat_objs(await engine.fetch_all(stmt)))
 
     return target, engine.sa_engine.dispose
 
@@ -605,7 +674,7 @@ async def flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(engine) as session, session.begin():
             users = (await session.execute(stmt)).scalars().all()
-            return dumps([{f: getattr(u, f) for f in FLAT_FIELDS} for u in users])
+            return dumps(_flat_objs(users))
 
     return target, engine.dispose
 
@@ -623,7 +692,7 @@ async def flat_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(engine) as session, session.begin():
             users = (await session.execute(stmt)).scalars().all()
-            return dumps([{f: getattr(u, f) for f in FLAT_FIELDS} for u in users])
+            return dumps(_flat_objs(users))
 
     return target, engine.dispose
 
@@ -677,7 +746,7 @@ async def flat_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(bind=conn) as session:
             users = (await session.execute(stmt)).scalars().all()
-            return dumps([{f: getattr(u, f) for f in FLAT_FIELDS} for u in users])
+            return dumps(_flat_objs(users))
 
     async def teardown() -> None:
         await conn.close()
@@ -695,9 +764,29 @@ async def flat_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     "rowform",
     backend="sqlite",
     shape="join",
-    description="Two entities per row through one compiled hydrator, no per-entity call.",
+    description="The result-layer claim at arity two: one compiled hydrator, equal work.",
 )
 async def join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = join_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_join_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (idiomatic)",
+    backend="sqlite",
+    shape="join",
+    tags=("idiomatic",),
+    description="The endpoint claim at arity two: prepared once, object pairs straight to orjson.",
+)
+async def join_rowform_idiomatic(init: ContenderInit) -> tuple[Target, Teardown]:
+    """See the flat twin."""
     sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(join_stmt(init.limit))
@@ -721,11 +810,11 @@ async def join_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
     per row is unavoidable rather than opt-in."""
     sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
-    query = engine.prepare(join_stmt(init.limit))
+    stmt = join_stmt(init.limit)
 
     async def target() -> bytes:
         async with engine.begin() as conn:
-            return dumps([(a, p) for a, p in (await conn.execute(query)).all()])
+            return dumps(_join_objs([(a, p) for a, p in (await conn.execute(stmt)).all()]))
 
     return target, sa_engine.dispose
 
@@ -738,13 +827,14 @@ async def join_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
     description="rowform's join row-layer cost alone, via MockEngine — zero driver cost.",
 )
 async def join_rowform_mock(init: ContenderInit) -> tuple[Target, Teardown]:
+    """Unprepared, like the real row it is the floor of — see the flat mock."""
     from benchmarks.engines.mock import MockEngine
 
     engine = MockEngine(init.handle, AUTHOR_FIELDS + POST_FIELDS)
-    query = engine.prepare(join_stmt(init.limit))
+    stmt = join_stmt(init.limit)
 
     async def target() -> bytes:
-        return dumps(await engine.fetch_all(query))
+        return dumps(_join_objs(await engine.fetch_all(stmt)))
 
     return target, engine.sa_engine.dispose
 
@@ -884,15 +974,7 @@ async def join_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(engine) as session, session.begin():
             rows = (await session.execute(stmt)).all()
-            return dumps(
-                [
-                    [
-                        {f: getattr(a, f) for f in AUTHOR_FIELDS},
-                        {f: getattr(p, f) for f in POST_FIELDS},
-                    ]
-                    for a, p in rows
-                ]
-            )
+            return dumps(_join_objs(rows))
 
     return target, engine.dispose
 
@@ -910,15 +992,7 @@ async def join_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(engine) as session, session.begin():
             rows = (await session.execute(stmt)).all()
-            return dumps(
-                [
-                    [
-                        {f: getattr(a, f) for f in AUTHOR_FIELDS},
-                        {f: getattr(p, f) for f in POST_FIELDS},
-                    ]
-                    for a, p in rows
-                ]
-            )
+            return dumps(_join_objs(rows))
 
     return target, engine.dispose
 
@@ -941,15 +1015,7 @@ async def join_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(bind=conn) as session:
             rows = (await session.execute(stmt)).all()
-            return dumps(
-                [
-                    [
-                        {f: getattr(a, f) for f in AUTHOR_FIELDS},
-                        {f: getattr(p, f) for f in POST_FIELDS},
-                    ]
-                    for a, p in rows
-                ]
-            )
+            return dumps(_join_objs(rows))
 
     async def teardown() -> None:
         await conn.close()
@@ -970,9 +1036,29 @@ async def join_sa_orm_mock(init: ContenderInit) -> tuple[Target, Teardown]:
     "rowform",
     backend="sqlite",
     shape="wide",
-    description="Per-column processors from SQLAlchemy, inlined into generated code.",
+    description="The result-layer claim where processors dominate: equal work, unprepared.",
 )
 async def wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = wide_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_wide_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (idiomatic)",
+    backend="sqlite",
+    shape="wide",
+    tags=("idiomatic",),
+    description="The endpoint claim over the widened shape: prepared once, direct to orjson.",
+)
+async def wide_rowform_idiomatic(init: ContenderInit) -> tuple[Target, Teardown]:
+    """See the flat twin."""
     sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(wide_stmt(init.limit))
@@ -993,11 +1079,11 @@ async def wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 async def wide_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
     sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
-    query = engine.prepare(wide_stmt(init.limit))
+    stmt = wide_stmt(init.limit)
 
     async def target() -> bytes:
         async with engine.begin() as conn:
-            return dumps((await conn.execute(query)).scalars().all())
+            return dumps(_wide_objs((await conn.execute(stmt)).scalars().all()))
 
     return target, sa_engine.dispose
 
@@ -1115,7 +1201,7 @@ async def wide_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(engine) as session, session.begin():
             rows = (await session.execute(stmt)).scalars().all()
-            return dumps([{f: getattr(e, f) for f in WIDE_FIELDS} for e in rows])
+            return dumps(_wide_objs(rows))
 
     return target, engine.dispose
 
@@ -1133,7 +1219,7 @@ async def wide_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(engine) as session, session.begin():
             rows = (await session.execute(stmt)).scalars().all()
-            return dumps([{f: getattr(e, f) for f in WIDE_FIELDS} for e in rows])
+            return dumps(_wide_objs(rows))
 
     return target, engine.dispose
 
@@ -1147,9 +1233,29 @@ async def wide_sa_orm_dc(init: ContenderInit) -> tuple[Target, Teardown]:
     "rowform",
     backend="postgres",
     shape="flat",
-    description="Core compiles, rowform's asyncpg pool executes, compiled hydrator shapes.",
+    description="The result-layer claim on asyncpg: equal work — unprepared, same payload pass.",
 )
 async def pg_flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = flat_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_flat_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (idiomatic)",
+    backend="postgres",
+    shape="flat",
+    tags=("idiomatic",),
+    description="The endpoint claim on asyncpg: prepared once, dataclasses straight to orjson.",
+)
+async def pg_flat_rowform_idiomatic(init: ContenderInit) -> tuple[Target, Teardown]:
+    """See the sqlite flat twin."""
     sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(flat_stmt(init.limit))
@@ -1173,10 +1279,10 @@ async def pg_flat_rowform_oneshot(init: ContenderInit) -> tuple[Target, Teardown
     Python overhead only."""
     sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
-    query = engine.prepare(flat_stmt(init.limit))
+    stmt = flat_stmt(init.limit)
 
     async def target() -> bytes:
-        return dumps(await engine.fetch_all(query))
+        return dumps(_flat_objs(await engine.fetch_all(stmt)))
 
     return target, sa_engine.dispose
 
@@ -1190,11 +1296,11 @@ async def pg_flat_rowform_oneshot(init: ContenderInit) -> tuple[Target, Teardown
 async def pg_flat_rowform_compat_scalars(init: ContenderInit) -> tuple[Target, Teardown]:
     sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
-    query = engine.prepare(flat_stmt(init.limit))
+    stmt = flat_stmt(init.limit)
 
     async def target() -> bytes:
         async with engine.begin() as conn:
-            return dumps((await conn.execute(query)).scalars().all())
+            return dumps(_flat_objs((await conn.execute(stmt)).scalars().all()))
 
     return target, sa_engine.dispose
 
@@ -1208,11 +1314,11 @@ async def pg_flat_rowform_compat_scalars(init: ContenderInit) -> tuple[Target, T
 async def pg_flat_rowform_compat_rows(init: ContenderInit) -> tuple[Target, Teardown]:
     sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
-    query = engine.prepare(flat_stmt(init.limit))
+    stmt = flat_stmt(init.limit)
 
     async def target() -> bytes:
         async with engine.begin() as conn:
-            return dumps([row[0] for row in (await conn.execute(query)).all()])
+            return dumps(_flat_objs([row[0] for row in (await conn.execute(stmt)).all()]))
 
     return target, sa_engine.dispose
 
@@ -1314,7 +1420,7 @@ async def pg_flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(engine) as session, session.begin():
             users = (await session.execute(stmt)).scalars().all()
-            return dumps([{f: getattr(u, f) for f in FLAT_FIELDS} for u in users])
+            return dumps(_flat_objs(users))
 
     return target, engine.dispose
 
@@ -1323,9 +1429,29 @@ async def pg_flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     "rowform",
     backend="postgres",
     shape="join",
-    description="Two entities per row through one compiled hydrator, on asyncpg.",
+    description="The result-layer claim at arity two on asyncpg: equal work.",
 )
 async def pg_join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = join_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_join_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (idiomatic)",
+    backend="postgres",
+    shape="join",
+    tags=("idiomatic",),
+    description="The endpoint claim at arity two on asyncpg: prepared once, direct to orjson.",
+)
+async def pg_join_rowform_idiomatic(init: ContenderInit) -> tuple[Target, Teardown]:
+    """See the sqlite flat twin."""
     sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(join_stmt(init.limit))
@@ -1346,11 +1472,11 @@ async def pg_join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 async def pg_join_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
     sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
-    query = engine.prepare(join_stmt(init.limit))
+    stmt = join_stmt(init.limit)
 
     async def target() -> bytes:
         async with engine.begin() as conn:
-            return dumps([(a, p) for a, p in (await conn.execute(query)).all()])
+            return dumps(_join_objs([(a, p) for a, p in (await conn.execute(stmt)).all()]))
 
     return target, sa_engine.dispose
 
@@ -1386,15 +1512,7 @@ async def pg_join_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(engine) as session, session.begin():
             rows = (await session.execute(stmt)).all()
-            return dumps(
-                [
-                    [
-                        {f: getattr(a, f) for f in AUTHOR_FIELDS},
-                        {f: getattr(p, f) for f in POST_FIELDS},
-                    ]
-                    for a, p in rows
-                ]
-            )
+            return dumps(_join_objs(rows))
 
     return target, engine.dispose
 
@@ -1403,9 +1521,29 @@ async def pg_join_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     "rowform",
     backend="postgres",
     shape="wide",
-    description="The widened shape where asyncpg decodes natively and most processors are None.",
+    description="The result-layer claim where asyncpg decodes natively: equal work.",
 )
 async def pg_wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = wide_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_wide_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (idiomatic)",
+    backend="postgres",
+    shape="wide",
+    tags=("idiomatic",),
+    description="The endpoint claim over the widened shape on asyncpg: prepared once, direct to orjson.",
+)
+async def pg_wide_rowform_idiomatic(init: ContenderInit) -> tuple[Target, Teardown]:
+    """See the sqlite flat twin."""
     sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
     query = engine.prepare(wide_stmt(init.limit))
@@ -1426,11 +1564,11 @@ async def pg_wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 async def pg_wide_rowform_compat(init: ContenderInit) -> tuple[Target, Teardown]:
     sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     engine = rf.Engine(sa_engine)
-    query = engine.prepare(wide_stmt(init.limit))
+    stmt = wide_stmt(init.limit)
 
     async def target() -> bytes:
         async with engine.begin() as conn:
-            return dumps((await conn.execute(query)).scalars().all())
+            return dumps(_wide_objs((await conn.execute(stmt)).scalars().all()))
 
     return target, sa_engine.dispose
 
@@ -1466,7 +1604,7 @@ async def pg_wide_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with AsyncSession(engine) as session, session.begin():
             rows = (await session.execute(stmt)).scalars().all()
-            return dumps([{f: getattr(e, f) for f in WIDE_FIELDS} for e in rows])
+            return dumps(_wide_objs(rows))
 
     return target, engine.dispose
 
