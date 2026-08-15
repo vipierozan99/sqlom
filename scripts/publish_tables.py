@@ -44,6 +44,7 @@ ROW_ORDER = (
     "floor: hand-rolled (hydrator)",
     "floor: on SQLAlchemy (dict)",
     "rowform",
+    "rowform (idiomatic)",
     "rowform (no transaction)",
     "rowform compat (.scalars())",
     "rowform compat (.all())",
@@ -63,11 +64,12 @@ LABELS = {
     "floor: hand-rolled (dict)": "raw driver → dicts *(floor: no SQLAlchemy)*",
     "floor: hand-rolled (hydrator)": "raw driver + the same hydrator *(floor: no SQLAlchemy)*",
     "floor: on SQLAlchemy (dict)": "same pool + transaction → dicts *(floor: same plumbing)*",
-    "rowform": "**rowform** `fetch_all()`",
+    "rowform": "**rowform** `fetch_all()` *(equal work)*",
+    "rowform (idiomatic)": "rowform *(idiomatic: prepared once, direct to orjson)*",
     "rowform (no transaction)": "rowform `fetch_all()` off the engine *(no transaction)*",
     "rowform compat (.scalars())": "rowform `execute().scalars()`",
     "rowform compat (.all())": "rowform `execute().all()`",
-    "rowform (mock)": "**rowform**",
+    "rowform (mock)": "rowform",
     "SQLAlchemy Core (positional)": "SQLAlchemy Core (positional)",
     "SQLAlchemy Core (positional) (mock)": "SQLAlchemy Core (positional)",
     "SQLAlchemy Core (.mappings())": "SQLAlchemy Core (`.mappings()`)",
@@ -79,8 +81,10 @@ LABELS = {
 #: Rows whose values are bolded as well as their label — the contender the ratio
 #: column is measured against. Emitted here rather than added by hand afterwards,
 #: since a hand-edit on the way to the doc is the transcription step this script
-#: exists to remove.
-BOLD_ROWS = frozenset({"rowform", "rowform (mock)"})
+#: exists to remove. `rowform (mock)` is deliberately absent: the mock group has
+#: no reference — cross-mapper mock ratios compare two seams that exclude
+#: different layers, so the harness stopped recording them.
+BOLD_ROWS = frozenset({"rowform"})
 
 
 def load(paths: list[Path], gc: str = "off") -> dict[tuple[str, str], dict[str, Any]]:

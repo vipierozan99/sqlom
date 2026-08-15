@@ -106,39 +106,43 @@ the other direction — correctness rather than latency — and is worth reading
 ## 📊 Performance
 
 sqlite, 200k-row table, 1000 rows per read, 1500 iterations, 3 trials, one contender per
-process, GC off, pinned cores, every transactional contender reading inside
-`BEGIN`…`COMMIT`. Medians in ms, lower
-is better; `x` is against rowform, and `~` marks a pair the trials do not actually order.
+process, GC off, pinned to two physical cores, every transactional contender reading
+inside `BEGIN`…`COMMIT`. Medians in ms, lower is better; `x` is against the equal-work
+rowform row, and `~` marks a pair the trials do not actually order. Two rowform rows on
+purpose: **equal work** strips every API-shape advantage (statement unprepared, the
+same per-row payload pass the ORM rows pay), **idiomatic** is the code an application
+would write (prepared once, dataclasses straight to orjson).
 
 | | flat | join | wide | | flat | join | wide |
 |---|---|---|---|---|---|---|---|
-| raw driver → dicts *(floor: no SQLAlchemy)* | 0.9129 | 1.5840 | 3.7802 | | 0.64x | 0.73x | 0.85x |
-| raw driver + the same hydrator *(floor: no SQLAlchemy)* | 1.0044 | 1.7839 | 3.9958 | | 0.70x | 0.82x | 0.90x |
-| same pool + transaction → dicts *(floor: same plumbing)* | 1.1272 | 1.8144 | 3.9400 | | 0.79x | 0.83x | 0.89x |
-| **rowform** `fetch_all()` | **1.4251** | **2.1776** | **4.4340** | | **1.00x** | **1.00x** | **1.00x** |
-| rowform `fetch_all()` off the engine *(no transaction)* | 1.1802 | — | — | | 0.83x | — | — |
-| rowform `execute().scalars()` | 1.4774 | — | 4.4049 | | ~1.04x | — | ~0.99x |
-| rowform `execute().all()` | 1.6648 | 2.3811 | — | | 1.17x | 1.09x | — |
-| SQLAlchemy Core (positional) | 1.5388 | 2.2896 | 4.9424 | | ~1.08x | ~1.05x | 1.11x |
-| SQLAlchemy Core (`.mappings()`) | 3.4865 | — | — | | 2.45x | — | — |
-| SQLAlchemy ORM | 6.2281 | 9.6213 | 10.7936 | | 4.37x | 4.42x | 2.43x |
-| SQLAlchemy ORM (`MappedAsDataclass`) | 5.9806 | 9.6598 | 11.1669 | | 4.20x | 4.44x | 2.52x |
+| raw driver → dicts *(floor: no SQLAlchemy)* | 0.9255 | 1.6847 | 2.7011 | | 0.66x | 0.75x | 0.86x |
+| raw driver + the same hydrator *(floor: no SQLAlchemy)* | 1.1031 | 1.8045 | 2.7995 | | 0.79x | 0.80x | 0.89x |
+| same pool + transaction → dicts *(floor: same plumbing)* | 0.9468 | 1.7804 | 2.7641 | | 0.68x | 0.79x | 0.88x |
+| **rowform** `fetch_all()` *(equal work)* | **1.3995** | **2.2507** | **3.1547** | | **1.00x** | **1.00x** | **1.00x** |
+| rowform *(idiomatic: prepared once, direct to orjson)* | 1.2562 | 2.0196 | 2.9783 | | 0.90x | 0.90x | 0.94x |
+| rowform `fetch_all()` off the engine *(no transaction)* | 1.2426 | — | — | | 0.89x | — | — |
+| rowform `execute().scalars()` | 1.4076 | — | 3.2009 | | ~1.01x | — | ~1.01x |
+| rowform `execute().all()` | 1.4948 | 2.4222 | — | | 1.07x | 1.08x | — |
+| SQLAlchemy Core (positional) | 1.2511 | 2.0094 | 3.0061 | | 0.89x | 0.89x | ~0.95x |
+| SQLAlchemy Core (`.mappings()`) | 2.1999 | — | — | | 1.57x | — | — |
+| SQLAlchemy ORM | 3.5957 | 5.7349 | 6.1220 | | 2.57x | 2.55x | 1.94x |
+| SQLAlchemy ORM (`MappedAsDataclass`) | 3.5709 | 5.7272 | 6.1876 | | 2.55x | 2.54x | 1.96x |
 
-**2.4–4.4x SQLAlchemy's ORM. Against Core's result layer, a tie** — and that tie is the
-more interesting number, so read on rather than away.
+**1.9–4.9x SQLAlchemy's ORM (2.7–4.9x on postgres). Against Core's result layer:
+written idiomatically, parity — at strictly equal work, Core is ahead** (0.89x here,
+0.75–0.92x on postgres). That ordering is this table's most load-bearing number, and it
+is newer than the project: an earlier revision measured rowform with a prepared
+statement and C-level serialization its rivals didn't get, and published the blended
+margin as a result-layer win (correction 14 in
+[METHODOLOGY.md](docs/METHODOLOGY.md)).
 
-With the driver, the pool and the transaction all removed, the row layer alone is
-**0.29 ms against Core's 0.43 and the ORM's 3.55**, and hand-written dicts — no mapper
-at all — are 0.17. That is the real spread between the result layers. End to end it
-compresses, because a read is mostly *not* the row layer: the three floors above show
-where the time actually goes. Dropping SQLAlchemy's pool and transaction entirely buys
-0.51 ms on `flat`; swapping the compiled hydrator for hand-written dicts buys 0.09.
-
-So the honest summary is that **rowform costs about what hand-written dict-building
-costs, and gives you typed objects for it** — while the ORM costs 4x and stock Core's
-`Row` costs about the same as rowform for an untyped tuple. Where the row layer is a
-larger share of the read, the gap widens back out; that is what the `mock` table in
-[METHODOLOGY.md](docs/METHODOLOGY.md) isolates.
+So the honest summary: **rowform costs about what stock Core costs and returns typed,
+JSON-ready dataclasses where Core returns tuples** — while the ORM costs 2–5x for its
+instrumented objects. What the equal-work row buys you is knowing that none of that
+comes from measurement asymmetry; what the idiomatic row shows is that the API shape
+(prepare once, serialize in C) is itself worth ~10% end to end, and it is rowform's
+default way of being used. The postgres tables and the mock instrument that isolates
+the row layer alone are in [METHODOLOGY.md](docs/METHODOLOGY.md).
 
 Three things matter more than the ratios. **Every contender runs identical SQL**,
 compiled by Core, so what is compared is only what happens to the rows afterwards.
@@ -151,17 +155,12 @@ the smallest win, which is why it is in the table** — it is the shape full of
 `DateTime`/`Numeric`/`Enum`/`Uuid` columns, where type processors dominate and both
 sides run the same ones.
 
-> **These are provisional, and now superseded.** They are the first numbers taken after
-> a harness fix (the CLI was importing locust, whose `gevent.monkey.patch_all()` made
-> every prior measurement ~30% slow), but they were taken on a box with desktop load on
-> the pinned cores: worst trial-to-trial spread **15.2%**, against the 8.1% a good run
-> reports. Ratios inside ±10% of each other are not ordered. Postgres was not
-> re-measured at all. And correction 14 has since split the `rowform` row in two: the
-> row above was measured with a prepared statement and direct-to-orjson serialization
-> its rivals didn't get; the suite now measures `rowform` at equal work (where first
-> smoke runs confirm the tie with Core) and `rowform (idiomatic)` — the code an app
-> would write — as separate labelled rows. A clean sweep with the split contenders
-> replaces this table — see [METHODOLOGY.md](docs/METHODOLOGY.md).
+> **One caveat, stated rather than hidden:** these runs report `quotable=False` on a
+> single clause — cpu boost is enabled and cannot be disabled without root on the
+> measurement box. Every other gate passes (equivalence enforced and hash-verified per
+> timed process, one contender per process, clean tree), worst trial-to-trial spread is
+> 10.7% (sqlite) / 6.2% (postgres), and the raw artifacts are on the
+> `bench/2026-08-15-family-split` branch, indexed in [RUNS.md](docs/RUNS.md).
 
 Full numbers, and a log of **fourteen published claims that turned out to be wrong**:
 [METHODOLOGY.md](docs/METHODOLOGY.md).
