@@ -1,5 +1,39 @@
 # Recorded runs
 
+## 2026-08-15 (later) — the decomposition sweep: both oddities resolved
+
+Branch **`bench/2026-08-15-decomposition`** (commit `89fc9d0`, runs taken at
+`c8e5d9d` — the PR #19–#26 stack). Two new rungs answer the two questions the
+family-split sweep below left open, and the whole matrix was re-recorded at one sha
+(same recipe as below, plus `--backend mock` for flat/join). Worst trial spread:
+**3.4% sqlite / 2.3% postgres / 2.1% mock**. `quotable=False` on the usual boost
+clause. The first sqlite/wide run caught a desktop interference burst in its third
+trial (a cell hit 171% spread — trials `2.762/2.770/7.499` ms); the shape was re-run
+at the same sha and the poisoned artifact discarded.
+
+**Oddity A — resolved: the cache key is free.** `rowform (prepared)` (prepared
+statement, equal-work payload) ties equal-work `rowform` in all four cells
+(~0.99–1.01x). The entire equal-work → idiomatic delta — 0.125–0.227 ms per read —
+is the serialization path: a per-row Python dict pass vs handing dataclasses straight
+to orjson's C serializer. Consequence: `prepare()` is API convenience, not a
+performance lever; rowform's statement cache costs nothing measurable per call.
+
+**Oddity B — resolved: the pools were the story, and SQLAlchemy's wins.** Against the
+new `floor: no pool (dict)` (one dedicated asyncpg connection, 0.4266 ms):
+SQLAlchemy's pool checkout adds **0.008 ms/request** (0.4343), `asyncpg.Pool`'s
+acquire/release adds **0.058 ms** (0.4849) — ~7x more, inverting the "raw driver
+floor is the cheap one" intuition. The profiler cross-check (`bench profile micro
+--backend postgres`, all three floors) attributes asyncpg's extra to its own
+acquire/release machinery plus the extra event-loop scheduling it awaits (asyncpg
+share 5.5% → 8.7%, loop share up alongside). Design consequence: rowform riding
+SQLAlchemy's pool is the cheapest pooled path measured; a bespoke pool could win back
+~1% of a 1000-row read.
+
+One calibration note for readers of consecutive sweeps: ratios move a few points
+between same-code sweeps on this box (Core positional flat/sqlite: 0.89x in the
+previous sweep, 0.82x here, both with ≤3.4% within-sweep spread) — with boost
+uncontrollable, a single ratio's second decimal is weather.
+
 ## 2026-08-15 — the family-split sweep (methodology break + first recorded numbers after it)
 
 Branch **`bench/2026-08-15-family-split`** (commit `728e93e`, runs taken at `e4402d1`
