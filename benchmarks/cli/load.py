@@ -30,9 +30,10 @@ splitting the requested concurrency across N ports and summing the result —
 Every process this module spawns (each uvicorn worker, each `locust`
 subprocess) is tracked in a `ProcessMonitor`, which samples every tracked
 pid's CPU utilization once a second, silently, and prints only the average at
-the end. Per level, the server's own CPU utilization over that level's measured
-window (`cpuacct.CpuAccountant`, summed across every worker pid) is also
-printed live in the sweep table, next to the existing client-side
+the end. Per level, the server's own CPU utilization over the interval
+bracketing that level's measured window (`cpuacct.CpuAccountant`, summed
+across every worker pid; see `_measure_level`) is also printed live in the
+sweep table, next to the existing client-side
 `generator_util` figure — if `--name` is given, the full time series plus the
 run's config/results, including a machine + git snapshot (`harness/env.py`),
 are also written to `results/runs/loadtests/<name>-<case>.json`. uvicorn's own
@@ -44,7 +45,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import tempfile
+import time
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
@@ -138,7 +143,8 @@ def _aggregate_locust(results: list[LocustResult]) -> LocustResult:
     (independent servers, independent client processes). locust's CSV summary
     gives no raw per-request latencies to pool, so mean/percentiles here are a
     completed-count-weighted average across ports — an approximation, not a
-    recomputed pooled percentile."""
+    recomputed pooled percentile. The merged window is the union of the
+    per-port measured windows."""
     if len(results) == 1:
         return results[0]
     total_completed = sum(r.completed for r in results) or 1
@@ -155,21 +161,87 @@ def _aggregate_locust(results: list[LocustResult]) -> LocustResult:
         p50_ms=weighted("p50_ms"),
         p95_ms=weighted("p95_ms"),
         p99_ms=weighted("p99_ms"),
+        window_start=min(r.window_start for r in results),
+        window_end=max(r.window_end for r in results),
     )
 
 
-async def _locust_across(
+@dataclass(slots=True)
+class LevelMeasurement:
+    result: LocustResult
+    sockets: int  # -1 when not sampled
+    generator_util: float  # avg per-generator CPU utilization over its lifetime
+    server_util: float  # server CPU over the measured window
+
+
+async def _wait_for_windows(
+    window_files: list[str], tasks: list[asyncio.Task], timeout: float,
+) -> float:
+    """Block until every measured locust process has reported test_start (its
+    window file exists), and return the latest start timestamp — the moment
+    all generators are actually running. Bails out (returning "now") if a run
+    dies before opening its window or the timeout passes; the caller's gather
+    then surfaces the real error."""
+    deadline = time.monotonic() + timeout
+    while True:
+        starts = []
+        for window_file in window_files:
+            try:
+                starts.append(float(Path(window_file).read_text().split()[0]))
+            except (OSError, IndexError, ValueError):
+                break
+        else:
+            return max(starts)
+        if any(task.done() for task in tasks) or time.monotonic() >= deadline:
+            return time.time()
+        await asyncio.sleep(0.05)
+
+
+async def _measure_level(
     workers_list: list[ServiceWorker],
     route: str,
     total_users: int,
     duration: float,
+    *,
     expect_bytes: int,
     monitor: ProcessMonitor,
+    server_accountant: cpuacct.CpuAccountant,
     limit: int = 1000,
     warmup: float = DEFAULT_WARMUP_S,
-) -> LocustResult:
+    count_sockets: bool = True,
+) -> LevelMeasurement:
+    """One audited measurement of `route` at `total_users`, split across the
+    workers: warm passes first, then the measured passes with CPU accounting
+    and the socket sample aligned to the window the locust processes *report*
+    (test_start/test_stop timestamps) rather than guessed from sleep math —
+    locust runs as two subprocesses per level whose startup and ramp made
+    every parent-side guess land outside the actual measured window.
+
+    `generator_util` divides the measured passes' CPU (RUSAGE_CHILDREN
+    bracket — the warm passes are already reaped, so excluded) by their
+    wall-clock lifetime and the generator count: average per-generator
+    utilization, which is what the saturation gate means. `server_util`
+    divides the server pids' CPU by the interval the accountant actually
+    sampled — opened once every generator has reported test_start, closed
+    once they have all exited. That brackets the reported window; it is not
+    the window itself (the union of per-generator windows starts at the
+    *earliest* test_start), and dividing by the window would have put a
+    numerator and a denominator from two different intervals in one ratio.
+    """
     per_worker = _split_across_workers(total_users, len(workers_list))
-    single = len(workers_list) == 1
+    pairs = [(w, n) for w, n in zip(workers_list, per_worker, strict=True) if n > 0]
+    single = len(pairs) == 1
+
+    if warmup:
+        await asyncio.gather(*[
+            locust_module.warm(
+                host=f"http://127.0.0.1:{w.port}",
+                locustfile=load_registry.locustfile(),
+                route=route, users=n, duration=warmup,
+                expect_bytes=expect_bytes, limit=limit,
+            )
+            for w, n in pairs
+        ])
 
     def make_on_spawn(index: int):
         role = "generator-locust" if single else f"generator-locust-{index}"
@@ -179,22 +251,49 @@ async def _locust_across(
 
         return on_spawn
 
-    results = await asyncio.gather(*[
-        locust_module.run(
-            host=f"http://127.0.0.1:{w.port}",
-            locustfile=load_registry.locustfile(),
-            route=route,
-            users=n,
-            duration=duration,
-            expect_bytes=expect_bytes,
-            limit=limit,
-            warmup=warmup,
-            on_spawn=make_on_spawn(i),
-        )
-        for i, (w, n) in enumerate(zip(workers_list, per_worker, strict=True))
-        if n > 0
-    ])
-    return _aggregate_locust(list(results))
+    with tempfile.TemporaryDirectory(prefix="rowform-bench-windows-") as tmpdir:
+        window_files = [str(Path(tmpdir) / f"window-{i}") for i in range(len(pairs))]
+        cpu_before = cpuacct.children_cpu_seconds()
+        bracket_start = time.monotonic()
+        tasks = [
+            asyncio.ensure_future(
+                locust_module.run(
+                    host=f"http://127.0.0.1:{w.port}",
+                    locustfile=load_registry.locustfile(),
+                    route=route, users=n, duration=duration,
+                    expect_bytes=expect_bytes, limit=limit,
+                    window_file=window_files[i],
+                    on_spawn=make_on_spawn(i),
+                )
+            )
+            for i, (w, n) in enumerate(pairs)
+        ]
+        sockets = -1
+        try:
+            all_started = await _wait_for_windows(window_files, tasks, timeout=duration + 60.0)
+            acct_start = time.monotonic()
+            server_accountant.start()
+            if count_sockets:
+                # Mid-window, per the generators' own clocks — sampling after
+                # they exit would always see 0 ESTABLISHED sockets.
+                await asyncio.sleep(max(0.0, all_started + duration / 2 - time.time()))
+                sockets = sum(audit_module.count_established(w.port) for w, _ in pairs)
+            results = await asyncio.gather(*tasks)
+            generator_cpu = cpuacct.children_cpu_seconds() - cpu_before
+            bracket_elapsed = time.monotonic() - bracket_start
+            server_util = server_accountant.stop(time.monotonic() - acct_start)["server"]
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    return LevelMeasurement(
+        result=_aggregate_locust(list(results)),
+        sockets=sockets,
+        generator_util=generator_cpu / bracket_elapsed / len(pairs) if bracket_elapsed else 0.0,
+        server_util=server_util,
+    )
 
 
 def _fetch(url: str) -> bytes:
@@ -202,6 +301,14 @@ def _fetch(url: str) -> bytes:
     # port this process just spawned.
     with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310
         return response.read()
+
+
+def _json_number(value: float) -> float | None:
+    """`json.dump` writes NaN/Infinity as bare tokens, which RFC 8259 has no
+    room for — `jq` and every strict parser then reject the whole artifact.
+    A level that completed nothing carries exactly those: locust writes "N/A"
+    latencies (so mean/in-flight are nan) and reports no window."""
+    return value if math.isfinite(value) else None
 
 
 def _save(name: str, payload: dict) -> Path:
@@ -248,6 +355,15 @@ def run(
     fails."""
     if workers < 1:
         raise typer.BadParameter("--workers must be >= 1")
+    if warmup and warmup < 1:
+        # `locust.warm()` rejects it too, but only once the backend is
+        # provisioned and the workers are up.
+        raise typer.BadParameter("--warmup must be 0 (skip) or >= 1 (locust -t resolution)")
+    if duration < 1:
+        # Unlike --warmup nothing downstream catches this: `_cmd` formats
+        # `-t {seconds:.0f}s`, so --duration 0.5 becomes `-t 0s` and the level
+        # measures whatever locust does with a zero deadline, silently.
+        raise typer.BadParameter("--duration must be >= 1 (locust -t resolution)")
     parsed_levels = sorted(int(c) for c in levels.split(","))
 
     all_cases = load_registry.discover()
@@ -303,49 +419,40 @@ def run(
                             f"refusing to measure inequivalent work"
                         )
                         return False
+                verdict = (
+                    f"{route} == {reference_route}"
+                    if route != reference_route
+                    else f"{route} is the reference route"
+                )
                 typer.echo(
-                    f"equivalence: {route} == {reference_route} — every response "
-                    f"must now be exactly {expect_bytes} bytes\n"
+                    f"equivalence: {verdict} — every response must now be exactly "
+                    f"{expect_bytes} bytes\n"
                 )
                 typer.echo(
                     f"{'c':>4} {'sockets':>8} {'rps':>10} {'in-flight':>10} "
                     f"{'server_cpu%':>11} client_cpu% little's law"
                 )
                 for level in parsed_levels:
-                    # Sample /proc/net/tcp mid-run, not after: the generator
-                    # closes every connection when it returns, so sampling
-                    # afterward would always see 0 ESTABLISHED sockets regardless
-                    # of whether it kept `level` requests in flight.
-                    cpu_before = cpuacct.children_cpu_seconds()
-                    server_accountant.start()
-                    task = asyncio.ensure_future(
-                        _locust_across(
-                            workers_list,
-                            route,
-                            level,
-                            duration,
-                            expect_bytes=expect_bytes,
-                            monitor=monitor,
-                            limit=limit,
-                            warmup=warmup,
-                        )
+                    m = await _measure_level(
+                        workers_list,
+                        route,
+                        level,
+                        duration,
+                        expect_bytes=expect_bytes,
+                        monitor=monitor,
+                        server_accountant=server_accountant,
+                        limit=limit,
+                        warmup=warmup,
                     )
-                    await asyncio.sleep(warmup + duration / 2)
-                    sockets = sum(audit_module.count_established(w.port) for w in workers_list)
-                    result = await task
-                    elapsed = duration + warmup
-                    generator_util = (
-                        (cpuacct.children_cpu_seconds() - cpu_before) / elapsed if elapsed else 0.0
-                    )
-                    server_util = server_accountant.stop(elapsed)["server"]
-                    sat_ok, _ = audit_module.check_generator_saturation(generator_util)
+                    result = m.result
+                    sat_ok, _ = audit_module.check_generator_saturation(m.generator_util)
                     check = audit_module.check_littles_law(
-                        result.rps, result.mean_ms, level, sockets
+                        result.rps, result.mean_ms, level, m.sockets
                     )
                     if not sat_ok:
                         check.ok = False
                         check.notes.append(
-                            f"generator CPU utilization {generator_util:.0%} >= "
+                            f"generator CPU utilization {m.generator_util:.0%} >= "
                             f"{audit_module.GENERATOR_SATURATION_MAXIMUM:.0%} — the client, not "
                             f"the server, may be the bottleneck at this level"
                         )
@@ -355,18 +462,19 @@ def run(
                     results.append((level, result.rps))
                     status = "OK" if check.ok else "FAIL: " + "; ".join(check.notes)
                     typer.echo(
-                        f"{level:>4} {sockets:>8} {result.rps:>10.0f} {check.in_flight:>10.2f} "
-                        f"{server_util:>10.0%} {generator_util:>5.0%} {status}"
+                        f"{level:>4} {m.sockets:>8} {result.rps:>10.0f} {check.in_flight:>10.2f} "
+                        f"{m.server_util:>10.0%} {m.generator_util:>5.0%} {status}"
                     )
                     ok = ok and check.ok
                     level_rows.append({
                         "concurrency": level,
-                        "sockets": sockets,
+                        "sockets": m.sockets,
                         "rps": result.rps,
-                        "mean_ms": result.mean_ms,
-                        "in_flight": check.in_flight,
-                        "server_cpu_utilization": server_util,
-                        "generator_cpu_utilization": generator_util,
+                        "mean_ms": _json_number(result.mean_ms),
+                        "in_flight": _json_number(check.in_flight),
+                        "server_cpu_utilization": m.server_util,
+                        "generator_cpu_utilization": m.generator_util,
+                        "window_s": _json_number(result.window_end - result.window_start),
                         "ok": check.ok,
                         "notes": check.notes,
                     })
@@ -376,16 +484,21 @@ def run(
                     f"\nscaling knee: {knee if knee is not None else 'not reached within tested levels'}"
                 )
 
-                noop = await _locust_across(
+                noop = (await _measure_level(
                     workers_list,
                     "/noop",
                     parsed_levels[-1],
                     duration,
                     expect_bytes=len(b"[]"),
                     monitor=monitor,
+                    server_accountant=server_accountant,
                     limit=limit,
                     warmup=warmup,
-                )
+                    count_sockets=False,
+                )).result
+                if noop.failures:
+                    ok = False
+                    typer.echo(f"/noop run had {noop.failures} failed requests — headroom unusable")
                 fastest_db_rps = max(rps for _, rps in results)
                 headroom_ok, headroom_ratio = audit_module.check_noop_headroom(
                     noop.rps, fastest_db_rps
@@ -397,19 +510,25 @@ def run(
                 ok = ok and headroom_ok
 
                 if cross_check_level is not None:
-                    at_level = await _locust_across(
-                        workers_list,
-                        route,
-                        cross_check_level,
-                        duration,
-                        expect_bytes=expect_bytes,
-                        monitor=monitor,
-                        limit=limit,
-                        warmup=warmup,
-                    )
+                    # Both sides re-measured at the same level: the earlier
+                    # version printed /noop's rps at the *highest* level against
+                    # the case at this one — a ratio of mismatched operating
+                    # points presented as a sanity check.
+                    at_level = (await _measure_level(
+                        workers_list, route, cross_check_level, duration,
+                        expect_bytes=expect_bytes, monitor=monitor,
+                        server_accountant=server_accountant, limit=limit,
+                        warmup=warmup, count_sockets=False,
+                    )).result
+                    noop_at_level = (await _measure_level(
+                        workers_list, "/noop", cross_check_level, duration,
+                        expect_bytes=len(b"[]"), monitor=monitor,
+                        server_accountant=server_accountant, limit=limit,
+                        warmup=warmup, count_sockets=False,
+                    )).result
                     typer.echo(
                         f"case rps at c={cross_check_level}: {at_level.rps:.0f} "
-                        f"({'/noop is ' + f'{noop.rps / at_level.rps:.2f}x' if at_level.rps else 'n/a'})"
+                        f"({'/noop is ' + f'{noop_at_level.rps / at_level.rps:.2f}x at the same level' if at_level.rps else 'n/a'})"
                     )
             finally:
                 await monitor.stop()
@@ -442,7 +561,7 @@ def run(
                         },
                         "levels": level_rows,
                         "scaling_knee": knee,
-                        "noop_headroom_ratio": headroom_ratio,
+                        "noop_headroom_ratio": _json_number(headroom_ratio),
                         "ok": ok,
                         "monitor": monitor.to_dict(),
                         "env": env_merged,

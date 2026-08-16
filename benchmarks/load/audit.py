@@ -84,15 +84,22 @@ def check_littles_law(
     )
 
 
-def find_scaling_knee(results: list[tuple[int, float]]) -> int | None:
+KNEE_RISE_MINIMUM = 0.02
+
+
+def find_scaling_knee(
+    results: list[tuple[int, float]], rise_minimum: float = KNEE_RISE_MINIMUM,
+) -> int | None:
     """`results` is `[(concurrency, rps), ...]`. Returns the concurrency at
-    which throughput stops rising — `None` if it rose monotonically
-    throughout the levels tested (the knee is beyond them, not a failure of
-    the generator)."""
+    which throughput stops *meaningfully* rising — less than `rise_minimum`
+    over the best so far counts as stopped, so two statistically identical
+    levels read as a knee instead of ordinary run-to-run jitter reading as
+    scaling. `None` if it rose throughout the levels tested (the knee is
+    beyond them, not a failure of the generator)."""
     ordered = sorted(results, key=lambda r: r[0])
     best_rps = 0.0
     for concurrency, rps in ordered:
-        if rps <= best_rps:
+        if rps <= best_rps * (1 + rise_minimum):
             return concurrency
         best_rps = rps
     return None

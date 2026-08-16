@@ -24,5 +24,5 @@ class PyinstrumentProfiler:
 
     def to_speedscope(self, profiler: Profiler) -> str:
         """pyinstrument ships its own speedscope renderer — no need to route
-        through `profiling.render`'s generic pstats/yappi converter."""
+        through `profiling.render`'s pstats converter."""
         return profiler.output(renderer=SpeedscopeRenderer())

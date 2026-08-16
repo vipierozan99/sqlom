@@ -176,6 +176,7 @@ def load(
     # whole process with gevent, and `bench profile micro` times a baseline in
     # this interpreter. Only this subcommand may pay that price.
     from benchmarks.load.locust import run as locust_run
+    from benchmarks.load.locust import warm as locust_warm
 
     async def go() -> bool:
         spec = registry.get(case)
@@ -207,6 +208,14 @@ def load(
             pyspy_out = str(out / "pyspy.speedscope.json")
             austin_out = str(out / "austin.speedscope.json")
 
+            await locust_warm(
+                host=f"http://127.0.0.1:{worker.port}",
+                locustfile=load_registry.locustfile(),
+                route=load_case.route,
+                users=concurrency,
+                duration=1.0,
+                limit=limit,
+            )
             load_task = asyncio.ensure_future(
                 locust_run(
                     host=f"http://127.0.0.1:{worker.port}",
@@ -215,7 +224,6 @@ def load(
                     users=concurrency,
                     duration=duration + 2,
                     limit=limit,
-                    warmup=1.0,
                 )
             )
             await asyncio.sleep(2.0)  # let locust ramp up before attaching
