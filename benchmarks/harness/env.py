@@ -170,6 +170,12 @@ def merge_start_end(start: dict, end: dict) -> dict:
     cpu = dict(start["cpu"])
     cpu["mhz_start"] = start["cpu"]["mhz"]
     cpu["mhz_end"] = end["cpu"]["mhz"]
+    # `boost` stays the start value every consumer already reads; `boost_end`
+    # is the second endpoint, because a knob set by hand before a sweep does
+    # not stay set — a power daemon (`tuned` on this box) re-applies its own
+    # profile on its own schedule and turned turbo back on *between* shapes of
+    # one sweep, which a start-only sample records as boost=False.
+    cpu["boost_end"] = end["cpu"]["boost"]
     cpu["throttle_count_delta"] = end["cpu"]["throttle_count"] - start["cpu"]["throttle_count"]
     del cpu["mhz"], cpu["throttle_count"]
     merged["cpu"] = cpu
@@ -190,6 +196,16 @@ def warnings_for(env: dict) -> list[str]:
         # boost is usually *on*, and silently treating None as "off" is how
         # turbo-on runs used to record quotable=True.
         warnings.append("cpu boost state unknown — could not read boost/no_turbo from sysfs")
+    # Only present on a merged start/end env, so `bench env check` (one snapshot)
+    # skips it. A run that started with boost off and ended with it on is not
+    # partially quotable: the flip is unlocatable within the run.
+    boost_end = env["cpu"].get("boost_end")
+    if "boost_end" in env["cpu"] and boost_end != boost:
+        warnings.append(
+            f"cpu boost changed during the run ({boost} -> {boost_end}) — something "
+            "re-applied it mid-sweep; on a tuned/power-profiles-daemon box, stop the "
+            "daemon for the duration (see scripts/bench_cpu_boost.sh)"
+        )
     if env["python"].get("gevent_monkey_patched"):
         warnings.append("gevent monkey-patch active — timings are not comparable to unpatched runs")
     throttle_delta = env["cpu"].get("throttle_count_delta")
