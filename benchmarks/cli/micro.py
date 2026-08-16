@@ -439,8 +439,8 @@ async def _run(
                 continue
 
             init = ContenderInit(handle=handle, limit=limit)
+            instances = {}
             try:
-                instances = {}
                 for spec in backend_specs:
                     target, teardown = await spec.factory(init)
                     instances[spec.name] = (target, teardown)
@@ -513,9 +513,12 @@ async def _run(
                         if record_this_group:
                             cells.extend(group_cells)
 
+            finally:
+                # In a finally, not at the end of the try: a failed equivalence
+                # check or child spawn must not leak the pools/engines the
+                # factories opened (up to 4 postgres connections per contender).
                 for _, teardown in instances.values():
                     await teardown()
-            finally:
                 if db is not None:
                     db.close()
 

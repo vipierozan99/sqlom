@@ -177,13 +177,19 @@ def load(
             )
         load_case = load_registry.get(case)
         env, teardown = await provision_backend(spec.backend, spec.shape, rows)
-        workers = await launch(
-            "benchmarks.service.app:app",
-            base_port=port,
-            workers=1,
-            cores=[],
-            env=env,
-        )
+        try:
+            workers = await launch(
+                "benchmarks.service.app:app",
+                base_port=port,
+                workers=1,
+                cores=[],
+                env=env,
+            )
+        except BaseException:
+            # The try/finally below hasn't begun yet — a failed launch must tear
+            # the backend down here or the postgres container outlives the run.
+            await teardown()
+            raise
         worker = workers[0]
         ok = True
         try:

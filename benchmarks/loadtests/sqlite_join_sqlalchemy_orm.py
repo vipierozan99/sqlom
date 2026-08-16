@@ -2,7 +2,7 @@
 
 from benchmarks.load.locust import CaseUser
 
-CASE = "sqlite-join-sqlalchemy-async-orm"
+CASE = "sqlite-join-sqlalchemy-orm"
 
 
 class User(CaseUser):
