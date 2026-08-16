@@ -66,10 +66,12 @@ the HTTP benchmark measures endpoints as an application would write them, and
 
 ## Postgres: two separate pipelines
 
-`bench micro` needs a server *you* provide: `just bench db up && just bench db
-seed`, then `--pg-dsn "$(just bench db dsn)"`. Seeding **drops and recreates**
-the shape's tables. `bench load run` and `bench profile load` provision their
-own throwaway container per run — if a `bench db up` server is still standing,
+`bench micro` needs a server *you* provide: `just bench db up`, then `--pg-dsn
+"$(just bench db dsn)"`. The run seeds the shape itself, **dropping and
+recreating** its tables on that server (`just bench db seed` does the same by
+hand, for inspecting the data without a run). `bench load run` and `bench
+profile load` provision their own throwaway container per run — if a `bench db
+up` server is still standing,
 pass `--pg-port` to avoid colliding on 5432. `bench db down` tears the server
 down and also clears a stale state file after a reboot or `docker system
 prune` (state lives in `results/runs/.state/db.json`).

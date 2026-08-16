@@ -128,9 +128,10 @@ would write (prepared once, dataclasses straight to orjson).
 | SQLAlchemy ORM | 3.5957 | 5.7349 | 6.1220 | | 2.57x | 2.55x | 1.94x |
 | SQLAlchemy ORM (`MappedAsDataclass`) | 3.5709 | 5.7272 | 6.1876 | | 2.55x | 2.54x | 1.96x |
 
-**1.9–4.9x SQLAlchemy's ORM (2.7–4.9x on postgres). Against Core's result layer:
-written idiomatically, parity — at strictly equal work, Core is ahead** (0.89x here,
-0.75–0.92x on postgres). That ordering is this table's most load-bearing number, and it
+**SQLAlchemy's ORM takes 1.9–4.9x the equal-work rowform time (2.7–4.9x on
+postgres). Against Core's result layer: written idiomatically, parity — at strictly
+equal work, Core is ahead** (0.89x here, 0.75–0.92x on postgres). That ordering is
+this table's most load-bearing number, and it
 is newer than the project: an earlier revision measured rowform with a prepared
 statement and C-level serialization its rivals didn't get, and published the blended
 margin as a result-layer win (correction 14 in

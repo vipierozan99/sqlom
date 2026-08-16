@@ -19,7 +19,7 @@ physical cores (`--pin auto`), and **every contender reads inside `BEGIN`…`COM
 except `rowform (no transaction)`, which is registered without one precisely so the
 cost of the guarantee is visible as a row rather than folded into the others:
 
-```
+```bash
 for shape in flat join wide; do
   just bench micro run --shape "$shape" \
     --iterations 1500 --warmup 200 --trials 3 --isolate --record
@@ -618,7 +618,9 @@ a tie. The idiomatic row carries the old margin, at parity with Core.
 # library is just a fast wrong answer
 just test . --pg-required
 
-just bench env check          # audits boost/turbo, dirty tree, loadavg (exits non-zero)
+# exits non-zero on any of: boost/turbo on *or* unreadable, an active gevent
+# monkey-patch, a dirty tree, a high loadavg
+just bench env check
 
 # dev loop (fast, single trial, NOT publishable — no ratios, quotable=False):
 just bench micro run
@@ -630,9 +632,10 @@ just bench micro run --shape flat --iterations 1500 --warmup 200 --trials 3 --is
 Postgres is **two separate pipelines** — they collide on port 5432 if mixed:
 
 ```bash
-# micro: bring up a server yourself and hand the DSN over (seeding DROPS and
-# recreates the shape's tables on it)
-just bench db up && just bench db seed
+# micro: bring up a server yourself and hand the DSN over. The run seeds the
+# shape itself, DROPPING and recreating its tables on that server; `just bench
+# db seed` does the same by hand, for inspecting the data without a run.
+just bench db up
 just bench micro run --backend postgres --isolate --trials 3 --record --pg-dsn "$(just bench db dsn)"
 just bench db down            # also clears the state file after a reboot/prune
 
