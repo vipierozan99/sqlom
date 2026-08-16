@@ -1,6 +1,88 @@
 # Recorded runs
 
-## 2026-08-15 (later) — the decomposition sweep: oddity A resolved, oddity B bounded
+## 2026-08-16 — boost off, and a floor that was sending no transaction
+
+Branch **`bench/2026-08-16-boost-off-floors`** (runs taken at `122e035`). **The first
+sweep that reports `quotable=True`**: cpu boost disabled with root on the measurement
+box, clean tree, equivalence enforced and hash-verified per timed process, one contender
+per process, no throttle events. Same recipe as below plus the boost-off step, now in
+METHODOLOGY's reproduction block. Worst trial spread **4.2% sqlite / 5.4% postgres /
+4.2% mock**.
+
+Two things about the conditions, both worth stating because neither is what you would
+guess. Absolute times are ~1.9x the previous sweep's — turbo off means base clock — so
+**absolute numbers are not comparable across the boost boundary and ratios are**. And
+the spreads got *wider*, not narrower (4-5% against 2-3%): each iteration takes twice as
+long, so a run presents a wider window to the rest of the desktop. Boost-off buys a
+clean gate, not a quieter machine.
+
+The postgres/`flat` shape was run twice. The first recording put 9.9% trial spread on
+`rowform (idiomatic)` (`1.2367/1.1237/1.1449` — one trial 8% high), so the shape was
+re-run at the same sha; the published table takes the re-run. **Both artifacts are on
+the branch rather than one discarded**, because they agree within 1.6% on every row,
+which is stronger evidence than either one's spread figure.
+
+### The retraction: the pool finding was a bug in a floor
+
+The previous entry's headline — *"SQLAlchemy's pool checkout adds 0.008 ms/request
+against `asyncpg.Pool`'s 0.058 ms, ~7x cheaper; riding SQLAlchemy's pool is the cheapest
+pooled path"* — **is withdrawn.** It was not measuring pools.
+
+`floor: on SQLAlchemy (dict)` wrapped its read in `async with sa_conn.begin()`. That
+marks a transaction in Python, and SQLAlchemy emits the `BEGIN` lazily with the first
+statement it routes itself — but that floor deliberately awaits the driver connection
+directly, so no `BEGIN` was ever sent. The read went out as a bare `SELECT` in
+autocommit while every contender it bounds sent `BEGIN`/`SELECT`/`COMMIT`: two round
+trips light, on the one backend where a transaction is round trips rather than Python.
+That is the entire reason the same-plumbing floor sat below the raw-asyncpg floor, and
+it made every plumbing-cost number derived from that floor too small — across three
+sweeps: 0.3–0.4 ms, then 0.21 ms, then ~0.01 ms, then negative.
+
+Found by auditing the wire rather than the code: `log_statement=all` on the bench
+container, then counting `BEGIN`/`COMMIT` per iteration for all 13 contenders in
+postgres/`flat`. The equivalence gate cannot catch this — both spellings return
+byte-identical payloads, which is precisely what the gate compares. Recorded as
+correction 15, with the audit written into `contenders.py`'s module docstring as the
+check to repeat whenever a floor is added.
+
+### What the corrected ladder says
+
+Floor now opens its transaction on the driver connection, and `asyncpg.Pool`'s
+release-time reset is priced as its own rung (`create_pool(reset=<no-op>)`, which
+removes `SELECT pg_advisory_unlock_all(); CLOSE ALL; UNLISTEN *; RESET ALL;` and nothing
+else — confirmed present by default and absent with the override against the server log):
+
+| step | ms | over `no pool` | of a 1000-row read |
+|---|---|---|---|
+| one dedicated connection, no pool | 0.8681 | — | — |
+| + `asyncpg.Pool` acquire/release, `reset` off | 0.9302 | 0.0621 | 4.6% |
+| + its reset round trip (`asyncpg.Pool` as shipped) | 1.0093 | 0.1412 | 10.4% |
+| SQLAlchemy's pool instead | 1.0605 | 0.1924 | 14.1% |
+
+**Going through SQLAlchemy's pool costs 0.192 ms/request — 1.36x `asyncpg.Pool` as
+shipped, 3.1x it with `reset` off.** The sign of the published claim is reversed.
+Caveats, both conservative for SQLAlchemy: its 0.192 ms is the pool *path* (the floor
+also builds a `Connection` and awaits `get_raw_connection()` per request), and asyncpg's
+reset buys session hygiene SQLAlchemy's `reset_on_return='rollback'` does not attempt —
+so the `reset` off rung, not the shipped default, is the like-for-like row, and it is
+the one SQLAlchemy loses by most.
+
+Design consequence, restated: riding SQLAlchemy's pool costs **~14% of a 1000-row read**
+against no pool, ~10% against the cheapest pooled alternative measured. It buys the
+`bind=` case an engine owning its own pool cannot do at any price, and it is paid per
+checkout rather than per row — but it is a trade to state, not the ~1% the previous
+entry claimed.
+
+### Oddity A stands
+
+`rowform (prepared)` still ties equal-work `rowform` in all four cells that have one
+(~0.99–1.00x), so the structural cache key costs nothing measurable and `prepare()` is
+API convenience rather than a performance lever. The whole prepared → idiomatic delta —
+0.213–0.594 ms per read — is the serialization path. Unchanged by any of the above, and
+now measured under a clean gate. `wide` still has no prepared rung, so its 0.87–0.92x
+idiomatic margin is assumed to split the same way rather than shown to.
+
+## 2026-08-15 (later) — the decomposition sweep *(oddity B superseded — see above)*
 
 Branch **`bench/2026-08-15-decomposition`** (commit `89fc9d0`, runs taken at
 `c8e5d9d`, that branch's parent — the PR #19–#26 stack as it stood before the stack was
@@ -21,6 +103,10 @@ instead), is the serialization path: a per-row Python dict pass vs handing datac
 straight to orjson's C serializer. Consequence: `prepare()` is API convenience, not a
 performance lever; rowform's statement cache costs nothing measurable per call. `wide`
 has no prepared rung, so its idiomatic margin is assumed to split the same way.
+
+**Oddity B — WITHDRAWN.** Everything in this section is an artifact of
+`floor: on SQLAlchemy (dict)` sending no `BEGIN`/`COMMIT`; see the 2026-08-16 entry
+above and correction 15. Kept unedited as the record of what was published.
 
 **Oddity B — bounded, not fully attributed: going through SQLAlchemy's pool is the
 cheaper path.** Against the new `floor: no pool (dict)` (one dedicated asyncpg
