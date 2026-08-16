@@ -41,6 +41,11 @@ active_daemons() {
     for d in "${DAEMONS[@]}"; do
         systemctl is-active --quiet "$d" 2>/dev/null && echo "$d"
     done
+    # Explicit success: the loop's status is the *last* `is-active`, which fails
+    # whenever the last daemon in DAEMONS is not running — the normal case. Under
+    # `set -e` that aborted this script at the first call site, before it stopped
+    # anything or wrote the knob, and reported nothing.
+    return 0
 }
 
 NO_TURBO=/sys/devices/system/cpu/intel_pstate/no_turbo   # inverted: 1 == boost off
@@ -87,8 +92,11 @@ if [[ $1 == "off" ]]; then
     active_daemons > "$STOPPED_FILE"
     while read -r d; do
         [[ -n $d ]] || continue
-        systemctl stop "$d"
-        echo "stopped $d (restored by '$0 on')"
+        if systemctl stop "$d"; then
+            echo "stopped $d (restored by '$0 on')"
+        else
+            echo "could not stop $d — it may re-enable boost mid-sweep" >&2
+        fi
     done < "$STOPPED_FILE"
 fi
 
@@ -102,9 +110,14 @@ fi
 echo "boost $1 ($label=$got)"
 
 if [[ $1 == "on" && -f $STOPPED_FILE ]]; then
+    # Keep going if one fails, or a single bad unit leaves the rest stopped.
     while read -r d; do
         [[ -n $d ]] || continue
-        systemctl start "$d" && echo "restarted $d"
+        if systemctl start "$d"; then
+            echo "restarted $d"
+        else
+            echo "could not restart $d — start it yourself" >&2
+        fi
     done < "$STOPPED_FILE"
     rm -f "$STOPPED_FILE"
 fi
