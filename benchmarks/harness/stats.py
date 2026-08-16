@@ -5,6 +5,7 @@ and the `summarize()`/`print_table()` pair that only differed in column widths.
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -19,15 +20,15 @@ def median(values: Sequence[float]) -> float:
 
 
 def percentile(values: Sequence[float], p: float) -> float:
-    """Nearest-rank percentile. Matches the old suite's `pct()` helpers
-    (`min(int(len * p / 100), len - 1)`), not an interpolated one — kept
-    identical so this isn't a second, subtly different percentile
-    implementation."""
+    """Nearest-rank percentile: the `ceil(n*p/100)`-th order statistic. The
+    old suite's `pct()` helpers used `int(n*p/100)` — floor plus one rank, a
+    consistent upward bias that was worst at small n (n=4, p=50 returned the
+    3rd value)."""
     if not values:
         return float("nan")
     ordered = sorted(values)
-    idx = min(int(len(ordered) * p / 100), len(ordered) - 1)
-    return ordered[idx]
+    rank = math.ceil(len(ordered) * p / 100)
+    return ordered[min(max(rank, 1), len(ordered)) - 1]
 
 
 def percentiles(values: Sequence[float], ps: Sequence[float] = (50, 95, 99)) -> dict[float, float]:
@@ -48,7 +49,9 @@ def spread_pct(values: Sequence[float]) -> float:
         return float("nan")
     m = median(values)
     if not m:
-        return 0.0
+        # A zero median makes the figure undefined — returning 0.0 here would
+        # report perfect reproducibility for e.g. [-1, 0, 1].
+        return float("nan") if max(values) != min(values) else 0.0
     return (max(values) - min(values)) / m * 100
 
 
@@ -152,7 +155,7 @@ def ratio_with_spread(numerator_trials: Sequence[float], denominator_trials: Seq
     """
     if not numerator_trials or not denominator_trials:
         nan = float("nan")
-        return {"value": nan, "low": nan, "high": nan, "spread_pct": nan, "tie": True}
+        return {"value": nan, "low": nan, "high": nan, "interval_pct": nan, "tie": True}
 
     num_med, den_med = median(numerator_trials), median(denominator_trials)
     value = num_med / den_med if den_med else float("nan")
@@ -163,6 +166,10 @@ def ratio_with_spread(numerator_trials: Sequence[float], denominator_trials: Seq
         "value": value,
         "low": low,
         "high": high,
-        "spread_pct": (high - low) / value * 100 if value else float("nan"),
+        # Named `interval_pct`, not `spread_pct`: `spread_pct` (above) is
+        # (max-min)/median over one metric's trials, this is the width of a
+        # *ratio's* worst-case interval — two different formulas were being
+        # recorded under one name in the same run.json.
+        "interval_pct": (high - low) / value * 100 if value else float("nan"),
         "tie": bool(low <= 1.0 <= high) or _within(num_med, den_med, threshold_pct),
     }
