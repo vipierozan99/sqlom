@@ -30,9 +30,10 @@ splitting the requested concurrency across N ports and summing the result —
 Every process this module spawns (each uvicorn worker, each `locust`
 subprocess) is tracked in a `ProcessMonitor`, which samples every tracked
 pid's CPU utilization once a second, silently, and prints only the average at
-the end. Per level, the server's own CPU utilization over that level's measured
-window (`cpuacct.CpuAccountant`, summed across every worker pid) is also
-printed live in the sweep table, next to the existing client-side
+the end. Per level, the server's own CPU utilization over the interval
+bracketing that level's measured window (`cpuacct.CpuAccountant`, summed
+across every worker pid; see `_measure_level`) is also printed live in the
+sweep table, next to the existing client-side
 `generator_util` figure — if `--name` is given, the full time series plus the
 run's config/results, including a machine + git snapshot (`harness/env.py`),
 are also written to `results/runs/loadtests/<name>-<case>.json`. uvicorn's own
@@ -220,7 +221,12 @@ async def _measure_level(
     bracket — the warm passes are already reaped, so excluded) by their
     wall-clock lifetime and the generator count: average per-generator
     utilization, which is what the saturation gate means. `server_util`
-    divides the server pids' CPU over exactly the reported measured window.
+    divides the server pids' CPU by the interval the accountant actually
+    sampled — opened once every generator has reported test_start, closed
+    once they have all exited. That brackets the reported window; it is not
+    the window itself (the union of per-generator windows starts at the
+    *earliest* test_start), and dividing by the window would have put a
+    numerator and a denominator from two different intervals in one ratio.
     """
     per_worker = _split_across_workers(total_users, len(workers_list))
     pairs = [(w, n) for w, n in zip(workers_list, per_worker, strict=True) if n > 0]
@@ -265,6 +271,7 @@ async def _measure_level(
         sockets = -1
         try:
             all_started = await _wait_for_windows(window_files, tasks, timeout=duration + 60.0)
+            acct_start = time.monotonic()
             server_accountant.start()
             if count_sockets:
                 # Mid-window, per the generators' own clocks — sampling after
@@ -272,23 +279,20 @@ async def _measure_level(
                 await asyncio.sleep(max(0.0, all_started + duration / 2 - time.time()))
                 sockets = sum(audit_module.count_established(w.port) for w, _ in pairs)
             results = await asyncio.gather(*tasks)
+            generator_cpu = cpuacct.children_cpu_seconds() - cpu_before
+            bracket_elapsed = time.monotonic() - bracket_start
+            server_util = server_accountant.stop(time.monotonic() - acct_start)["server"]
         except BaseException:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
-        generator_cpu = cpuacct.children_cpu_seconds() - cpu_before
-        bracket_elapsed = time.monotonic() - bracket_start
 
-    aggregated = _aggregate_locust(list(results))
-    window_elapsed = aggregated.window_end - aggregated.window_start
-    if not math.isfinite(window_elapsed) or window_elapsed <= 0:
-        window_elapsed = duration
     return LevelMeasurement(
-        result=aggregated,
+        result=_aggregate_locust(list(results)),
         sockets=sockets,
         generator_util=generator_cpu / bracket_elapsed / len(pairs) if bracket_elapsed else 0.0,
-        server_util=server_accountant.stop(window_elapsed)["server"],
+        server_util=server_util,
     )
 
 
@@ -297,6 +301,14 @@ def _fetch(url: str) -> bytes:
     # port this process just spawned.
     with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310
         return response.read()
+
+
+def _json_number(value: float) -> float | None:
+    """`json.dump` writes NaN/Infinity as bare tokens, which RFC 8259 has no
+    room for — `jq` and every strict parser then reject the whole artifact.
+    A level that completed nothing carries exactly those: locust writes "N/A"
+    latencies (so mean/in-flight are nan) and reports no window."""
+    return value if math.isfinite(value) else None
 
 
 def _save(name: str, payload: dict) -> Path:
@@ -343,6 +355,10 @@ def run(
     fails."""
     if workers < 1:
         raise typer.BadParameter("--workers must be >= 1")
+    if warmup and warmup < 1:
+        # `locust.warm()` rejects it too, but only once the backend is
+        # provisioned and the workers are up.
+        raise typer.BadParameter("--warmup must be 0 (skip) or >= 1 (locust -t resolution)")
     parsed_levels = sorted(int(c) for c in levels.split(","))
 
     all_cases = load_registry.discover()
@@ -449,11 +465,11 @@ def run(
                         "concurrency": level,
                         "sockets": m.sockets,
                         "rps": result.rps,
-                        "mean_ms": result.mean_ms,
-                        "in_flight": check.in_flight,
+                        "mean_ms": _json_number(result.mean_ms),
+                        "in_flight": _json_number(check.in_flight),
                         "server_cpu_utilization": m.server_util,
                         "generator_cpu_utilization": m.generator_util,
-                        "window_s": result.window_end - result.window_start,
+                        "window_s": _json_number(result.window_end - result.window_start),
                         "ok": check.ok,
                         "notes": check.notes,
                     })
@@ -540,7 +556,7 @@ def run(
                         },
                         "levels": level_rows,
                         "scaling_knee": knee,
-                        "noop_headroom_ratio": headroom_ratio,
+                        "noop_headroom_ratio": _json_number(headroom_ratio),
                         "ok": ok,
                         "monitor": monitor.to_dict(),
                         "env": env_merged,
