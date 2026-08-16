@@ -1,10 +1,12 @@
 # Recorded runs
 
-## 2026-08-15 (later) — the decomposition sweep: both oddities resolved
+## 2026-08-15 (later) — the decomposition sweep: oddity A resolved, oddity B bounded
 
 Branch **`bench/2026-08-15-decomposition`** (commit `89fc9d0`, runs taken at
-`c8e5d9d` — the PR #19–#26 stack). Two new rungs answer the two questions the
-family-split sweep below left open, and the whole matrix was re-recorded at one sha
+`c8e5d9d`, that branch's parent — the PR #19–#26 stack as it stood before the stack was
+squash-merged, so reach the sha through the bench branch rather than through `main`'s
+history). Two new rungs answer the two questions the family-split sweep below left
+open, and the whole matrix was re-recorded at one sha
 (same recipe as below, plus `--backend mock` for flat/join). Worst trial spread:
 **3.4% sqlite / 2.3% postgres / 2.1% mock**. `quotable=False` on the usual boost
 clause. The first sqlite/wide run caught a desktop interference burst in its third
@@ -12,22 +14,42 @@ trial (a cell hit 171% spread — trials `2.762/2.770/7.499` ms); the shape was 
 at the same sha and the poisoned artifact discarded.
 
 **Oddity A — resolved: the cache key is free.** `rowform (prepared)` (prepared
-statement, equal-work payload) ties equal-work `rowform` in all four cells
-(~0.99–1.01x). The entire equal-work → idiomatic delta — 0.125–0.227 ms per read —
-is the serialization path: a per-row Python dict pass vs handing dataclasses straight
-to orjson's C serializer. Consequence: `prepare()` is API convenience, not a
-performance lever; rowform's statement cache costs nothing measurable per call.
+statement, equal-work payload) ties equal-work `rowform` in all four cells that have
+one — flat and join on both backends (~0.99–1.01x). The whole prepared → idiomatic
+delta, 0.125–0.227 ms per read (0.131–0.235 ms measured from the equal-work row
+instead), is the serialization path: a per-row Python dict pass vs handing dataclasses
+straight to orjson's C serializer. Consequence: `prepare()` is API convenience, not a
+performance lever; rowform's statement cache costs nothing measurable per call. `wide`
+has no prepared rung, so its idiomatic margin is assumed to split the same way.
 
-**Oddity B — resolved: the pools were the story, and SQLAlchemy's wins.** Against the
-new `floor: no pool (dict)` (one dedicated asyncpg connection, 0.4266 ms):
-SQLAlchemy's pool checkout adds **0.008 ms/request** (0.4343), `asyncpg.Pool`'s
-acquire/release adds **0.058 ms** (0.4849) — ~7x more, inverting the "raw driver
-floor is the cheap one" intuition. The profiler cross-check (`bench profile micro
---backend postgres`, all three floors) attributes asyncpg's extra to its own
-acquire/release machinery plus the extra event-loop scheduling it awaits (asyncpg
-share 5.5% → 8.7%, loop share up alongside). Design consequence: rowform riding
-SQLAlchemy's pool is the cheapest pooled path measured; a bespoke pool could win back
-~1% of a 1000-row read.
+**Oddity B — bounded, not fully attributed: going through SQLAlchemy's pool is the
+cheaper path.** Against the new `floor: no pool (dict)` (one dedicated asyncpg
+connection, 0.4266 ms): SQLAlchemy's pool path adds **≤0.008 ms/request** (0.4343),
+`asyncpg.Pool`'s adds **0.058 ms** (0.4849), inverting the "raw driver floor is the
+cheap one" intuition. Both numbers bound rather than attribute, in opposite directions:
+
+- `≤` on SQLAlchemy's, because that floor also builds a `Connection`, awaits
+  `get_raw_connection()`, and opens `RootTransaction` rather than asyncpg's
+  `conn.transaction()` — the checkout alone is smaller than 0.008 ms.
+- The 0.058 ms is not pure pool overhead. `asyncpg.Pool.release()` calls
+  `Connection.reset()`, which executes `SELECT pg_advisory_unlock_all(); CLOSE ALL;
+  UNLISTEN *; RESET ALL;` — an unconditional server round trip per request that
+  SQLAlchemy's pool does not make (its `reset_on_return='rollback'` is a no-op through
+  the asyncpg adapter when no transaction is open, and this floor commits inside its
+  `async with`). Read from the drivers' source, not isolated by a rung here.
+
+So **the ~7x is not a like-for-like pool-cost ratio** — most of asyncpg's side looks
+like a round trip bought for session hygiene, and charging it as overhead would be
+correction 8 again. The profiler cross-check (`bench profile micro --backend postgres`,
+all three floors) is consistent with that: asyncpg share 5.5% → 8.7%, loop share up
+alongside, i.e. more time awaiting the wire.
+
+**Open rung, owed by the postgres table:** a pooled asyncpg floor with the reset query
+skipped (`create_pool(reset=<no-op>)`, which replaces the query path), which
+would split asyncpg's 0.058 ms into round trip vs machinery and make the two pools
+comparable. What survives without it, and what the adoption question actually turns on:
+rowform riding SQLAlchemy's pool is the cheapest pooled path measured, and dropping the
+pool entirely would win back at most ~1% of a 1000-row read.
 
 One calibration note for readers of consecutive sweeps: ratios move a few points
 between same-code sweeps on this box (Core positional flat/sqlite: 0.89x in the

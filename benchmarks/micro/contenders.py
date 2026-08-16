@@ -65,8 +65,9 @@ connection never enters a transaction — a floor issuing the SQL by hand *does*
 contenders it bounds, which is the same "floor slower than the thing it bounds" bug
 recorded below, arrived at from the other direction.
 
-**On postgres the opposite holds**, and `pg_flat_raw_asyncpg` uses
-`conn.transaction()` — a real `BEGIN`/`COMMIT` on the wire — for exactly the same
+**On postgres the opposite holds**, and the asyncpg floors (`pg_flat_raw_asyncpg`,
+`pg_flat_no_pool`) use `conn.transaction()` — a real `BEGIN`/`COMMIT` on the wire — for
+exactly the same
 reason: there SQLAlchemy's `begin()` *does* emit one, so a floor that skipped it would
 be the cheap side of the asymmetry instead of the expensive one. The rule is "match
 whatever the contenders' transaction actually costs on this backend", not "avoid
@@ -1423,9 +1424,21 @@ async def pg_flat_no_pool(init: ContenderInit) -> tuple[Target, Teardown]:
     """The 2026-08-15 sweep put the same-plumbing floor *below* the raw-asyncpg
     floor — SQLAlchemy's checkout apparently cheaper than asyncpg's own pool.
     The two differ in pool AND everything around it, so neither number
-    attributes the gap. This floor removes the pool entirely: the distance from
-    here to each pooled floor is that pool's per-request acquire/release cost,
-    nothing else (same statement, same transaction spelling, same payload)."""
+    attributes the gap. This floor removes the pool entirely, which *bounds*
+    the cost of going through each pooled floor's pool (same statement, same
+    payload) without attributing it — each pooled floor still differs by more
+    than its pool, in opposite directions:
+
+    - `pg_flat_sa_plumbing_dict` also builds a SQLAlchemy `Connection`, awaits
+      `get_raw_connection()`, and opens `RootTransaction` per request instead of
+      calling `conn.transaction()` here, so its distance is an *upper* bound on
+      SQLAlchemy's checkout.
+    - `pg_flat_raw_asyncpg` pays `asyncpg.Pool.release()` -> `Connection.reset()`,
+      a `RESET ALL`-family server round trip per request that neither this floor
+      nor SQLAlchemy's pool makes, so its distance is not pool overhead alone.
+
+    See METHODOLOGY.md's "Reading the floors"; the rung that would split
+    asyncpg's number (a pooled floor with `reset` disabled) is not written yet."""
     import asyncpg
 
     conn = await asyncpg.connect(init.handle)

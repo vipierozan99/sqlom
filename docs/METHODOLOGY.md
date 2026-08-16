@@ -59,13 +59,15 @@ trial-to-trial spread anywhere below: **3.4%** (sqlite), 2.3% (postgres), 2.1% (
 > is 0.82–0.93x across shapes and backends, `~0.95x` (a tie) on `wide` — and the
 > comparison deliberately gives Core the *cheaper* payload builder. The decomposition
 > rows say where rowform's idiomatic margin actually lives: `rowform (prepared)` ties
-> equal-work `rowform` everywhere (~0.99–1.01x), so **the structural cache key costs
-> nothing measurable and `prepare()` is API convenience, not a performance lever**;
-> the entire idiomatic delta (0.81–0.94x) is the serialization path — dataclasses
-> straight into orjson's C serializer instead of a per-row Python dict pass. The
-> idiomatic row lands at or near parity with Core positional while returning typed
-> dataclasses where Core returns tuples. Against the ORM, both spellings are
-> **1.9–4.9x** faster.
+> equal-work `rowform` in all four cells that have one (~0.99–1.01x), so **the
+> structural cache key costs nothing measurable and `prepare()` is API convenience, not
+> a performance lever**; across those four the entire idiomatic delta (0.81–0.90x) is
+> the serialization path — dataclasses straight into orjson's C serializer instead of a
+> per-row Python dict pass. `wide` has no prepared rung, so its 0.88–0.94x is assumed
+> to split the same way rather than shown to. The idiomatic row lands at or near parity
+> with Core positional while returning typed dataclasses where Core returns tuples.
+> Against the ORM, equal-work rowform is **1.9–4.9x** faster and the idiomatic spelling
+> **2.1–6.0x**.
 
 Runs land in `benchmarks/results/runs/`, which is gitignored on main; chosen ones are
 committed to a dated `bench/` branch by hand and indexed in [RUNS.md](RUNS.md).
@@ -106,14 +108,36 @@ committed to a dated `bench/` branch by hand and indexed in [RUNS.md](RUNS.md).
 | SQLAlchemy ORM | 3.3899 | 5.6505 | 5.8084 | | 4.88x | 4.18x | 2.72x |
 
 The previous sweep's oddity — the same-plumbing floor sitting *below* the raw-asyncpg
-floor — is now decomposed rather than recorded: against a bare dedicated connection
-(the `no pool` floor), **SQLAlchemy's pool checkout costs ~0.008 ms per request and
-`asyncpg.Pool`'s acquire/release costs ~0.058 ms** (0.4266 → 0.4343 vs 0.4849). The
-profiler cross-check attributes asyncpg's extra to its own acquire/release machinery
-and the additional event-loop scheduling it awaits — its `asyncpg` share rises from
-5.5% (no pool) to 8.7% (pooled) with the loop share up alongside. Design consequence,
-measured rather than assumed: rowform riding SQLAlchemy's pool is the *cheapest pooled
-path here*, and a bespoke pool could win back at most ~1% of a 1000-row read.
+floor — is now bounded rather than merely recorded: against a bare dedicated connection
+(the `no pool` floor), **going through SQLAlchemy's pool costs ≤0.008 ms per request
+and going through `asyncpg.Pool` costs ~0.058 ms** (0.4266 → 0.4343 vs 0.4849).
+`≤` on the first, because the same-plumbing floor also builds a SQLAlchemy
+`Connection`, awaits `get_raw_connection()`, and opens SQLAlchemy's `RootTransaction`
+rather than calling asyncpg's `conn.transaction()` directly — 0.008 ms is the checkout
+*plus* that bookkeeping, so the checkout alone is smaller still. The profiler
+cross-check sees asyncpg's extra as its own acquire/release machinery plus the
+event-loop scheduling it awaits (its `asyncpg` share rises from 5.5% to 8.7% with the
+loop share up alongside).
+
+**And the two pools are not doing the same work, which this pair of numbers does not
+yet separate.** `asyncpg.Pool` resets session state on every release — `release()` →
+`Connection.reset()` → `execute(get_reset_query())`, which against a stock postgres 16
+is `SELECT pg_advisory_unlock_all(); CLOSE ALL; UNLISTEN *; RESET ALL;`, one
+unconditional server round trip per request (`asyncpg/pool.py`, `asyncpg/connection.py`).
+SQLAlchemy's pool does not: its `reset_on_return='rollback'` reaches the asyncpg
+adapter's `rollback()`, which returns early when no transaction is open, and this floor
+commits inside its `async with`. So most of the 0.058 ms is likely a round trip bought
+for session hygiene rather than pool overhead — charging asyncpg for work SQLAlchemy
+never does is exactly correction 8's mistake, so the ~7x is **not** a like-for-like
+pool-cost ratio. That reading is from the drivers' source, not from a rung of this
+ladder; the rung that would settle it (a pooled asyncpg floor built with
+`create_pool(reset=<no-op>)`, which skips the query) is the next cell this table owes,
+tracked in [RUNS.md](RUNS.md).
+
+What survives cleanly: **rowform riding SQLAlchemy's pool is the cheapest pooled path
+measured here, and no pool at all would win back at most ~1% of a 1000-row read.**
+That is the number the adoption question turns on, and it does not depend on how
+asyncpg's 0.058 ms splits.
 
 ### Row layer alone (`mock` backend, zero driver cost)
 
@@ -154,15 +178,16 @@ transaction are not costs rowform introduces. An application with an `AsyncSessi
 paying them before rowform is in the picture.
 
 *No pool* (postgres `flat` only) is the referee between the other two: one dedicated
-asyncpg connection, no pool at all, same statement/transaction/payload. The distance
-from it to each pooled floor is exactly that pool's per-request acquire/release cost —
-added when the two pooled floors came out in the "wrong" order and neither number
-could say why.
+asyncpg connection, no pool at all, same statement and payload. The distance from it to
+each pooled floor is what going through that pool costs per request — added when the two
+pooled floors came out in the "wrong" order and neither number could say why. It bounds
+rather than attributes: each pooled floor differs from this one by its pool *and* by
+whatever that pool's library does around it (see the postgres table above).
 
 The distance between those two floors is the answer to "what does SQLAlchemy's plumbing
-cost", and it is now decomposed against a fourth floor with no pool at all: on postgres,
-SQLAlchemy's checkout adds **~0.008 ms** per request over a bare dedicated connection,
-while `asyncpg.Pool`'s acquire adds ~0.058 ms — the "raw driver" floor is the *more*
+cost", and it is now bounded against a fourth floor with no pool at all: on postgres,
+SQLAlchemy's pool path adds **≤0.008 ms** per request over a bare dedicated connection,
+while `asyncpg.Pool`'s adds ~0.058 ms — the "raw driver" floor is the *more*
 expensive pooled path, inverting the intuition the pair was built on. On sqlite the
 same-plumbing floor sits ~0.01 ms over the hand-rolled one. Earlier editions put the
 plumbing gap at 0.21 ms, and before that at 0.3–0.4 ms attributed to the checkout
@@ -187,8 +212,8 @@ lines.
 **`wide` is where the shapes converge.** Its columns are
 `DateTime`/`Date`/`Numeric`/`Enum`/`Uuid`/nullable, so per-column type processors
 dominate — and both sides run the *same* processors, leaving proportionally less to
-skip. It is where the ORM gap closes most (1.94x against 2.57x on `flat`) and where
-equal-work rowform gets closest to Core (a ~0.95x tie, against 0.89x ordered on
+skip. It is where the ORM gap closes most (1.94x against 2.59x on `flat`) and where
+equal-work rowform gets closest to Core (a ~0.95x tie, against 0.82x/0.89x ordered on
 `flat`/`join`). A suite quoting one shape is quoting an extreme without saying so, in
 whichever direction.
 

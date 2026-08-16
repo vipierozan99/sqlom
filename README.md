@@ -142,11 +142,13 @@ So the honest summary: **rowform costs about what stock Core costs and returns t
 JSON-ready dataclasses where Core returns tuples** — while the ORM costs 2–5x for its
 instrumented objects. The decomposition rows say where the idiomatic margin lives:
 `prepare()` turns out to be worth nothing measurable (the `prepared` row ties the
-equal-work one — rowform's statement cache is that cheap), and the whole 6–19% is the
-serialization path, dataclasses straight into orjson's C serializer. The postgres
-tables, the pool-cost decomposition (SQLAlchemy's checkout: ~0.008 ms/request), and
-the mock instrument that isolates the row layer alone are in
-[METHODOLOGY.md](docs/METHODOLOGY.md).
+equal-work one — rowform's statement cache is that cheap), so in the four cells that
+have a `prepared` rung the whole 10–19% is the serialization path, dataclasses straight
+into orjson's C serializer. `wide` has no such rung, so its 6% is assumed to split the
+same way rather than shown to. The postgres tables, the pool-cost bound (going through
+SQLAlchemy's pool: ≤0.008 ms/request, and why the comparison against `asyncpg.Pool`'s
+0.058 ms is not yet like-for-like), and the mock instrument that isolates the row layer
+alone are in [METHODOLOGY.md](docs/METHODOLOGY.md).
 
 Three things matter more than the ratios. **Every contender runs identical SQL**,
 compiled by Core, so what is compared is only what happens to the rows afterwards.
@@ -396,8 +398,9 @@ Giving up rowform's own pool costs something, paid per *checkout* rather than pe
 per statement — with the connection in hand, executing on a SQLAlchemy-pooled connection
 costs what executing on rowform's own did. What it buys is the `bind=` case above, which
 an engine owning its own pool cannot do at any price. The suite now prices the checkout
-and the transaction together, at roughly 0.2 ms per read on sqlite, by comparing the two
-hand-rolled floors against the one on SQLAlchemy's plumbing
+and the transaction together, at roughly 0.01 ms per read on sqlite and ≤0.008 ms on
+postgres, by comparing the hand-rolled dict floor against the dict floor on
+SQLAlchemy's plumbing — the pair that differs only in plumbing
 ([METHODOLOGY.md](docs/METHODOLOGY.md)); the older per-checkout split in
 [PLAN_SQLA_API.md](docs/PLAN_SQLA_API.md) §2 was measured under conditions since found
 to be broken and has not been re-derived.
