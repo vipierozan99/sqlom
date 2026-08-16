@@ -41,6 +41,7 @@ BACKENDS = ("sqlite", "postgres", "mock")
 ROW_ORDER = (
     "hand-written dict (mock)",
     "floor: no pool (dict)",
+    "floor: hand-rolled (no pool reset)",
     "floor: hand-rolled (dict)",
     "floor: hand-rolled (hydrator)",
     "floor: on SQLAlchemy (dict)",
@@ -64,6 +65,8 @@ ROW_ORDER = (
 LABELS = {
     "hand-written dict (mock)": "hand-written dicts *(parsing floor)*",
     "floor: no pool (dict)": "one dedicated connection → dicts *(floor: no pool)*",
+    "floor: hand-rolled (no pool reset)": "raw driver + pool, `reset` off → dicts "
+    "*(floor: prices asyncpg's reset)*",
     "floor: hand-rolled (dict)": "raw driver → dicts *(floor: no SQLAlchemy)*",
     "floor: hand-rolled (hydrator)": "raw driver + the same hydrator *(floor: no SQLAlchemy)*",
     "floor: on SQLAlchemy (dict)": "same pool + transaction → dicts *(floor: same plumbing)*",
