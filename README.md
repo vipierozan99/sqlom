@@ -163,14 +163,17 @@ the smallest win, which is why it is in the table** — it is the shape full of
 `DateTime`/`Numeric`/`Enum`/`Uuid` columns, where type processors dominate and both
 sides run the same ones.
 
-> **These are the first runs that report `quotable=True`** — every gate passes:
-> boost off, clean tree, equivalence enforced and hash-verified per timed process, one
-> contender per process, no throttle events. Worst trial-to-trial spread is 4.2%
-> (sqlite) / 5.4% (postgres); the spreads are *wider* than the previous boost-on sweep
-> because each iteration now takes ~1.9x as long and so presents a wider window to the
-> rest of the desktop. Absolute times are not comparable to earlier tables for the same
-> reason — ratios are. Raw artifacts are on the `bench/2026-08-16-boost-off-floors`
-> branch, indexed in [RUNS.md](docs/RUNS.md).
+> **Every gate passes on these runs** — boost off and verified still off at the end of
+> each run, clean tree, equivalence enforced and hash-verified per timed process, one
+> contender per process, no throttle events. Worst trial-to-trial spread in this sqlite
+> table is **4.2%**; the postgres table in
+> [METHODOLOGY.md](docs/METHODOLOGY.md) comes from a second sweep and runs **3.0%** across
+> its floors and rowform rows, with two secondary rows worse (`Core (.mappings())` 20.3%,
+> `execute().all()` 10.3%) that no claim rests on. Absolute times are not comparable to
+> tables published before boost was disabled — ratios are. Raw artifacts are on
+> `bench/2026-08-16-boost-off-floors` (sqlite, mock) and
+> `bench/2026-08-16-pg-join-floors` (postgres), indexed in [RUNS.md](docs/RUNS.md), which
+> also records an **undiagnosed** dispersion problem in sqlite `join`/`wide` on this box.
 
 Full numbers, and a log of **fifteen published claims that turned out to be wrong** —
 the most recent being a floor in this very table that was opening no transaction at all:

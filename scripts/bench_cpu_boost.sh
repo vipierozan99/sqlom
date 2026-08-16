@@ -85,13 +85,32 @@ if [[ ! -w $knob ]]; then
     exit 1
 fi
 
+restore_daemons() {
+    [[ -f $STOPPED_FILE ]] || return 0
+    while read -r d; do
+        [[ -n $d ]] || continue
+        if systemctl start "$d"; then
+            echo "restarted $d"
+        else
+            echo "could not restart $d — start it yourself" >&2
+        fi
+    done < "$STOPPED_FILE"
+    rm -f "$STOPPED_FILE"
+}
+
 # Stop the daemons before writing the knob (so nothing races the write), and
 # start them again only after restoring it.
 if [[ $1 == "off" ]]; then
     mkdir -p "$STATE_DIR"
-    active_daemons > "$STOPPED_FILE"
+    # Merge into any existing record instead of replacing it. A second `off`
+    # sees the daemons the first one stopped as inactive, so overwriting here
+    # would erase the list `on` restores from and leave them stopped for good.
+    { [[ -f $STOPPED_FILE ]] && cat "$STOPPED_FILE"; active_daemons; } \
+        | awk 'NF && !seen[$0]++' > "$STOPPED_FILE.tmp"
+    mv "$STOPPED_FILE.tmp" "$STOPPED_FILE"
     while read -r d; do
         [[ -n $d ]] || continue
+        systemctl is-active --quiet "$d" || continue   # already stopped by an earlier `off`
         if systemctl stop "$d"; then
             echo "stopped $d (restored by '$0 on')"
         else
@@ -105,21 +124,15 @@ echo "$want" > "$knob"
 got=$(cat "$knob")
 if [[ $got != "$want" ]]; then
     echo "wrote $want to $label but it reads $got — firmware or driver refused it" >&2
+    # Do not leave the box with its power daemons stopped for a sweep that
+    # cannot run anyway.
+    [[ $1 == "off" ]] && restore_daemons
     exit 1
 fi
 echo "boost $1 ($label=$got)"
 
-if [[ $1 == "on" && -f $STOPPED_FILE ]]; then
-    # Keep going if one fails, or a single bad unit leaves the rest stopped.
-    while read -r d; do
-        [[ -n $d ]] || continue
-        if systemctl start "$d"; then
-            echo "restarted $d"
-        else
-            echo "could not restart $d — start it yourself" >&2
-        fi
-    done < "$STOPPED_FILE"
-    rm -f "$STOPPED_FILE"
+if [[ $1 == "on" ]]; then
+    restore_daemons
 fi
 
 if [[ $1 == "off" ]]; then
