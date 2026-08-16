@@ -26,6 +26,23 @@ set -euo pipefail
 usage() { echo "usage: sudo $0 {off|on|status}" >&2; exit 2; }
 [[ $# -eq 1 ]] || usage
 
+# A power daemon will undo the write below on its own schedule, and the harness
+# only sampled boost at run *start*, so this was invisible: `tuned` (balanced)
+# re-enabled turbo between two shapes of one sweep, and the affected runs
+# recorded boost=False. `off` stops whichever daemon is active and `on` starts it
+# again; `status` reports it, because "boost is off" is not the whole story if
+# something is about to turn it back on.
+DAEMONS=(tuned power-profiles-daemon thermald tlp auto-cpufreq)
+STATE_DIR=/var/tmp/rowform-bench-cpu
+STOPPED_FILE="$STATE_DIR/stopped-daemons"
+
+active_daemons() {
+    local d
+    for d in "${DAEMONS[@]}"; do
+        systemctl is-active --quiet "$d" 2>/dev/null && echo "$d"
+    done
+}
+
 NO_TURBO=/sys/devices/system/cpu/intel_pstate/no_turbo   # inverted: 1 == boost off
 BOOST=/sys/devices/system/cpu/cpufreq/boost              # direct:   1 == boost on
 
@@ -45,6 +62,12 @@ case $1 in
         current=$(cat "$knob")
         if [[ $current == "$off_value" ]]; then state="off"; else state="on"; fi
         echo "boost is $state ($label=$current)"
+        running=$(active_daemons || true)
+        if [[ -n $running ]]; then
+            echo "WARNING: $(echo "$running" | tr '\n' ' ')active — expect boost to be re-applied mid-sweep"
+        else
+            echo "no power daemon active"
+        fi
         exit 0
         ;;
     off) want=$off_value ;;
@@ -57,6 +80,18 @@ if [[ ! -w $knob ]]; then
     exit 1
 fi
 
+# Stop the daemons before writing the knob (so nothing races the write), and
+# start them again only after restoring it.
+if [[ $1 == "off" ]]; then
+    mkdir -p "$STATE_DIR"
+    active_daemons > "$STOPPED_FILE"
+    while read -r d; do
+        [[ -n $d ]] || continue
+        systemctl stop "$d"
+        echo "stopped $d (restored by '$0 on')"
+    done < "$STOPPED_FILE"
+fi
+
 echo "$want" > "$knob"
 # Read back rather than trusting the write: some firmware silently ignores it.
 got=$(cat "$knob")
@@ -66,6 +101,18 @@ if [[ $got != "$want" ]]; then
 fi
 echo "boost $1 ($label=$got)"
 
+if [[ $1 == "on" && -f $STOPPED_FILE ]]; then
+    while read -r d; do
+        [[ -n $d ]] || continue
+        systemctl start "$d" && echo "restarted $d"
+    done < "$STOPPED_FILE"
+    rm -f "$STOPPED_FILE"
+fi
+
 if [[ $1 == "off" ]]; then
+    remaining=$(active_daemons || true)
+    if [[ -n $remaining ]]; then
+        echo "WARNING: still active: $(echo "$remaining" | tr '\n' ' ')" >&2
+    fi
     echo "now run 'just bench env check' as yourself; it must print 'no warnings'"
 fi
