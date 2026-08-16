@@ -21,6 +21,12 @@ are printed:
   than as a result — METHODOLOGY.md's "group ties instead of ranking them",
   applied mechanically instead of by eye.
 
+**Columns are `(shape, limit)` pairs, not shapes.** A sweep that records the
+same shape at two rows-per-read renders both, because they answer different
+questions: at 1000 rows the per-row work dominates and the per-request cost is
+~8% of the cell, and at 1 row nothing *but* the per-request cost is left. A table
+carrying only the first hides every fixed cost in the stack.
+
 Runs that are not `quotable` are still rendered, with the reason, because
 refusing to print them would just mean transcribing them by hand instead.
 """
@@ -94,13 +100,18 @@ LABELS = {
 BOLD_ROWS = frozenset({"rowform"})
 
 
-def load(paths: list[Path], gc: str = "off") -> dict[tuple[str, str], dict[str, Any]]:
-    """`(backend, shape) -> {contender: {median, spread_pct, ratio, tie}}`.
+def load(paths: list[Path], gc: str = "off") -> dict[tuple[str, str, int], dict[str, Any]]:
+    """`(backend, shape, limit) -> {contender: {median, spread_pct, ratio, tie}}`.
 
     Later runs win, so re-running one cell and re-pointing the glob at both is
     enough to refresh it.
+
+    **`limit` is part of the key, not a detail.** Two runs of one shape differing
+    only in rows-per-read are different measurements — at 1000 rows the per-row
+    work dominates and at 1 row nothing but the per-request cost is left — and
+    keyed without it the second would silently overwrite the first.
     """
-    table: dict[tuple[str, str], dict[str, Any]] = {}
+    table: dict[tuple[str, str, int], dict[str, Any]] = {}
     shas: dict[str, list[str]] = {}
     for path in sorted(paths):
         run = json.loads(path.read_text())
@@ -117,10 +128,11 @@ def load(paths: list[Path], gc: str = "off") -> dict[tuple[str, str], dict[str, 
             if cell["params"]["gc"] != gc:
                 continue
             backend = cell["params"]["backend"]
+            limit = cell["params"]["limit"]
             summary = cell["summary"]["median_ms"]
             ratio = ratios.get((cell["contender"], gc))
             is_reference = cell["contender"] in references
-            table.setdefault((backend, shape), {})[cell["contender"]] = {
+            table.setdefault((backend, shape, limit), {})[cell["contender"]] = {
                 "median": summary["median"],
                 "spread_pct": summary["spread_pct"],
                 # 1.0 only for the reference itself. None everywhere else means
@@ -176,7 +188,27 @@ def _cell(entry: dict[str, Any] | None, field: str, *, bold: bool = False) -> st
     return f"**{text}**" if bold else text
 
 
-def render(table: dict[tuple[str, str], dict[str, Any]], backend: str) -> str:
+def columns(table: dict[tuple[str, str, int], dict[str, Any]], backend: str) -> list[tuple[str, int]]:
+    """The `(shape, limit)` pairs recorded for `backend`, in table order.
+
+    Largest limit first, shapes in their usual order within it, so recording a
+    small read *appends* a column instead of reordering the table it is being
+    added to.
+    """
+    keys = {(shape, limit) for b, shape, limit in table if b == backend}
+    return sorted(keys, key=lambda key: (-key[1], SHAPES.index(key[0])))
+
+
+def headings(cols: list[tuple[str, int]]) -> list[str]:
+    """Bare shape names while one limit is in play — the layout every published
+    table has had — and `shape @limit` as soon as two are, because a column of
+    1-row reads beside a column of 1000-row reads is unreadable without it."""
+    if len({limit for _, limit in cols}) == 1:
+        return [shape for shape, _ in cols]
+    return [f"{shape} @{limit}" for shape, limit in cols]
+
+
+def render(table: dict[tuple[str, str, int], dict[str, Any]], backend: str) -> str:
     """One combined table per backend: medians, a blank spacer column, then the
     ratios — the layout that is actually checked into README.md and
     METHODOLOGY.md.
@@ -185,10 +217,10 @@ def render(table: dict[tuple[str, str], dict[str, Any]], backend: str) -> str:
     hand-merging them row by row to publish, which is precisely the transcription
     step the script exists to remove.
     """
-    shapes = [s for s in SHAPES if (backend, s) in table]
-    if not shapes:
+    cols = columns(table, backend)
+    if not cols:
         return ""
-    recorded = {name for s in shapes for name in table[(backend, s)]}
+    recorded = {name for key in cols for name in table[(backend, *key)]}
     unknown = recorded - set(ROW_ORDER)
     if unknown:
         # Registering a contender and forgetting the constant used to delete it
@@ -199,13 +231,13 @@ def render(table: dict[tuple[str, str], dict[str, Any]], backend: str) -> str:
             f"would be dropped from the table. Add it (and a LABELS entry)."
         )
     present = [name for name in ROW_ORDER if name in recorded]
-    span = " | ".join(shapes)
+    span = " | ".join(headings(cols))
     lines = [
         f"| contender | {span} | | {span} |",
-        "|---|" + "---|" * (len(shapes) * 2 + 1),
+        "|---|" + "---|" * (len(cols) * 2 + 1),
     ]
     for name in present:
-        entries = [table[(backend, s)].get(name) for s in shapes]
+        entries = [table[(backend, *key)].get(name) for key in cols]
         bold = name in BOLD_ROWS
         medians = " | ".join(_cell(e, "median", bold=bold) for e in entries)
         ratios = " | ".join(_cell(e, "ratio", bold=bold) for e in entries)

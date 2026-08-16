@@ -22,10 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import publish_tables as pt
 
 
-def _cell(contender, median, *, backend="sqlite", gc="off", trials=2):
+def _cell(contender, median, *, backend="sqlite", gc="off", trials=2, limit=1000):
     return {
         "contender": contender,
-        "params": {"backend": backend, "gc": gc},
+        "params": {"backend": backend, "gc": gc, "limit": limit},
         "summary": {
             "median_ms": {"median": median, "spread_pct": 1.0},
             "p95_over_p50": {"max": 1.1},
@@ -107,7 +107,7 @@ class TestOneTableIsOneCommit:
         one = _run([_cell("rowform", 0.27)], ratios=[], shape="flat")
         two = _run([_cell("rowform", 1.82)], ratios=[], shape="join")
         table = pt.load([_write(tmp_path, one, "a.json"), _write(tmp_path, two, "b.json")])
-        assert set(table) == {("sqlite", "flat"), ("sqlite", "join")}
+        assert set(table) == {("sqlite", "flat", 1000), ("sqlite", "join", 1000)}
 
 
 class TestGcFiltering:
@@ -119,10 +119,36 @@ class TestGcFiltering:
             ratios=[],
         )
         path = _write(tmp_path, run)
-        assert pt.load([path], gc="off")[("sqlite", "flat")]["rowform"]["median"] == 0.30
-        assert pt.load([path], gc="on")[("sqlite", "flat")]["rowform"]["median"] == 0.28
+        assert pt.load([path], gc="off")[("sqlite", "flat", 1000)]["rowform"]["median"] == 0.30
+        assert pt.load([path], gc="on")[("sqlite", "flat", 1000)]["rowform"]["median"] == 0.28
 
     def test_a_mode_that_was_never_recorded_is_an_error(self, tmp_path):
         run = _run([_cell("rowform", 0.30, gc="off")], ratios=[])
         with pytest.raises(SystemExit, match="no cells with gc"):
             pt.load([_write(tmp_path, run)], gc="on")
+
+
+class TestTwoReadSizesAreTwoColumns:
+    """One shape recorded at two rows-per-read is two measurements, not one. Keyed
+    by shape alone the second silently overwrote the first — and since a 1-row
+    read is ~10x faster than a 1000-row one, the survivor looked like a result
+    rather than like a different question."""
+
+    def test_the_small_read_does_not_overwrite_the_big_one(self, tmp_path):
+        big = _run([_cell("rowform", 2.66, limit=1000)], ratios=[])
+        small = _run([_cell("rowform", 0.22, limit=1)], ratios=[])
+        table = pt.load([_write(tmp_path, big, "a.json"), _write(tmp_path, small, "b.json")])
+        assert table[("sqlite", "flat", 1000)]["rowform"]["median"] == 2.66
+        assert table[("sqlite", "flat", 1)]["rowform"]["median"] == 0.22
+
+    def test_the_columns_say_which_read_they_are(self, tmp_path):
+        big = _run([_cell("rowform", 2.66, limit=1000)], ratios=[])
+        small = _run([_cell("rowform", 0.22, limit=1)], ratios=[])
+        table = pt.load([_write(tmp_path, big, "a.json"), _write(tmp_path, small, "b.json")])
+        assert pt.columns(table, "sqlite") == [("flat", 1000), ("flat", 1)]
+        assert "| flat @1000 | flat @1 |" in pt.render(table, "sqlite")
+
+    def test_one_read_size_still_renders_bare_shape_names(self, tmp_path):
+        run = _run([_cell("rowform", 2.66, limit=1000)], ratios=[])
+        rendered = pt.render(pt.load([_write(tmp_path, run)]), "sqlite")
+        assert "| contender | flat | | flat |" in rendered
