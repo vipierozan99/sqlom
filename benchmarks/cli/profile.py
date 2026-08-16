@@ -218,7 +218,7 @@ def micro(
                 )
                 typer.echo(
                     f"wrote {out}/{spec.slug}.cprofile.speedscope.json and "
-                    f".pyinstrument.speedscope.json"
+                    f"{out}/{spec.slug}.pyinstrument.speedscope.json"
                 )
             finally:
                 await teardown()
