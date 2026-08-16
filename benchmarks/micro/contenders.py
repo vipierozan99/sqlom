@@ -65,12 +65,18 @@ connection never enters a transaction — a floor issuing the SQL by hand *does*
 contenders it bounds, which is the same "floor slower than the thing it bounds" bug
 recorded below, arrived at from the other direction.
 
-**On postgres the opposite holds**, and `pg_flat_raw_asyncpg` uses
-`conn.transaction()` — a real `BEGIN`/`COMMIT` on the wire — for exactly the same
-reason: there SQLAlchemy's `begin()` *does* emit one, so a floor that skipped it would
-be the cheap side of the asymmetry instead of the expensive one. The rule is "match
-whatever the contenders' transaction actually costs on this backend", not "avoid
-`BEGIN`"; the sqlite spelling is a consequence, not the principle.
+**On postgres the opposite holds**, and *every* floor there spells the transaction on
+the driver connection with `conn.transaction()` — a real `BEGIN`/`COMMIT` on the wire —
+because that is what the contenders send. `sa_conn.begin()` is not a substitute for it
+even on the SQLAlchemy-pooled floor: SQLAlchemy autobegins *lazily*, emitting `BEGIN`
+with the first statement routed through SQLAlchemy, and these floors deliberately await
+the driver directly instead. It marks a transaction in Python and sends nothing. That
+was live in `pg_flat_sa_plumbing_dict` through the 2026-08-15 sweep and is what made it
+land below the raw-asyncpg floor; the audit that caught it (`log_statement=all`, counting
+`BEGIN`/`COMMIT` per iteration for every contender in the cell) is the check to repeat
+whenever a floor is added. The rule is "match whatever the contenders' transaction
+actually costs on this backend", not "avoid `BEGIN`"; the sqlite spelling is a
+consequence, not the principle.
 
 Two exemptions. The mock contenders have no connection to begin on. And
 `rowform (no transaction)` is registered deliberately without one, because
@@ -350,6 +356,32 @@ async def flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with engine.begin() as conn:
             return dumps(_flat_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (prepared)",
+    backend="sqlite",
+    shape="flat",
+    tags=("decomposition",),
+    description="Equal work except prepare-once — the middle rung that decomposes the "
+    "idiomatic delta into cache-key vs serialization.",
+)
+async def flat_rowform_prepared(init: ContenderInit) -> tuple[Target, Teardown]:
+    """The decomposition ladder, one variable per rung: `rowform` (unprepared,
+    equal payload) minus this row is the structural cache-key cost; this row
+    minus `rowform (idiomatic)` is the Python payload pass vs orjson's C
+    dataclass path. Added because the recorded join/postgres gap between the
+    equal-work and idiomatic rows (0.73x) bundled both and could not be read.
+    """
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(flat_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_flat_objs(await conn.fetch_all(query)))
 
     return target, sa_engine.dispose
 
@@ -774,6 +806,25 @@ async def join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with engine.begin() as conn:
             return dumps(_join_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (prepared)",
+    backend="sqlite",
+    shape="join",
+    tags=("decomposition",),
+    description="Equal work except prepare-once, at arity two — see the flat twin.",
+)
+async def join_rowform_prepared(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(join_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_join_objs(await conn.fetch_all(query)))
 
     return target, sa_engine.dispose
 
@@ -1248,6 +1299,25 @@ async def pg_flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
+    "rowform (prepared)",
+    backend="postgres",
+    shape="flat",
+    tags=("decomposition",),
+    description="Equal work except prepare-once, on asyncpg — see the sqlite flat twin.",
+)
+async def pg_flat_rowform_prepared(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(flat_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_flat_objs(await conn.fetch_all(query)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
     "rowform (idiomatic)",
     backend="postgres",
     shape="flat",
@@ -1347,6 +1417,91 @@ async def pg_flat_raw_asyncpg(init: ContenderInit) -> tuple[Target, Teardown]:
 
 
 @contender(
+    "floor: hand-rolled (no pool reset)",
+    backend="postgres",
+    shape="flat",
+    shipped=False,
+    tags=("floor", "decomposition"),
+    description="The hand-rolled floor with `asyncpg.Pool`'s release-time reset query "
+    "switched off — prices that round trip on its own.",
+)
+async def pg_flat_raw_asyncpg_no_reset(init: ContenderInit) -> tuple[Target, Teardown]:
+    """`floor: hand-rolled (dict)` minus one thing. `asyncpg.Pool.release()` calls
+    `Connection.reset()`, which executes `SELECT pg_advisory_unlock_all(); CLOSE
+    ALL; UNLISTEN *; RESET ALL;` — a server round trip per request that
+    SQLAlchemy's pool does not make (its `reset_on_return='rollback'` is a no-op
+    through the asyncpg adapter with no transaction open, and these floors commit
+    inside the `async with`). Passing `reset=` replaces that call, so this row
+    minus the hand-rolled one is the round trip and nothing else, and what is
+    left over the `no pool` floor is asyncpg's acquire/release machinery. Without
+    it the two pooled floors are not comparable: the pool ratio was charging
+    asyncpg for session hygiene SQLAlchemy skips (correction 8)."""
+    import asyncpg
+
+    async def _no_reset(conn: Any) -> None:
+        """Replaces `Connection.reset()`; `_reset()` still runs before it, and
+        only emits `ROLLBACK` when a transaction is open, which it is not here."""
+
+    pool = await asyncpg.create_pool(
+        init.handle, min_size=POOL_MAX, max_size=POOL_MAX, reset=_no_reset
+    )
+    assert pool is not None
+    sql, params = _compiled(flat_stmt(init.limit), _PG_DIALECT)
+
+    async def target() -> bytes:
+        async with pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(sql, *params)
+        return dumps(_flat(rows))
+
+    return target, pool.close
+
+
+@contender(
+    "floor: no pool (dict)",
+    backend="postgres",
+    shape="flat",
+    shipped=False,
+    tags=("floor", "decomposition"),
+    description="One dedicated asyncpg connection, no pool at all — isolates the "
+    "checkout cost the other two floors disagree about.",
+)
+async def pg_flat_no_pool(init: ContenderInit) -> tuple[Target, Teardown]:
+    """The 2026-08-15 sweep put the same-plumbing floor *below* the raw-asyncpg
+    floor — SQLAlchemy's checkout apparently cheaper than asyncpg's own pool.
+    The two differ in pool AND everything around it, so neither number
+    attributes the gap. This floor removes the pool entirely, which *bounds*
+    the cost of going through each pooled floor's pool (same statement, same
+    payload) without attributing it — each pooled floor still differs by more
+    than its pool, in opposite directions:
+
+    - `pg_flat_sa_plumbing_dict` also builds a SQLAlchemy `Connection` and awaits
+      `get_raw_connection()` per request, so its distance is an *upper* bound on
+      SQLAlchemy's checkout rather than the checkout alone. (It matches this
+      floor's transaction spelling now; that it did not was correction 15.)
+    - `pg_flat_raw_asyncpg` pays `asyncpg.Pool.release()` -> `Connection.reset()`,
+      a `RESET ALL`-family server round trip per request that neither this floor
+      nor SQLAlchemy's pool makes, so its distance is not pool overhead alone —
+      `pg_flat_raw_asyncpg_no_reset` above splits it into machinery and that
+      round trip.
+
+    See METHODOLOGY.md's "Reading the floors" for what the assembled ladder says."""
+    import asyncpg
+
+    conn = await asyncpg.connect(init.handle)
+    sql, params = _compiled(flat_stmt(init.limit), _PG_DIALECT)
+
+    async def target() -> bytes:
+        async with conn.transaction():
+            rows = await conn.fetch(sql, *params)
+        return dumps(_flat(rows))
+
+    async def teardown() -> None:
+        await conn.close()
+
+    return target, teardown
+
+
+@contender(
     "floor: on SQLAlchemy (dict)",
     backend="postgres",
     shape="flat",
@@ -1355,16 +1510,27 @@ async def pg_flat_raw_asyncpg(init: ContenderInit) -> tuple[Target, Teardown]:
     description="Same pool, same transaction, hand-written dicts — the abstraction floor.",
 )
 async def pg_flat_sa_plumbing_dict(init: ContenderInit) -> tuple[Target, Teardown]:
-    """Worth more here than on sqlite. The transaction the plumbing opens is two
-    real round trips on postgres where on sqlite it is Python overhead only, so
-    this is the arm that keeps that cost out of the row-layer number."""
+    """Worth more here than on sqlite. The transaction is two real round trips on
+    postgres where on sqlite it is Python overhead only, so this is the arm that
+    keeps that cost out of the row-layer number.
+
+    The transaction is opened on the *driver* connection, not with
+    `sa_conn.begin()`. SQLAlchemy autobegins lazily — it emits `BEGIN` when the
+    first statement goes through SQLAlchemy — and this floor deliberately
+    bypasses that, awaiting the driver directly (see the sqlite twin's comment).
+    So `sa_conn.begin()` marked a transaction in Python and never sent one:
+    verified against `log_statement=all`, the read went out as a bare `SELECT`
+    in autocommit while every contender this floor bounds sent
+    `BEGIN`/`SELECT`/`COMMIT`. A floor two round trips light, which is
+    correction 10 from the other side, and the actual reason the 2026-08-15 sweep
+    saw it come out *below* the raw-asyncpg floor."""
     sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     sql, params = _compiled(flat_stmt(init.limit), _PG_DIALECT)
 
     async def target() -> bytes:
         async with sa_engine.connect() as sa_conn:
             driver_conn: Any = (await sa_conn.get_raw_connection()).driver_connection
-            async with sa_conn.begin():
+            async with driver_conn.transaction():
                 rows = await driver_conn.fetch(sql, *params)
         return dumps(_flat(rows))
 
@@ -1439,6 +1605,26 @@ async def pg_join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
     async def target() -> bytes:
         async with engine.begin() as conn:
             return dumps(_join_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (prepared)",
+    backend="postgres",
+    shape="join",
+    tags=("decomposition",),
+    description="Equal work except prepare-once, arity two on asyncpg — the cell the "
+    "recorded 0.73x idiomatic delta demanded.",
+)
+async def pg_join_rowform_prepared(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(join_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_join_objs(await conn.fetch_all(query)))
 
     return target, sa_engine.dispose
 
