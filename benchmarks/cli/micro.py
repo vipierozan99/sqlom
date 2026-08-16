@@ -268,33 +268,46 @@ async def _mock_handle(shape: str, limit: int) -> list[tuple]:
     """
     import aiosqlite
 
-    db = EphemeralSqlite.create(shape, max(limit * 2, 200))
+    if shape == "flat":
+        # ORDER BY: without it the fixture's row set is whatever the query
+        # planner happens to scan first — deterministic per sqlite version,
+        # but an accident, not a property.
+        sql = (
+            "SELECT id, name, email, is_active FROM users "
+            "WHERE is_active = 1 AND id > 100 ORDER BY id LIMIT ?"
+        )
+    elif shape == "join":
+        sql = (
+            "SELECT a.id, a.name, a.email, a.is_active, "
+            "p.id, p.author_id, p.title, p.score, p.published "
+            "FROM j_authors a JOIN j_posts p ON p.author_id = a.id "
+            "WHERE a.is_active = 1 AND p.score > 100 ORDER BY a.id, p.id LIMIT ?"
+        )
+    else:
+        raise ValueError(f"no mock row source for shape {shape!r}")
+
+    # 3x the limit: the filters above discard ~10-50% of seeded rows, and at
+    # 2x a small --limit silently canned fewer rows than `limit` while
+    # params recorded the full number — the check below makes any future
+    # shortfall loud instead.
+    db = EphemeralSqlite.create(shape, max(limit * 3, 600))
     try:
         conn = await aiosqlite.connect(db.path)
         try:
-            if shape == "flat":
-                cur = await conn.execute(
-                    "SELECT id, name, email, is_active FROM users "
-                    "WHERE is_active = 1 AND id > 100 LIMIT ?",
-                    (limit,),
-                )
-                rows = await cur.fetchall()
-                return [(r[0], r[1], r[2], bool(r[3])) for r in rows]
-            cur = await conn.execute(
-                "SELECT a.id, a.name, a.email, a.is_active, "
-                "p.id, p.author_id, p.title, p.score, p.published "
-                "FROM j_authors a JOIN j_posts p ON p.author_id = a.id "
-                "WHERE a.is_active = 1 AND p.score > 100 LIMIT ?",
-                (limit,),
-            )
-            rows = await cur.fetchall()
-            return [
-                (r[0], r[1], r[2], bool(r[3]), r[4], r[5], r[6], r[7], bool(r[8])) for r in rows
-            ]
+            cur = await conn.execute(sql, (limit,))
+            rows = list(await cur.fetchall())
         finally:
             await conn.close()
     finally:
         db.close()
+    if len(rows) != limit:
+        raise RuntimeError(
+            f"mock row source produced {len(rows)} rows for --limit {limit} — "
+            f"seed more rows in _mock_handle or lower --limit"
+        )
+    if shape == "flat":
+        return [(r[0], r[1], r[2], bool(r[3])) for r in rows]
+    return [(r[0], r[1], r[2], bool(r[3]), r[4], r[5], r[6], r[7], bool(r[8])) for r in rows]
 
 
 def _spawn_cell(
@@ -349,13 +362,17 @@ async def _measure(
 
 
 def _reference_in(group: list[result.Cell]) -> result.Cell | None:
-    """The cell everything else is measured against.
+    """The cell everything else is measured against — exact `REFERENCE` name,
+    or a unique `REFERENCE`-prefixed one.
 
-    Exact name first. Falling back to a unique `REFERENCE`-prefixed name is what
-    picks `rowform (mock)` out of the mock group, where nothing is called plain
-    `rowform`; the uniqueness requirement is what stops it picking one of the
-    three `rowform ...` cells in a group that also has the real one.
+    Never for the mock group: each mock is its own row-layer floor and the two
+    mock seams exclude *different* layers by construction (`engines/mock.py`),
+    so a "SQLAlchemy (mock) vs rowform (mock)" ratio compares two different
+    timed regions — this used to be computed and recorded anyway, via the
+    prefix fallback picking `rowform (mock)`.
     """
+    if group and group[0].params.get("backend") == "mock":
+        return None
     exact = [c for c in group if c.contender == REFERENCE]
     if exact:
         return exact[0]
@@ -534,6 +551,16 @@ async def _run(
                                 )
                         for cell_obj in group_cells:
                             cell_obj.summarize(_SUMMARY_KEYS)
+                            # The paired worst-trial counts, recorded beside the
+                            # per-metric maxima: the independent maxima can name
+                            # a mild/severe pair no trial produced (see
+                            # `_worst_outliers`), and only the print path used
+                            # to carry the corrected pairing.
+                            mild, severe = _worst_outliers(cell_obj)
+                            cell_obj.summary["outliers_worst_trial"] = {
+                                "mild": mild,
+                                "severe": severe,
+                            }
 
                         group_ratios = _ratios_for(group_cells)
                         typer.echo(f"  -- gc={mode}, trials={trials} --")
