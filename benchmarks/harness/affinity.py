@@ -104,6 +104,29 @@ def set_affinity(pid: int, cpus: list[int]) -> None:
     os.sched_setaffinity(pid, cpus)
 
 
+def resolve_pin(pin: str | None) -> tuple[list[int], list[str]]:
+    """Turn a `--pin` option value into concrete cpu ids: `"auto"` plans two
+    whole physical cores from the part of this machine's topology the process is
+    allowed on (never hardcoded indices — see the module docstring), `""`/None
+    disables pinning, anything else is comma-separated logical ids taken
+    literally. Returns the ids plus any planner warnings (e.g. a small machine,
+    or a small cpuset, having to share cores)."""
+    if pin == "auto":
+        # Plan only over CPUs this process may actually run on: sysfs lists every
+        # host CPU even inside a restricted cpuset, so an unfiltered plan hands
+        # `sched_setaffinity` ids the kernel will reject (EINVAL) or quietly
+        # narrow — either way the pinning is not the one that was planned.
+        allowed = os.sched_getaffinity(0)
+        visible: dict[str, list[int]] = {}
+        for core, cpus in cpu_topology().items():
+            siblings = [c for c in cpus if c in allowed]
+            if siblings:
+                visible[core] = siblings
+        auto = plan({"bench": 2}, visible or {str(i): [i] for i in sorted(allowed)})
+        return auto.roles["bench"], list(auto.warnings)
+    return ([int(c) for c in pin.split(",")] if pin else []), []
+
+
 def read_back(pid: int) -> list[int]:
     """Read back the mask the kernel actually has for `pid`, rather than
     trusting the one that was requested — only the former is evidence."""

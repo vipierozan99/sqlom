@@ -35,6 +35,7 @@ import typer
 import benchmarks.micro.contenders  # noqa: F401 -- import for @contender registration side-effects
 from benchmarks.backends import postgres as postgres_backend
 from benchmarks.backends.sqlite import EphemeralSqlite
+from benchmarks.engines import mock as mock_engines
 from benchmarks.harness import affinity, equivalence, registry, result
 from benchmarks.harness import env as env_module
 from benchmarks.harness import seed as seed_module
@@ -188,17 +189,9 @@ def run(
     if trials < 1:
         raise typer.BadParameter("--trials must be at least 1")
     assert_unpatched_threading()
-    if pin == "auto":
-        # Derived from the machine's own topology rather than hardcoded indices
-        # — a fixed default like the old "6,7,8,9" crashes on boxes with fewer
-        # CPUs and silently lands on SMT siblings of one physical core on
-        # others (the exact finding harness/affinity.py exists to prevent).
-        auto_plan = affinity.plan({"bench": 2})
-        pin_cpus = auto_plan.roles["bench"]
-        for warning in auto_plan.warnings:
-            typer.echo(f"  ! {warning}")
-    else:
-        pin_cpus = [int(c) for c in pin.split(",")] if pin else []
+    pin_cpus, pin_warnings = affinity.resolve_pin(pin)
+    for warning in pin_warnings:
+        typer.echo(f"  ! {warning}")
     asyncio.run(
         _run(
             shape, rows, limit, iterations, warmup, only, backend, gc_modes,
@@ -238,7 +231,7 @@ async def _cell(
     warmup: int, gc_mode: str, out: Path,
 ) -> None:
     spec = registry.get(slug)
-    resolved = await _mock_handle(shape, limit) if spec.backend == "mock" else handle
+    resolved = await mock_engines.canned_rows(shape, limit) if spec.backend == "mock" else handle
     target, teardown = await spec.factory(ContenderInit(handle=resolved, limit=limit))
     try:
         # One untimed call before warmup: its bytes are what the parent
@@ -256,59 +249,6 @@ async def _cell(
             "payload_sha256": hashlib.sha256(payload).hexdigest(),
         })
     )
-
-
-async def _mock_handle(shape: str, limit: int) -> list[tuple]:
-    """Real rows sourced from a throwaway sqlite db, once, at setup — the
-    driver term is paid only here, never inside a MockEngine contender's
-    timed `request()`.
-
-    Rebuilt rather than passed when `--isolate` spawns a child: the seeder is
-    deterministic (`harness/seed.RNG_SEED`), so the child's rows are the parent's
-    rows, and shipping a few thousand of them over argv is not.
-    """
-    import aiosqlite
-
-    if shape == "flat":
-        # ORDER BY: without it the fixture's row set is whatever the query
-        # planner happens to scan first — deterministic per sqlite version,
-        # but an accident, not a property.
-        sql = (
-            "SELECT id, name, email, is_active FROM users "
-            "WHERE is_active = 1 AND id > 100 ORDER BY id LIMIT ?"
-        )
-    elif shape == "join":
-        sql = (
-            "SELECT a.id, a.name, a.email, a.is_active, "
-            "p.id, p.author_id, p.title, p.score, p.published "
-            "FROM j_authors a JOIN j_posts p ON p.author_id = a.id "
-            "WHERE a.is_active = 1 AND p.score > 100 ORDER BY a.id, p.id LIMIT ?"
-        )
-    else:
-        raise ValueError(f"no mock row source for shape {shape!r}")
-
-    # 3x the limit: the filters above discard ~10-50% of seeded rows, and at
-    # 2x a small --limit silently canned fewer rows than `limit` while
-    # params recorded the full number — the check below makes any future
-    # shortfall loud instead.
-    db = EphemeralSqlite.create(shape, max(limit * 3, 600))
-    try:
-        conn = await aiosqlite.connect(db.path)
-        try:
-            cur = await conn.execute(sql, (limit,))
-            rows = list(await cur.fetchall())
-        finally:
-            await conn.close()
-    finally:
-        db.close()
-    if len(rows) != limit:
-        raise RuntimeError(
-            f"mock row source produced {len(rows)} rows for --limit {limit} — "
-            f"seed more rows in _mock_handle or lower --limit"
-        )
-    if shape == "flat":
-        return [(r[0], r[1], r[2], bool(r[3])) for r in rows]
-    return [(r[0], r[1], r[2], bool(r[3]), r[4], r[5], r[6], r[7], bool(r[8])) for r in rows]
 
 
 def _spawn_cell(
@@ -471,7 +411,7 @@ async def _run(
                 db = EphemeralSqlite.create(shape, rows)
                 handle = db.path
             elif backend == "mock":
-                handle = await _mock_handle(shape, limit)
+                handle = await mock_engines.canned_rows(shape, limit)
             elif backend == "postgres":
                 if not pg_dsn:
                     typer.echo(

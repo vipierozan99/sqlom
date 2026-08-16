@@ -3,15 +3,16 @@ each pins a fix to a bug that made recorded numbers wrong or gates vacuous
 (wrong nearest-rank percentile, negative CPU deltas from exited pids, monitor
 averages diluted by post-exit samples, a boost gate that silently passed when
 the sysfs knob was unreadable, an equivalence gate that only re-ran the
-reference contender, and profiler frame attribution crediting SQLAlchemy's
-driver adapters to the raw driver).
+reference contender, an auto pin plan reaching for CPUs outside the process
+cpuset, and profiler frame attribution crediting SQLAlchemy's driver adapters
+to the raw driver).
 """
 
 import math
 
 import pytest
 
-from benchmarks.harness import cpuacct, equivalence, stats
+from benchmarks.harness import affinity, cpuacct, equivalence, stats
 from benchmarks.harness import env as env_module
 from benchmarks.harness.monitor import ProcessMonitor
 from benchmarks.profiling import attribution
@@ -134,6 +135,23 @@ async def test_equivalence_catches_flaky_non_reference_contender():
     # contender (not just the reference) catches it.
     assert not result.self_consistent
     assert any("other" in failure for failure in result.failures)
+
+
+# --- affinity ---------------------------------------------------------------
+
+
+def test_auto_pin_never_leaves_the_process_affinity_mask(monkeypatch):
+    # sysfs reports every host CPU even inside a restricted cpuset, so an
+    # unfiltered `--pin auto` plan asks `sched_setaffinity` for ids the kernel
+    # rejects. Here only cpus 4/5 (one physical core) are allowed.
+    monkeypatch.setattr(
+        affinity, "cpu_topology", lambda: {"0:0": [0, 1], "0:1": [2, 3], "0:2": [4, 5]}
+    )
+    monkeypatch.setattr(affinity.os, "sched_getaffinity", lambda pid: {4, 5})
+    cpus, warnings = affinity.resolve_pin("auto")
+    assert cpus == [4, 5]
+    # One core for a two-core plan is a share, and must be recorded as one.
+    assert any("reuses physical core" in w for w in warnings)
 
 
 # --- profiler attribution ---------------------------------------------------
