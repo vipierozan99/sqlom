@@ -26,7 +26,15 @@ class ServiceWorker:
     cores: list[int]
 
     async def stop(self) -> None:
-        self.proc.terminate()
+        # A worker that already exited (e.g. it died at startup and this is
+        # the cleanup path) has nothing to terminate — raising here would
+        # mask the error that killed it.
+        if self.proc.returncode is not None:
+            return
+        try:
+            self.proc.terminate()
+        except ProcessLookupError:
+            return
         try:
             await asyncio.wait_for(self.proc.wait(), timeout=5)
         except TimeoutError:

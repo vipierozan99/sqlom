@@ -24,10 +24,11 @@ a query built once at startup — the same way a hand-written endpoint would
 do it. Each route acquires its connection from a pool set up once in
 `lifespan()` and stored on `app.state`.
 
-Configured from one environment variable, `BENCH_HANDLE` (the sqlite db path)
-— `launch.py` starts this as a uvicorn subprocess per worker, and env vars
-are the plumbing that survives a subprocess boundary without needing a
-config file.
+Configured from two environment variables — `BENCH_HANDLE` (the sqlite db
+path) and `BENCH_PG_DSN` (the postgres DSN), each backend's pools opened only
+if its variable is set. `launch.py` starts this as a uvicorn subprocess per
+worker, and env vars are the plumbing that survives a subprocess boundary
+without needing a config file.
 """
 
 from __future__ import annotations
@@ -95,14 +96,21 @@ def _sa_dsn_pg(dsn: str, driver: str = "asyncpg") -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Every pool this worker will hand out connections from, opened once.
-    Postgres pools are only opened if `BENCH_PG_DSN` is set — `bench service
-    run` doesn't provision postgres, so its worker leaves `app.state.pg_*` as
-    `None` and never serves a `/postgres-*` route."""
-    app.state.rf_sa_engine = create_async_engine(_sa_dsn(DB_PATH), **POOL)
-    app.state.rowform = rf.Engine(app.state.rf_sa_engine)
-    app.state.aiosqlite = await AiosqlitePool.open(DB_PATH, POOL_MAX)
-    app.state.sa_engine = create_async_engine(_sa_dsn(DB_PATH), **POOL)
+    """Every pool this worker will hand out connections from, opened once —
+    per backend, only if its env var is set. A postgres-only worker
+    (`BENCH_HANDLE` unset) must not open the sqlite pools: `AiosqlitePool`
+    eagerly connects, and an empty db path kills the worker at startup, which
+    broke every `/postgres-*` load case. The routes of an unprovisioned
+    backend are never driven (`bench load` only targets the provisioned
+    backend's routes) and would 500 on their `None` state if hit by hand."""
+    app.state.rowform = None
+    app.state.aiosqlite = None
+    app.state.sa_engine = None
+    if DB_PATH:
+        app.state.rf_sa_engine = create_async_engine(_sa_dsn(DB_PATH), **POOL)
+        app.state.rowform = rf.Engine(app.state.rf_sa_engine)
+        app.state.aiosqlite = await AiosqlitePool.open(DB_PATH, POOL_MAX)
+        app.state.sa_engine = create_async_engine(_sa_dsn(DB_PATH), **POOL)
 
     app.state.pg_rowform = None
     app.state.pg_asyncpg = None
@@ -120,9 +128,11 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        await app.state.rf_sa_engine.dispose()
-        await app.state.aiosqlite.close()
-        await app.state.sa_engine.dispose()
+        aiosqlite_pool, sa_engine = app.state.aiosqlite, app.state.sa_engine
+        if aiosqlite_pool is not None and sa_engine is not None:
+            await app.state.rf_sa_engine.dispose()
+            await aiosqlite_pool.close()
+            await sa_engine.dispose()
         if app.state.pg_rowform is not None:
             await app.state.pg_rf_sa_engine.dispose()
         if app.state.pg_asyncpg is not None:

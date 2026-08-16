@@ -173,8 +173,9 @@ def run(
     pg_dsn: str | None = typer.Option(
         None,
         "--pg-dsn",
-        help="run the postgres contenders against this server (seeded first); "
-        "start one with `bench db up`",
+        help="run the postgres contenders against this server — its shape tables "
+        "(users/j_authors/...) are DROPPED and reseeded first; start a throwaway "
+        "one with `bench db up`",
     ),
 ) -> None:
     """Run every registered contender for `--shape`, gated by output

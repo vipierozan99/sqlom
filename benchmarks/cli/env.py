@@ -24,8 +24,9 @@ def main(ctx: typer.Context) -> None:
 
 @app.command()
 def check() -> None:
-    """Print the env block, then warn on boost/dirty tree/high loadavg —
-    exits non-zero if anything is flagged, for use in a pre-flight script."""
+    """Print the env block, then warn on boost/turbo (including "unknown"),
+    dirty tree, high loadavg, and an active gevent monkey-patch — exits
+    non-zero if anything is flagged, for use in a pre-flight script."""
     snapshot = env_module.capture()
     _print(snapshot)
     warnings = env_module.warnings_for(snapshot)

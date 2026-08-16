@@ -65,6 +65,11 @@ def micro(
         if not specs:
             raise typer.BadParameter(f"no sqlite contenders match shape={shape!r} only={only!r}")
         spec = specs[0]
+        if len(specs) > 1:
+            typer.echo(
+                f"{len(specs)} contenders match --only {only!r}; profiling {spec.name!r} "
+                f"(narrow the match to pick another)"
+            )
         db = EphemeralSqlite.create(shape, rows)
         ok = True
         try:
@@ -141,10 +146,12 @@ def micro(
                 out = Path(out_dir)
                 out.mkdir(parents=True, exist_ok=True)
                 folded = render.pstats_to_folded(stats)
-                (out / "cprofile.speedscope.json").write_text(
+                # Named per contender: fixed names silently overwrote contender
+                # A's flamegraphs the moment contender B was profiled.
+                (out / f"{spec.slug}.cprofile.speedscope.json").write_text(
                     __import__("json").dumps(render.folded_to_speedscope(folded, spec.name))
                 )
-                (out / "pyinstrument.speedscope.json").write_text(
+                (out / f"{spec.slug}.pyinstrument.speedscope.json").write_text(
                     pyi.to_speedscope(session_profiler)
                 )
                 typer.echo(f"wrote speedscope JSON to {out}/")
@@ -205,8 +212,8 @@ def load(
         try:
             out = Path(out_dir)
             out.mkdir(parents=True, exist_ok=True)
-            pyspy_out = str(out / "pyspy.speedscope.json")
-            austin_out = str(out / "austin.speedscope.json")
+            pyspy_out = str(out / f"{case}.pyspy.speedscope.json")
+            austin_out = str(out / f"{case}.austin.speedscope.json")
 
             await locust_warm(
                 host=f"http://127.0.0.1:{worker.port}",

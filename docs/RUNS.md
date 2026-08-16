@@ -1,5 +1,56 @@
 # Recorded runs
 
+## 2026-08-15 — the family-split sweep (methodology break + first recorded numbers after it)
+
+Branch **`bench/2026-08-15-family-split`** (commit `728e93e`, runs taken at `e4402d1`
+— the full PR #19–#24 stack). Correction 14 (see METHODOLOGY.md) split every `rowform`
+row into an equal-work `rowform` (unprepared statement, the same per-row payload pass
+the ORM rows pay) and a `rowform (idiomatic)` row (prepared once, dataclasses straight
+to orjson), retired the cross-mapper mock ratios, and made the mock rowform arm
+exercise the cache-key path it claimed to. **No run recorded before this date is
+comparable to one recorded after it.**
+
+```bash
+for shape in flat join wide; do
+  just bench micro run --shape "$shape" \
+    --iterations 1500 --warmup 200 --trials 3 --isolate --record
+done
+just bench db up
+for shape in flat join wide; do
+  just bench micro run --shape "$shape" --backend postgres \
+    --iterations 1500 --warmup 200 --trials 3 --isolate --record \
+    --pg-dsn "$(just bench db dsn)"
+done
+just bench db down
+for shape in flat join; do
+  just bench micro run --shape "$shape" --backend mock \
+    --iterations 1500 --warmup 200 --trials 3 --isolate --record
+done
+uv run python scripts/publish_tables.py benchmarks/results/runs/2026-08-15T11-*/run.json
+```
+
+200,000 rows, 1000 per read, 1500 iterations after 200 warmup, 3 trials, one contender
+per process, gc off, `--pin auto` (two whole physical cores on a 16-thread box),
+postgres 16 in an ephemeral container on the same host. Worst trial-to-trial spread:
+**10.7% sqlite / 6.2% postgres / 4.1% mock** — the tightest recorded so far.
+`quotable=False` on the usual single clause (cpu boost needs root to disable); one
+thermal-throttle event landed during flat/sqlite and was flagged by the new detector.
+
+**What it showed.** At equal work, SQLAlchemy Core (positional) is *ordered ahead* of
+rowform: 0.89x on flat/join (sqlite), 0.92x flat / 0.75x join (postgres), ~tie on wide
+— the margin the pre-split tables published was the measurement asymmetry. The
+idiomatic row runs 0.73–0.94x of equal-work rowform and lands at parity with Core.
+Against the ORM: 1.9–2.6x (sqlite), 2.7–4.9x (postgres). The equivalence gate's
+cross-driver check reproduced exactly: wide's payload hashes `60c3f426…` (194,647
+bytes) on both sqlite and postgres, both families. Two follow-ups worth cells of their
+own: the join/postgres equal-work gap (0.75x) bundles the unprepared cache key with the
+two-entity getattr pass and should be decomposed, and the same-plumbing floor came out
+*below* the raw-asyncpg floor (0.3642 vs 0.4148 ms — SQLAlchemy's checkout beat
+asyncpg's pool), which contradicts the intuition the floor pair was built on.
+
+The rendered tables are in METHODOLOGY.md's Results section and README.md, generated
+by `scripts/publish_tables.py` from these artifacts.
+
 ## 2026-08-02 — transactions equalised, pools equalised, and a harness bug that invalidates every run above
 
 Branch `type-the-rest-of-the-read-path`, **not recorded to a `bench/` branch**: these
