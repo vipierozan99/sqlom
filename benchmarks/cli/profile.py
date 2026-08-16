@@ -210,7 +210,8 @@ def load(
             load_task = asyncio.ensure_future(
                 locust_run(
                     host=f"http://127.0.0.1:{worker.port}",
-                    locustfile=load_case.file,
+                    locustfile=load_registry.locustfile(),
+                    route=load_case.route,
                     users=concurrency,
                     duration=duration + 2,
                     limit=limit,

@@ -1,6 +1,6 @@
-"""`CaseUser`, the shared locust base every file under `benchmarks/loadtests/`
-subclasses, plus `run()`, which drives one such file via the `locust` CLI and
-parses its CSV summary.
+"""`CaseUser`, the locust user the single case locustfile
+(`load/locustfile.py`) subclasses, plus `run()`, which drives it via the
+`locust` CLI and parses its CSV summary.
 
 Design choices:
 
@@ -16,10 +16,10 @@ Design choices:
   lives, `cli/load.py`). HTTP-level failures are still counted and fail the
   level.
 
-Each case file sets its own `path` class attribute (the route to hit) and is
-loaded via `locust -f <that file's path>` — no `LOCUST_PATH` env var
-indirection for *which* route, since that's now a property of the file
-itself, not a runtime parameter — each contender is a locust file.
+The one concrete subclass lives in `load/locustfile.py`; which route it hits
+arrives via `LOCUST_ROUTE` (see `run(route=...)`), the same env channel
+`LOCUST_LIMIT`/`LOCUST_EXPECT` use — case identity lives in the service app's
+route table, not in per-case locustfiles.
 """
 
 from __future__ import annotations
@@ -39,12 +39,12 @@ LIMIT = int(os.environ.get("LOCUST_LIMIT", "1000"))
 
 
 class CaseUser(FastHttpUser):
-    """Base class for every `benchmarks/loadtests/*.py` file — each
+    """Base class for the case locustfile (`load/locustfile.py`), which
     subclasses this and sets `path`.
 
     `abstract = True` is load-bearing, not decorative: without it, locust
     auto-spawns every concrete `User` subclass it finds in a locustfile,
-    *including this base class itself* once a case file imports it — so a
+    *including this base class itself* once the case file imports it — so a
     run against e.g. `sqlite-flat-rowform` would actually split its requested
     concurrency between the real route and this class's default `/noop`
     path, roughly in half, silently. `abstract = True` tells locust this
@@ -118,12 +118,14 @@ def _ms(value: str) -> float:
 
 
 async def run(
-    *, host: str, locustfile: str, users: int, duration: float, expect_bytes: int = 0,
-    limit: int = 1000, warmup: float = 5.0, on_spawn: Callable[[int], None] | None = None,
+    *, host: str, locustfile: str, users: int, duration: float, route: str | None = None,
+    expect_bytes: int = 0, limit: int = 1000, warmup: float = 5.0,
+    on_spawn: Callable[[int], None] | None = None,
 ) -> LocustResult:
     """Drive `locustfile` (a `CaseUser` subclass) against `host` for
     `duration` seconds at `users` concurrent users, headless — parses the CSV
-    summary the same way `bench_locust.sh` did.
+    summary the same way `bench_locust.sh` did. `route`, if given, is exported
+    as `LOCUST_ROUTE` for `load/locustfile.py` to hit.
 
     Failed requests are returned in `LocustResult.failures`, not raised:
     locust exits non-zero whenever any request failed but still writes full
@@ -144,6 +146,8 @@ async def run(
     with tempfile.TemporaryDirectory(prefix="rowform-bench-locust-") as tmpdir:
         prefix = str(Path(tmpdir) / "run")
         env = {**os.environ, "LOCUST_EXPECT": str(expect_bytes), "LOCUST_LIMIT": str(limit)}
+        if route is not None:
+            env["LOCUST_ROUTE"] = route
         cmd = [
             "locust", "-f", locustfile, "--headless", "--host", host,
             "-u", str(users), "-r", str(users), "-t", f"{duration:.0f}s",
