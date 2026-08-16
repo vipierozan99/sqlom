@@ -1628,14 +1628,17 @@ async def pg_join_raw_asyncpg(init: ContenderInit) -> tuple[Target, Teardown]:
     "abstraction floor at arity two.",
 )
 async def pg_join_sa_plumbing_dict(init: ContenderInit) -> tuple[Target, Teardown]:
-    """See the flat twin for why this floor exists alongside the hand-rolled one."""
+    """See the flat twin for why this floor exists alongside the hand-rolled one,
+    including why the transaction is opened on the driver connection rather than
+    with `sa_conn.begin()` — this floor was written with the latter and inherited
+    correction 15's bug (a floor sending no `BEGIN`) before it was ever recorded."""
     sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
     sql, params = _compiled(join_stmt(init.limit), _PG_DIALECT)
 
     async def target() -> bytes:
         async with sa_engine.connect() as sa_conn:
             driver_conn: Any = (await sa_conn.get_raw_connection()).driver_connection
-            async with sa_conn.begin():
+            async with driver_conn.transaction():
                 rows = await driver_conn.fetch(sql, *params)
         return dumps(_join(rows))
 
