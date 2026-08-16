@@ -28,7 +28,15 @@ def _loadtest_cases() -> dict[str, str]:
                 isinstance(target, ast.Name) and target.id == "CASE" for target in node.targets
             ):
                 assert isinstance(node.value, ast.Constant)
-                cases[node.value.value] = path.stem
+                slug = node.value.value
+                # `load/registry.py`'s discover() raises on a duplicate slug, so a
+                # dupe kills every `bench load` run — mirror that here or the scan
+                # keeps only one of the two modules and stays green.
+                assert slug not in cases, (
+                    f"loadtest CASE slug {slug!r} is declared by both "
+                    f"{cases[slug]}.py and {path.stem}.py"
+                )
+                cases[slug] = path.stem
     return cases
 
 
@@ -79,9 +87,7 @@ def test_every_load_case_has_a_service_route():
 
 def test_loadtest_filename_matches_its_case():
     mismatched = {
-        slug: stem
-        for slug, stem in _loadtest_cases().items()
-        if stem != slug.replace("-", "_")
+        slug: stem for slug, stem in _loadtest_cases().items() if stem != slug.replace("-", "_")
     }
     assert not mismatched, (
         f"loadtest filename disagrees with its CASE slug (this drift is how "
