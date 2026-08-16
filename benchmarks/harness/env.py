@@ -19,6 +19,9 @@ from benchmarks.harness.affinity import cpu_topology
 _PACKAGES = (
     "rowform", "sqlalchemy", "asyncpg", "psycopg", "orjson", "fastapi",
     "uvicorn", "uvloop", "aiosqlite", "locust", "httptools",
+    # gevent's monkey-patch invalidated every early recorded run (correction 13
+    # in docs/METHODOLOGY.md) — its presence belongs in the artifact.
+    "gevent", "greenlet",
 )
 
 
@@ -54,9 +57,13 @@ def _frequencies_mhz() -> list[float]:
 
 
 def _boost_enabled() -> bool | None:
+    # intel_pstate active mode — the most common desktop/laptop driver — exposes
+    # no cpufreq/boost; its equivalent is the inverted no_turbo flag.
+    text = _read("/sys/devices/system/cpu/intel_pstate/no_turbo")
+    if text is not None:
+        return text == "0"
     # Generic (acpi-cpufreq, intel_pstate passive mode) location. Returns None
-    # — "unknown", not "off" — rather than guessing on unsupported drivers
-    # (e.g. intel_pstate active mode, which exposes no such file).
+    # — "unknown", not "off" — rather than guessing on unsupported drivers.
     text = _read("/sys/devices/system/cpu/cpufreq/boost")
     return text == "1" if text is not None else None
 
@@ -121,6 +128,10 @@ def capture() -> dict:
     topology = cpu_topology()
     threads = sum(len(cpus) for cpus in topology.values())
     gil_enabled = getattr(sys, "_is_gil_enabled", lambda: True)()
+    # Read out of sys.modules rather than imported, so checking for the patch
+    # can never cause it (same trick as timing.assert_unpatched_threading).
+    monkey = sys.modules.get("gevent.monkey")
+    gevent_patched = bool(monkey is not None and monkey.is_module_patched("threading"))
 
     return {
         "host": platform.node(),
@@ -142,6 +153,7 @@ def capture() -> dict:
             "version": platform.python_version(),
             "impl": platform.python_implementation().lower(),
             "gil_disabled": not gil_enabled,
+            "gevent_monkey_patched": gevent_patched,
         },
         "packages": _package_versions(),
         "git": _git_info(),
@@ -170,8 +182,19 @@ def merge_start_end(start: dict, end: dict) -> dict:
 def warnings_for(env: dict) -> list[str]:
     """Audit failures worth surfacing."""
     warnings = []
-    if env["cpu"].get("boost"):
+    boost = env["cpu"].get("boost")
+    if boost:
         warnings.append("cpu boost enabled — a live noise source")
+    elif boost is None:
+        # Unknown must not pass the gate: on drivers this capture can't read,
+        # boost is usually *on*, and silently treating None as "off" is how
+        # turbo-on runs used to record quotable=True.
+        warnings.append("cpu boost state unknown — could not read boost/no_turbo from sysfs")
+    if env["python"].get("gevent_monkey_patched"):
+        warnings.append("gevent monkey-patch active — timings are not comparable to unpatched runs")
+    throttle_delta = env["cpu"].get("throttle_count_delta")
+    if throttle_delta:
+        warnings.append(f"{throttle_delta} thermal-throttle events during the run")
     git = env.get("git") or {}
     if git.get("dirty"):
         warnings.append("git tree is dirty — this run's code may not match any commit")

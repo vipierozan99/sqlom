@@ -152,7 +152,11 @@ def run(
         "off", help="'on', 'off', or 'both'"
     ),
     pin: str | None = typer.Option(
-        "6,7,8,9", "--pin", help="comma-separated logical CPUs to pin this process to"
+        "auto",
+        "--pin",
+        help="comma-separated logical CPUs to pin this process to, 'auto' (two "
+        "whole physical cores picked from this machine's own topology), or '' "
+        "to disable pinning",
     ),
     trials: int = typer.Option(
         1, help="repeat the whole measurement N times — what spread_pct and the "
@@ -182,7 +186,17 @@ def run(
     if trials < 1:
         raise typer.BadParameter("--trials must be at least 1")
     assert_unpatched_threading()
-    pin_cpus = [int(c) for c in pin.split(",")] if pin else []
+    if pin == "auto":
+        # Derived from the machine's own topology rather than hardcoded indices
+        # — a fixed default like the old "6,7,8,9" crashes on boxes with fewer
+        # CPUs and silently lands on SMT siblings of one physical core on
+        # others (the exact finding harness/affinity.py exists to prevent).
+        auto_plan = affinity.plan({"bench": 2})
+        pin_cpus = auto_plan.roles["bench"]
+        for warning in auto_plan.warnings:
+            typer.echo(f"  ! {warning}")
+    else:
+        pin_cpus = [int(c) for c in pin.split(",")] if pin else []
     asyncio.run(
         _run(
             shape, rows, limit, iterations, warmup, only, backend, gc_modes,
@@ -400,6 +414,11 @@ async def _run(
         by_backend.setdefault(spec.backend, []).append(spec)
 
     started_at = datetime.now(UTC).isoformat()
+    # Captured before any measurement so the recorded loadavg/frequencies
+    # describe the machine the run *started* on, not the machine the run
+    # itself just loaded; merged with an end snapshot at record time so
+    # mid-run drift (throttling, frequency sag) is visible in the artifact.
+    env_snapshot_start = env_module.capture()
     recorded_backend: str | None = None
     recorded_eq: equivalence.EquivalenceResult | None = None
     cells: list[result.Cell] = []
@@ -525,19 +544,19 @@ async def _run(
     if not record:
         return None
 
-    env_start = env_module.capture()
+    env_merged = env_module.merge_start_end(env_snapshot_start, env_module.capture())
     run_obj = result.Run(
         run_id=result.make_run_id(
             f"micro-{shape}",
-            env_start["git"]["sha"],
+            env_merged["git"]["sha"],
             datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ"),
         ),
         suite=f"micro-{shape}",
         started_at=started_at,
         finished_at=datetime.now(UTC).isoformat(),
         invocation={"argv": sys.argv},
-        git=env_start["git"],
-        env=env_start,
+        git=env_merged["git"],
+        env=env_merged,
         plan={
             "isolation": "one_contender_per_process" if isolate else "combined",
             "bottleneck": "cpu",
@@ -565,7 +584,7 @@ async def _run(
         },
         cells=cells,
         ratios=_ratios_for(cells),
-        warnings=env_module.warnings_for(env_start),
+        warnings=env_module.warnings_for(env_merged),
     )
     path = result.write(run_obj, RESULTS_DIR)
     typer.echo(f"\nrecorded: {path}  (quotable={run_obj.quotable})")
