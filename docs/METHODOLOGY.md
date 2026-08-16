@@ -186,7 +186,7 @@ objects over hand-written dicts.
 
 ### Reading the floors
 
-**There are three (five on postgres `flat`), because "floor" was answering two
+**There are three (four on postgres `flat`), because "floor" was answering two
 questions at once and the reader could not tell which — and then two of them disagreed
 about the pool, which turned out to be a bug in one of them.**
 
@@ -260,7 +260,7 @@ for byte before any timing starts. The `wide` shape produces **sha256=60c3f426�
 both sqlite and postgres** — the same 194,647 bytes from two drivers that disagree
 about how to store almost every column in it, reproduced unchanged by the 2026-08-16
 sweep across both contender families. The postgres `flat` cell is the one worth naming
-here: **all five floors and all eight contenders emit the same 77,535 bytes**, so the
+here: **all 13 rows — 4 floors and 9 contenders — emit the same 77,535 bytes**, so the
 pool ladder above is comparing paths to an identical payload. Byte equality is not
 enough on its own, though — it is exactly what let a floor skip `BEGIN`/`COMMIT` for
 three sweeps (correction 15). That is the strongest available evidence that

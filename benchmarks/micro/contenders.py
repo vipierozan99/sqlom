@@ -1474,16 +1474,17 @@ async def pg_flat_no_pool(init: ContenderInit) -> tuple[Target, Teardown]:
     payload) without attributing it — each pooled floor still differs by more
     than its pool, in opposite directions:
 
-    - `pg_flat_sa_plumbing_dict` also builds a SQLAlchemy `Connection`, awaits
-      `get_raw_connection()`, and opens `RootTransaction` per request instead of
-      calling `conn.transaction()` here, so its distance is an *upper* bound on
-      SQLAlchemy's checkout.
+    - `pg_flat_sa_plumbing_dict` also builds a SQLAlchemy `Connection` and awaits
+      `get_raw_connection()` per request, so its distance is an *upper* bound on
+      SQLAlchemy's checkout rather than the checkout alone. (It matches this
+      floor's transaction spelling now; that it did not was correction 15.)
     - `pg_flat_raw_asyncpg` pays `asyncpg.Pool.release()` -> `Connection.reset()`,
       a `RESET ALL`-family server round trip per request that neither this floor
-      nor SQLAlchemy's pool makes, so its distance is not pool overhead alone.
+      nor SQLAlchemy's pool makes, so its distance is not pool overhead alone —
+      `pg_flat_raw_asyncpg_no_reset` above splits it into machinery and that
+      round trip.
 
-    See METHODOLOGY.md's "Reading the floors"; the rung that would split
-    asyncpg's number (a pooled floor with `reset` disabled) is not written yet."""
+    See METHODOLOGY.md's "Reading the floors" for what the assembled ladder says."""
     import asyncpg
 
     conn = await asyncpg.connect(init.handle)
