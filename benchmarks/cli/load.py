@@ -359,6 +359,11 @@ def run(
         # `locust.warm()` rejects it too, but only once the backend is
         # provisioned and the workers are up.
         raise typer.BadParameter("--warmup must be 0 (skip) or >= 1 (locust -t resolution)")
+    if duration < 1:
+        # Unlike --warmup nothing downstream catches this: `_cmd` formats
+        # `-t {seconds:.0f}s`, so --duration 0.5 becomes `-t 0s` and the level
+        # measures whatever locust does with a zero deadline, silently.
+        raise typer.BadParameter("--duration must be >= 1 (locust -t resolution)")
     parsed_levels = sorted(int(c) for c in levels.split(","))
 
     all_cases = load_registry.discover()
