@@ -274,3 +274,35 @@ class TestScopeOptions:
                     bind=conn.sa_connection, isolation_level="SERIALIZABLE"
                 ):
                     pass
+
+
+class TestSqliteBeginCost:
+    """pysqlite needs a literal `BEGIN` for savepoints to work at all
+    (`SqliteDriver.configure`), and *how* it is sent is a measured cost rather
+    than a detail: through SQLAlchemy's cursor adapter it is three round trips to
+    aiosqlite's worker thread — `cursor()`, `execute()`, `close()` — and on the
+    driver connection it is one. Worth 0.10 ms per scope, per request rather than
+    per row, which is most of a small read (docs/RUNS.md).
+
+    Asserted here because nothing else would notice it coming back: the cheaper
+    spelling and the expensive one are behaviourally identical, and every test
+    above this one passes either way.
+    """
+
+    async def test_begin_costs_one_driver_round_trip(self, sqlite_engine, monkeypatch):
+        import aiosqlite
+
+        hops: list[str] = []
+        original = aiosqlite.Connection._execute
+
+        async def record(self, fn, *args, **kwargs):
+            sql = next((a for a in args if isinstance(a, str)), "")
+            hops.append(f"{getattr(fn, '__name__', '?')} {sql}".strip())
+            return await original(self, fn, *args, **kwargs)
+
+        monkeypatch.setattr(aiosqlite.Connection, "_execute", record)
+        async with sqlite_engine.begin() as conn:
+            await conn.fetch_all(sa.select(Author))
+
+        select = next(i for i, hop in enumerate(hops) if "SELECT" in hop)
+        assert hops[:select] == ["execute BEGIN"], hops

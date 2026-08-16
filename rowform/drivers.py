@@ -29,6 +29,7 @@ from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy import event
+from sqlalchemy.util import await_only
 
 from .errors import ConfigurationError, UnsupportedError
 from .query import CoreQuery
@@ -172,7 +173,19 @@ class SqliteDriver(Driver):
 
         @event.listens_for(sync, "begin")
         def _explicit_begin(conn: Any) -> None:
-            conn.exec_driver_sql("BEGIN")
+            # One hop to aiosqlite's worker thread, not three.
+            # `conn.exec_driver_sql("BEGIN")` goes through SQLAlchemy's cursor
+            # adapter, and each of `cursor()`, `execute()` and `close()` is its
+            # own round trip to that thread; the driver's own `execute` makes the
+            # cursor inside the same hop. The cursor is left unclosed for the
+            # reason `fetch` leaves its own unclosed. Worth 0.10 ms per scope,
+            # which is per *request*, not per row (docs/RUNS.md).
+            #
+            # `await_only` is SQLAlchemy's own way to await a driver coroutine
+            # from a sync event handler, and is safe here because rowform is
+            # async-only: this always runs inside the greenlet `AsyncEngine`
+            # spawns, never on a bare sync engine.
+            await_only(conn.connection.driver_connection.execute("BEGIN"))
 
     async def on_cancelled(self, conn: Any) -> None:
         """Abort the abandoned statement rather than leaving it to run.
