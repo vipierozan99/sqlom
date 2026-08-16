@@ -10,26 +10,31 @@ report until you have tried to break it.**
 
 ## Results
 
-Taken 2026-08-16 at `122e035` (artifacts on the `bench/2026-08-16-boost-off-floors`
-branch, indexed in [RUNS.md](RUNS.md)) — **the first sweep that reports
-`quotable=True`**, and the first taken after correction 15 fixed a floor that was
-sending no transaction at all. sqlite is an ephemeral 200,000-row database; postgres 16
-is an ephemeral docker container on the same box. 1000 rows per read, 1500 timed
-iterations after 200 warmup, **3 trials, one contender per process**, GC off, pinned to
-two whole physical cores (`--pin auto`), **cpu boost disabled**, and **every contender
-reads inside `BEGIN`…`COMMIT`** — except `rowform (no transaction)`, which is registered
-without one precisely so the cost of the guarantee is visible as a row rather than
-folded into the others.
+**Two shas, one per table, and the reason is stated rather than smoothed.** The sqlite
+and mock tables were taken at `122e035`; the postgres table at `033812a`, which adds the
+postgres `join` floors and nothing that touches sqlite. Both are `quotable=True`, taken
+the same day on the same box under the same recipe, with artifacts on
+`bench/2026-08-16-boost-off-floors` and `bench/2026-08-16-pg-join-floors`, indexed in
+[RUNS.md](RUNS.md). Only the postgres table was re-recorded because only postgres
+contenders changed; re-recording sqlite would have replaced good numbers with the
+dispersion described below, which is the opposite of the point.
 
-Absolute times are roughly 1.9x the previous sweep's and are *not* comparable to it:
-with turbo off the cores sit at base clock. Ratios are the comparable quantity, and the
-point of paying that price is that these are the first numbers nothing in the gate
+sqlite is an ephemeral 200,000-row database; postgres 16 is an ephemeral docker container
+on the same box. 1000 rows per read, 1500 timed iterations after 200 warmup, **3 trials,
+one contender per process**, GC off, pinned to two whole physical cores (`--pin auto`),
+**cpu boost disabled**, and **every contender reads inside `BEGIN`…`COMMIT`** — except
+`rowform (no transaction)`, which is registered without one precisely so the cost of the
+guarantee is visible as a row rather than folded into the others.
+
+Absolute times are roughly 1.9x the pre-2026-08-16 sweeps' and are *not* comparable to
+them: with turbo off the cores sit at base clock. Ratios are the comparable quantity, and
+the point of paying that price is that these are the first numbers nothing in the gate
 disputes.
 
 ```bash
-# Boost off, or the gate refuses to call the run quotable. intel_pstate exposes
-# no_turbo (inverted); other drivers use cpufreq/boost. Needs root; put it back after.
-sudo sh -c 'echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo'
+# Boost off, or the gate refuses to call the run quotable. The only step needing
+# root, which is why it is its own script and not part of the sweep; `on` restores.
+sudo scripts/bench_cpu_boost.sh off
 just bench env check          # must print "no warnings"
 
 for shape in flat join wide; do
@@ -47,29 +52,45 @@ for shape in flat join wide; do
     --pg-dsn "$(just bench db dsn)"
 done
 just bench db down
-sudo sh -c 'echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo'
+sudo scripts/bench_cpu_boost.sh on
 ```
+
+**The governor is left at whatever the box normally uses** (`powersave` here), and
+that is deliberate: with turbo off this machine's busy core already sits at
+`base_frequency`, 1.9 GHz — the sweep below recorded 1874–1894 MHz on its pinned
+cores — so pinning `performance` would mostly raise the *idle* floor during the awaits
+inside the timed region rather than change the speed the work runs at. Boost is the one
+knob that demonstrably moves these numbers, so it is the one the recipe touches.
 
 Medians of the per-trial medians, in milliseconds, lower is better. Ratios come from
 `stats.ratio_with_spread`, so `~` marks a pair the trials do not actually order —
 either the worst-case interval spans 1.0 or the medians are within 5%. Worst
-trial-to-trial spread anywhere below: **4.2%** (sqlite), 5.4% (postgres), 4.2% (mock).
+trial-to-trial spread in the published cells: **4.2%** (sqlite), 3.0% across the postgres
+floors and rowform rows, 4.2% (mock). Two postgres rows are worse and say so in place:
+`Core (.mappings())` at 20.3% and `execute().all()` at 10.3%, neither of which any claim
+here rests on.
 
-> **These runs report `quotable=True` — the first that do.** Clean tree, boost off,
-> equivalence enforced and self-consistent (child processes hash-verified), one
-> contender per process, no thermal-throttle events. Two things to keep in view anyway.
-> The postgres/`flat` shape was **run twice**: the first recording put 9.9% trial spread
-> on `rowform (idiomatic)` (trials `1.2367/1.1237/1.1449` — one trial 8% high, the
-> dispersion signature of interference), so the shape was re-run at the same sha and the
-> table below takes the re-run. The two runs are kept side by side on the bench branch
-> rather than one discarded, because **they agree within 1.6% on every row**, which is
-> better evidence than either one's spread figure. And with boost off the spreads went
-> *up*, not down (4-5% against 2-3%): each iteration now takes ~1.9x as long, so a run
-> presents a wider window to the rest of the desktop. Second decimals are still weather.
+> **Every gate passes on both sweeps.** Clean tree, boost off *and verified still off at
+> the end of each run*, equivalence enforced and self-consistent (child processes
+> hash-verified), one contender per process, no thermal-throttle events.
+>
+> **This box does not reproduce sqlite `join` and `wide` reliably, and that is why there
+> are two shas.** A boost-off sweep taken at `033812a` reproduced every postgres cell
+> and sqlite/`flat` to within ~0.1% of the numbers above, then put the sqlite `join` and
+> `wide` floors 16–37% high with 15–32% trial spread — in one case a floor above the
+> contender it bounds, which is correction 10's failure. The pattern is a first trial
+> matching the published value and later trials 20% slower, so it is dispersion within a
+> run rather than a different measurement. Boost was off at both endpoints, load average
+> was the benchmark alone, no throttle events, package temperature 44 °C, and the cause
+> is **not diagnosed** — `tuned` re-enabling boost was ruled out as the explanation (it
+> does set `boost=1`, which the end-of-run check now catches, but stopping it did not
+> change the dispersion). Published here is the sweep each table reproduces; the
+> instability is recorded as open in [RUNS.md](RUNS.md) rather than presented as noise
+> that happens to have gone away.
 
 > **The headline, after correction 14 and the decomposition rungs.** At equal work,
 > the compiled hydrator does not beat SQLAlchemy Core's result layer: Core positional
-> is 0.83–0.94x across the ordered cells, `~0.96x`/`~0.98x` (ties) on `wide` — and the
+> is 0.83–0.94x across the ordered cells, `~0.96x`/`~1.00x` (ties) on `wide` — and the
 > comparison deliberately gives Core the *cheaper* payload builder. The decomposition
 > rows say where rowform's idiomatic margin actually lives: `rowform (prepared)` ties
 > equal-work `rowform` in all four cells that have one (~0.99–1.00x), so **the
@@ -77,10 +98,10 @@ trial-to-trial spread anywhere below: **4.2%** (sqlite), 5.4% (postgres), 4.2% (
 > a performance lever**; across those four the entire idiomatic delta (0.79–0.91x, or
 > 0.21–0.59 ms per read) is the serialization path — dataclasses straight into orjson's
 > C serializer instead of a per-row Python dict pass. `wide` has no prepared rung, so
-> its 0.87–0.92x is assumed to split the same way rather than shown to. The idiomatic
+> its 0.89–0.92x is assumed to split the same way rather than shown to. The idiomatic
 > row lands at or near parity with Core positional while returning typed dataclasses
-> where Core returns tuples. Against the ORM, equal-work rowform is **2.1–5.0x** faster
-> and the idiomatic spelling **2.2–6.0x**.
+> where Core returns tuples. Against the ORM, equal-work rowform is **2.0–5.4x** faster
+> and the idiomatic spelling **2.2–6.4x**.
 
 Runs land in `benchmarks/results/runs/`, which is gitignored on main; chosen ones are
 committed to a dated `bench/` branch by hand and indexed in [RUNS.md](RUNS.md).
@@ -107,19 +128,19 @@ committed to a dated `bench/` branch by hand and indexed in [RUNS.md](RUNS.md).
 
 | contender | flat | join | wide | | flat | join | wide |
 |---|---|---|---|---|---|---|---|
-| one dedicated connection → dicts *(floor: no pool)* | 0.8681 | — | — | | 0.64x | — | — |
-| raw driver + pool, `reset` off → dicts *(floor: prices asyncpg's reset)* | 0.9302 | — | — | | 0.68x | — | — |
-| raw driver → dicts *(floor: no SQLAlchemy)* | 1.0093 | — | — | | 0.74x | — | — |
-| same pool + transaction → dicts *(floor: same plumbing)* | 1.0605 | — | — | | 0.78x | — | — |
-| **rowform** `fetch_all()` *(equal work)* | **1.3605** | **2.6546** | **4.3562** | | **1.00x** | **1.00x** | **1.00x** |
-| rowform *(prepared, equal payload — prices the cache key)* | 1.3610 | 2.6393 | — | | ~1.00x | ~0.99x | — |
-| rowform *(idiomatic: prepared once, direct to orjson)* | 1.1379 | 2.1103 | 3.7970 | | 0.84x | 0.79x | 0.87x |
-| rowform `fetch_all()` off the engine *(no transaction)* | 1.3113 | — | — | | ~0.96x | — | — |
-| rowform `execute().scalars()` | 1.3830 | — | 4.4328 | | ~1.02x | — | ~1.02x |
-| rowform `execute().all()` | 1.6069 | 2.8801 | — | | 1.18x | 1.08x | — |
-| SQLAlchemy Core (positional) | 1.2829 | 2.1955 | 4.2731 | | 0.94x | 0.83x | ~0.98x |
-| SQLAlchemy Core (`.mappings()`) | 3.5169 | — | — | | 2.59x | — | — |
-| SQLAlchemy ORM | 6.8351 | 11.6024 | 12.0114 | | 5.02x | 4.37x | 2.76x |
+| one dedicated connection → dicts *(floor: no pool)* | 0.8690 | — | — | | 0.64x | — | — |
+| raw driver + pool, `reset` off → dicts *(floor: prices asyncpg's reset)* | 0.9296 | — | — | | 0.68x | — | — |
+| raw driver → dicts *(floor: no SQLAlchemy)* | 1.0008 | 1.9468 | — | | 0.73x | 0.74x | — |
+| same pool + transaction → dicts *(floor: same plumbing)* | 1.0360 | 1.9520 | — | | 0.76x | 0.74x | — |
+| **rowform** `fetch_all()` *(equal work)* | **1.3637** | **2.6411** | **5.1598** | | **1.00x** | **1.00x** | **1.00x** |
+| rowform *(prepared, equal payload — prices the cache key)* | 1.3521 | 2.6274 | — | | ~0.99x | ~0.99x | — |
+| rowform *(idiomatic: prepared once, direct to orjson)* | 1.1397 | 2.0892 | 4.6134 | | 0.84x | 0.79x | 0.89x |
+| rowform `fetch_all()` off the engine *(no transaction)* | 1.3034 | — | — | | ~0.96x | — | — |
+| rowform `execute().scalars()` | 1.3926 | — | 5.1696 | | ~1.02x | — | ~1.00x |
+| rowform `execute().all()` | 1.6189 | 2.8658 | — | | 1.19x | 1.09x | — |
+| SQLAlchemy Core (positional) | 1.2816 | 2.1796 | 5.1655 | | 0.94x | 0.83x | ~1.00x |
+| SQLAlchemy Core (`.mappings()`) | 3.5055 | — | — | | 2.57x | — | — |
+| SQLAlchemy ORM | 7.3421 | 12.0354 | 12.5414 | | 5.38x | 4.56x | 2.43x |
 
 **The previous sweep's oddity was a bug in a floor, not a finding about pools.** The
 same-plumbing floor sat *below* the raw-asyncpg floor because it was sending no
@@ -128,8 +149,8 @@ emits `BEGIN` lazily with the first statement it routes itself — but that floo
 deliberately awaits the driver connection directly, so the read went out as a bare
 `SELECT` in autocommit while every contender it bounds sent `BEGIN`/`SELECT`/`COMMIT`.
 Two round trips light. Correction 15 has the audit; the floor now opens the transaction
-on the driver connection, and the ordering anomaly is gone (0.9932 → 1.0605, above the
-raw floor rather than below it).
+on the driver connection, and the ordering anomaly is gone (1.0008 → 1.0360, above the
+raw floor rather than below it, and the same way round on `join`).
 
 With that fixed and `asyncpg.Pool`'s release-time reset priced as its own rung, the
 ladder reads cleanly for the first time — each step one variable, all four floors
@@ -137,19 +158,21 @@ sending identical SQL and identical payloads:
 
 | step | ms | over `no pool` | of a 1000-row read |
 |---|---|---|---|
-| one dedicated connection, no pool | 0.8681 | — | — |
-| + `asyncpg.Pool` acquire/release, `reset` off | 0.9302 | 0.0621 | 4.6% |
-| + its reset round trip (`asyncpg.Pool` as shipped) | 1.0093 | 0.1412 | 10.4% |
-| SQLAlchemy's pool instead | 1.0605 | 0.1924 | 14.1% |
+| one dedicated connection, no pool | 0.8690 | — | — |
+| + `asyncpg.Pool` acquire/release, `reset` off | 0.9296 | 0.0606 | 4.4% |
+| + its reset round trip (`asyncpg.Pool` as shipped) | 1.0008 | 0.1317 | 9.7% |
+| SQLAlchemy's pool instead | 1.0360 | 0.1670 | 12.2% |
 
-**This inverts what the previous sweep published.** Going through SQLAlchemy's pool
-costs **0.192 ms per request against a bare connection — 1.36x what `asyncpg.Pool` as
-shipped costs, and 3.1x what it costs with its reset disabled.** The earlier claim
+**This inverts what the 2026-08-15 sweep published.** Going through SQLAlchemy's pool
+costs **0.167 ms per request against a bare connection — 1.27x what `asyncpg.Pool` as
+shipped costs, and 2.8x what it costs with its reset disabled.** The earlier claim
 (SQLAlchemy's checkout ~0.008 ms, asyncpg's ~0.058 ms, SQLAlchemy ~7x cheaper) was
-entirely the missing `BEGIN`/`COMMIT`; it is withdrawn.
+entirely the missing `BEGIN`/`COMMIT`; it is withdrawn. Two independent boost-off sweeps
+agree on all four rungs to within ~1%, which is the strongest thing said about any
+number here.
 
 Two caveats on reading the table, both in the conservative direction for SQLAlchemy.
-Its 0.192 ms is the *pool path*, not the checkout alone — the floor also builds a
+Its 0.167 ms is the *pool path*, not the checkout alone — the floor also builds a
 `Connection` and awaits `get_raw_connection()` per request, so the checkout by itself is
 smaller. And asyncpg's reset is not waste: `SELECT pg_advisory_unlock_all(); CLOSE ALL;
 UNLISTEN *; RESET ALL;` buys session hygiene that SQLAlchemy's `reset_on_return='rollback'`
@@ -159,10 +182,22 @@ for work the other side skips, which is correction 8's mistake — hence the `re
 rung, which is the like-for-like comparison, and it is the one SQLAlchemy loses by most.
 
 Design consequence, and it is no longer "the pool is free": **riding SQLAlchemy's pool
-costs ~14% of a 1000-row read against no pool at all, and ~10% against the cheapest
+costs ~12% of a 1000-row read against no pool at all, and ~8% against the cheapest
 pooled alternative measured.** That buys the `bind=` case an engine owning its own pool
 cannot do at any price, and it is paid per checkout rather than per row — so it shrinks
 as reads get larger — but it is a real trade to state rather than a rounding error.
+
+**The `join` floors close an extrapolation, and it was the wrong size.** The join column
+carries this suite's largest ORM multiple, and until now had no postgres floor under it:
+"idiomatic runs ~13% above its floor" was carried over from sqlite. Measured, the
+same-plumbing floor is 1.9520 ms and `rowform (idiomatic)` is 2.0892 — **+7.0%, not
+~13%** (sqlite's own figure is +11.3%, so the borrowed number was closer to sqlite's than
+to postgres's, which is exactly the failure mode of borrowing it). Equal-work rowform is
++35.3% over the same floor and Core positional +11.7%. And the two `join` floors land
+0.3% apart (1.9468 hand-rolled against 1.9520 on SQLAlchemy's plumbing), against 3.5%
+apart on `flat` — at arity two the payload work grows while the per-request pool cost does
+not, so the plumbing matters proportionally less. That is the argument for instrumenting
+each shape instead of scaling one shape's floor.
 
 ### Row layer alone (`mock` backend, zero driver cost)
 
@@ -208,18 +243,25 @@ bottom of the ladder, so the distance from it to each pooled floor is what going
 that pool costs per request. *`reset` off* is the hand-rolled floor with
 `create_pool(reset=<no-op>)`, which removes `asyncpg.Pool`'s release-time
 `RESET ALL` round trip and nothing else, so asyncpg's cost splits into machinery
-(0.0621 ms) and that round trip (0.0791 ms) instead of arriving as one number compared
+(0.0606 ms) and that round trip (0.0712 ms) instead of arriving as one number compared
 against a pool that skips the hygiene entirely.
 
+Both `flat` and `join` carry the hand-rolled and same-plumbing pair on postgres now.
+`join` was the gap worth closing: it holds the largest ORM multiple in the suite and its
+floor claim was borrowed from sqlite, which turned out to be the wrong size (+11.3% there
+against +7.0% measured here).
+
 The distance from *no pool* to *on SQLAlchemy* is the answer to "what does SQLAlchemy's
-plumbing cost": **0.192 ms per request on postgres, ~14% of a 1000-row read**, and more
-than either asyncpg pooled path. On sqlite, where the pool is Python-only and reads open
-no wire transaction, the same-plumbing floor sits 0.110 ms over the hand-rolled one
-(~4% of the read). Earlier editions put the postgres gap at 0.21 ms, then at 0.3–0.4 ms
-attributed to the checkout alone, then — in the sweep before this one — at *negative*,
-which is what a floor missing two round trips looks like. The current answer is neither
-"expensive" nor "free": it is ~14% of a 1000-row read on postgres, paid per checkout, and
-it buys a capability rather than nothing.
+plumbing cost": **0.167 ms per request on postgres `flat`, ~12% of a 1000-row read**, and
+more than either asyncpg pooled path. It is not a constant to carry between shapes — on
+`join` the same-plumbing floor sits only 0.3% over the hand-rolled one, because the
+payload work grows with arity while the per-request pool cost does not. On sqlite, where
+the pool is Python-only and reads open no wire transaction, the same-plumbing floor sits
+0.110 ms over the hand-rolled one (~4% of the read). Earlier editions put the postgres
+gap at 0.21 ms, then at 0.3–0.4 ms attributed to the checkout alone, then — two sweeps
+ago — at *negative*, which is what a floor missing two round trips looks like. The
+current answer is neither "expensive" nor "free": ~12% of a 1000-row `flat` read, paid
+per checkout, buying a capability rather than nothing.
 
 **One caveat on the same-plumbing floor**: it hoists its compiled SQL and bound
 parameters out of the timed region, which rowform cannot — a `bindparam` is re-bound per
@@ -705,8 +747,8 @@ bounds — and it accounts for the whole of the recorded oddity. The same-plumbi
 came out below the raw-asyncpg floor because it skipped `BEGIN`/`COMMIT`, not because
 SQLAlchemy's checkout is cheap. With the transaction opened on the driver connection the
 ordering anomaly disappears and the sign of the headline flips: **SQLAlchemy's pool path
-costs 0.192 ms per request against a bare connection, 1.36x `asyncpg.Pool` as shipped
-and 3.1x it with `reset` disabled.** The 7x-cheaper claim is withdrawn.
+costs 0.167 ms per request against a bare connection, 1.27x `asyncpg.Pool` as shipped
+and 2.8x it with `reset` disabled.** The 7x-cheaper claim is withdrawn.
 
 **Why the equivalence gate could not catch it.** Both spellings return byte-identical
 payloads — that is what the gate compares. Transaction *spelling* is invisible to it,

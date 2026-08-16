@@ -109,6 +109,41 @@ def test_boost_unknown_does_not_silently_pass_the_gate():
     assert not any("boost" in w for w in env_module.warnings_for(_env(False)))
 
 
+def test_boost_flipping_back_on_mid_run_does_not_pass_the_gate():
+    """A run that starts with boost off and ends with it on is not quotable.
+
+    `tuned` re-enabled turbo between two shapes of the 2026-08-16 sweep. Boost
+    was sampled at run start only, so the affected runs recorded `boost=False`
+    and would have been quoted as boost-off measurements taken at boost-on
+    clocks. `merge_start_end` now keeps both endpoints.
+    """
+    flipped = _env(False)
+    flipped["cpu"]["boost_end"] = True
+    assert any("changed during the run" in w for w in env_module.warnings_for(flipped))
+
+    # Steady across both endpoints is silent, either way round.
+    for state in (False, True):
+        steady = _env(state)
+        steady["cpu"]["boost_end"] = state
+        assert not any("changed during the run" in w for w in env_module.warnings_for(steady))
+
+    # `bench env check` passes a single snapshot with no `boost_end` at all;
+    # absent must not read as "changed".
+    assert not any("changed during the run" in w for w in env_module.warnings_for(_env(False)))
+
+
+def test_merge_start_end_keeps_both_boost_endpoints():
+    def snap(boost, mhz, throttle):
+        return {
+            "cpu": {"boost": boost, "mhz": mhz, "throttle_count": throttle},
+            "loadavg": [0.0, 0.0, 0.0],
+        }
+
+    merged = env_module.merge_start_end(snap(False, [1900], 0), snap(True, [4800], 0))
+    assert merged["cpu"]["boost"] is False, "start value stays where consumers read it"
+    assert merged["cpu"]["boost_end"] is True
+
+
 def test_throttle_delta_and_gevent_patch_warn():
     env = _env(False)
     env["cpu"]["throttle_count_delta"] = 3

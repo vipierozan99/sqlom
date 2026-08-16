@@ -147,7 +147,7 @@ equal-work one — rowform's statement cache is that cheap), so in the four cell
 have a `prepared` rung the whole 9–21% is the serialization path, dataclasses straight
 into orjson's C serializer. `wide` has no such rung, so its 8% is assumed to split the
 same way rather than shown to. The postgres tables, the pool decomposition (going
-through SQLAlchemy's pool costs 0.192 ms/request against a bare connection — **more**
+through SQLAlchemy's pool costs 0.167 ms/request against a bare connection — **more**
 than `asyncpg.Pool`, correcting an earlier claim to the contrary), and the mock
 instrument that isolates the row layer alone are in
 [METHODOLOGY.md](docs/METHODOLOGY.md).
@@ -163,14 +163,17 @@ the smallest win, which is why it is in the table** — it is the shape full of
 `DateTime`/`Numeric`/`Enum`/`Uuid` columns, where type processors dominate and both
 sides run the same ones.
 
-> **These are the first runs that report `quotable=True`** — every gate passes:
-> boost off, clean tree, equivalence enforced and hash-verified per timed process, one
-> contender per process, no throttle events. Worst trial-to-trial spread is 4.2%
-> (sqlite) / 5.4% (postgres); the spreads are *wider* than the previous boost-on sweep
-> because each iteration now takes ~1.9x as long and so presents a wider window to the
-> rest of the desktop. Absolute times are not comparable to earlier tables for the same
-> reason — ratios are. Raw artifacts are on the `bench/2026-08-16-boost-off-floors`
-> branch, indexed in [RUNS.md](docs/RUNS.md).
+> **Every gate passes on these runs** — boost off and verified still off at the end of
+> each run, clean tree, equivalence enforced and hash-verified per timed process, one
+> contender per process, no throttle events. Worst trial-to-trial spread in this sqlite
+> table is **4.2%**; the postgres table in
+> [METHODOLOGY.md](docs/METHODOLOGY.md) comes from a second sweep and runs **3.0%** across
+> its floors and rowform rows, with two secondary rows worse (`Core (.mappings())` 20.3%,
+> `execute().all()` 10.3%) that no claim rests on. Absolute times are not comparable to
+> tables published before boost was disabled — ratios are. Raw artifacts are on
+> `bench/2026-08-16-boost-off-floors` (sqlite, mock) and
+> `bench/2026-08-16-pg-join-floors` (postgres), indexed in [RUNS.md](docs/RUNS.md), which
+> also records an **undiagnosed** dispersion problem in sqlite `join`/`wide` on this box.
 
 Full numbers, and a log of **fifteen published claims that turned out to be wrong** —
 the most recent being a floor in this very table that was opening no transaction at all:
@@ -403,9 +406,11 @@ Giving up rowform's own pool costs something, paid per *checkout* rather than pe
 per statement — with the connection in hand, executing on a SQLAlchemy-pooled connection
 costs what executing on rowform's own did. What it buys is the `bind=` case above, which
 an engine owning its own pool cannot do at any price. The suite prices it against a
-floor with no pool at all: **0.192 ms per request on postgres, ~14% of a 1000-row read**
-— more than `asyncpg.Pool` costs, and 3.1x what asyncpg's pool costs with its
-release-time reset disabled. On sqlite, where the pool is Python-only, it is 0.110 ms
+floor with no pool at all: **0.167 ms per request on postgres `flat`, ~12% of a 1000-row
+read** — more than `asyncpg.Pool` costs, and 2.8x what asyncpg's pool costs with its
+release-time reset disabled. It does not scale with the shape: on `join` the same pair is
+0.3% apart, because payload work grows with arity while per-request pool cost does not.
+On sqlite, where the pool is Python-only, it is 0.110 ms
 (~4%). That is a real trade for the `bind=` case rather than the rounding error an
 earlier revision of this file reported: the number here was ~0.01 ms until the
 same-plumbing floor was found to be sending no transaction at all (correction 15 in

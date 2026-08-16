@@ -1,5 +1,64 @@
 # Recorded runs
 
+## 2026-08-16 (later) — the postgres join floors, and an undiagnosed sqlite instability
+
+Branch **`bench/2026-08-16-pg-join-floors`** (runs taken at `033812a`). All eight runs
+`quotable=True`, and the first sweep taken with the end-of-run boost check in place:
+`boost` and `boost_end` are both `False` on every run, so turbo did not flip mid-sweep
+the way it did on the two attempts before this one.
+
+**Only the postgres table is published from this sweep.** The sqlite and mock tables stay
+at `122e035` (the entry below). METHODOLOGY's preamble carries both shas. Reason in the
+next section, and it is not a tidy one.
+
+### What the join floors say
+
+The join column carries the suite's largest ORM multiple and had no postgres floor under
+it; "idiomatic runs ~13% above its floor" was borrowed from sqlite. Measured:
+
+| postgres `join` | ms | vs same-plumbing floor |
+|---|---|---|
+| `floor: hand-rolled (dict)` | 1.9468 | — |
+| `floor: on SQLAlchemy (dict)` | 1.9520 | +0.3% over hand-rolled |
+| `rowform (idiomatic)` | 2.0892 | **+7.0%** |
+| `SQLAlchemy Core (positional)` | 2.1796 | +11.7% |
+| `rowform` *(equal work)* | 2.6411 | +35.3% |
+
+**+7.0%, not ~13%.** sqlite's own figure is +11.3%, so the borrowed number tracked sqlite
+rather than postgres — which is the failure mode of borrowing it. The two `join` floors
+also land 0.3% apart where the `flat` pair is 3.5% apart: at arity two the payload work
+grows while the per-request pool cost does not, so plumbing matters proportionally less.
+A floor is a property of a cell, not of a backend.
+
+The `flat` pool ladder reproduces the entry below within ~1% on all four rungs — machinery
+0.0606, reset round trip 0.0712, asyncpg total 0.1317, SQLAlchemy 0.1670 ms — so
+**SQLAlchemy's pool costs 1.27x `asyncpg.Pool` as shipped and 2.8x it with `reset` off**,
+~12% of a 1000-row read. Two independent sweeps agreeing on the whole ladder is the
+strongest thing said about any number in these docs.
+
+### Open: sqlite `join` and `wide` do not reproduce on this box
+
+This sweep reproduced every postgres cell and sqlite/`flat` to within ~0.1% of the
+`122e035` numbers, and then put the sqlite `join` and `wide` floors **16–37% high with
+15–32% trial spread**, including `floor: on SQLAlchemy (dict)` above `rowform
+(idiomatic)` on `join` — a floor above what it bounds, correction 10's failure. The
+signature is a first trial matching the published value and later trials ~20% slower
+(sqlite/`wide` idiomatic: `[6.523, 8.079, 8.081]` against a published 6.5507), so it is
+dispersion within a run, not a different measurement.
+
+Ruled out: boost (off at both endpoints, checked), external load (loadavg was the
+benchmark alone), thermal throttling (`throttle_count_delta` 0, package 44 °C, 50 W
+long-term RAPL limit), a dirty tree, and `tuned` — it does set `boost=1` in its `balanced`
+profile and did flip turbo mid-sweep earlier, but stopping it did not change the
+dispersion, and it leaves `energy_performance_preference=balance_performance` either way.
+**Cause unknown.** Three sweeps were spent on it.
+
+Two things follow. Sweeps that touch only one backend should re-record only that
+backend's shapes, which is what happened here. And nothing in the harness rejects a run
+on dispersion alone — `quotable` covers conditions, not spread — so a cell at 32% spread
+records clean and has to be caught by a human reading the table. A dispersion gate, and a
+mechanical floor-ordering check, would have failed all three bad sweeps at record time.
+
 ## 2026-08-16 — boost off, and a floor that was sending no transaction
 
 Branch **`bench/2026-08-16-boost-off-floors`** (runs taken at `122e035`). **The first
@@ -12,15 +71,28 @@ METHODOLOGY's reproduction block. Worst trial spread **4.2% sqlite / 5.4% postgr
 Two things about the conditions, both worth stating because neither is what you would
 guess. Absolute times are ~1.9x the previous sweep's — turbo off means base clock — so
 **absolute numbers are not comparable across the boost boundary and ratios are**. And
-the spreads got *wider*, not narrower (4-5% against 2-3%): each iteration takes twice as
-long, so a run presents a wider window to the rest of the desktop. Boost-off buys a
-clean gate, not a quieter machine.
+the spreads came out *wider*, not narrower (4-5% against 2-3%). An earlier revision of
+this entry attributed that to each iteration taking twice as long and so presenting a
+wider window to the desktop; that was a guess, and the sweep above undercuts it by
+reaching 3.0% on the postgres floors with boost equally off. Recorded as an observation
+without a cause. Boost-off buys a clean gate; whether it buys a quieter machine is
+unsettled.
 
 The postgres/`flat` shape was run twice. The first recording put 9.9% trial spread on
 `rowform (idiomatic)` (`1.2367/1.1237/1.1449` — one trial 8% high), so the shape was
 re-run at the same sha; the published table takes the re-run. **Both artifacts are on
 the branch rather than one discarded**, because they agree within 1.6% on every row,
 which is stronger evidence than either one's spread figure.
+
+**The calibration log is settled, and the answer was "neither".** Core positional
+flat/sqlite read 0.89x → 0.82x → 0.77x across three boost-on sweeps while every rowform
+row held within ~1% — a monotonic drift in one contender, which is why the previous entry
+asked for a boost-off session to decide whether that cell sat nearer 0.8x or 0.9x. With
+boost off it reads **0.94x**, outside the whole boost-on range. So the drift was clock
+behaviour rather than either endpoint being the true value, and the boost-on sweeps were
+*flattering Core* on that cell by 5–17%. `sudo scripts/bench_cpu_boost.sh off` is the
+one privileged step; the sweep itself runs unprivileged from METHODOLOGY's recipe, and
+the governor stays at the box's default for the reason recorded there.
 
 ### The retraction: the pool finding was a bug in a floor
 
