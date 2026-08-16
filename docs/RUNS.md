@@ -28,10 +28,9 @@ row held within ~1% — a monotonic drift in one contender, which is why the pre
 asked for a boost-off session to decide whether that cell sat nearer 0.8x or 0.9x. With
 boost off it reads **0.94x**, outside the whole boost-on range. So the drift was clock
 behaviour rather than either endpoint being the true value, and the boost-on sweeps were
-*flattering Core* on that cell by 5–17%. `sudo scripts/bench_sweep_boost_off.sh` runs
-this session end to end — boost off and governors pinned for the duration (both restored
-on exit), the full publishing matrix as the invoking user, tables rendered from that
-sweep alone.
+*flattering Core* on that cell by 5–17%. `sudo scripts/bench_cpu_boost.sh off` is the
+one privileged step; the sweep itself runs unprivileged from METHODOLOGY's recipe, and
+the governor stays at the box's default for the reason recorded there.
 
 ### The retraction: the pool finding was a bug in a floor
 

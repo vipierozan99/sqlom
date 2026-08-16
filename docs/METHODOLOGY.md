@@ -27,9 +27,9 @@ point of paying that price is that these are the first numbers nothing in the ga
 disputes.
 
 ```bash
-# Boost off, or the gate refuses to call the run quotable. intel_pstate exposes
-# no_turbo (inverted); other drivers use cpufreq/boost. Needs root; put it back after.
-sudo sh -c 'echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo'
+# Boost off, or the gate refuses to call the run quotable. The only step needing
+# root, which is why it is its own script and not part of the sweep; `on` restores.
+sudo scripts/bench_cpu_boost.sh off
 just bench env check          # must print "no warnings"
 
 for shape in flat join wide; do
@@ -47,8 +47,15 @@ for shape in flat join wide; do
     --pg-dsn "$(just bench db dsn)"
 done
 just bench db down
-sudo sh -c 'echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo'
+sudo scripts/bench_cpu_boost.sh on
 ```
+
+**The governor is left at whatever the box normally uses** (`powersave` here), and
+that is deliberate: with turbo off this machine's busy core already sits at
+`base_frequency`, 1.9 GHz — the sweep below recorded 1874–1894 MHz on its pinned
+cores — so pinning `performance` would mostly raise the *idle* floor during the awaits
+inside the timed region rather than change the speed the work runs at. Boost is the one
+knob that demonstrably moves these numbers, so it is the one the recipe touches.
 
 Medians of the per-trial medians, in milliseconds, lower is better. Ratios come from
 `stats.ratio_with_spread`, so `~` marks a pair the trials do not actually order —
