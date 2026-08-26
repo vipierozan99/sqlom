@@ -2,7 +2,7 @@
 
 ```bash
 git clone https://github.com/vipierozan99/sqlom && cd sqlom
-uv sync --all-extras
+uv sync --all-groups
 just test          # sqlite + PostgreSQL, plus the type checker
 just lint
 just typecheck
@@ -11,9 +11,15 @@ just cov           # branch coverage; CI gates at 90%
 
 `just` recipes are the interface. `just bench --help` lists the benchmark CLI.
 
+**`--all-groups`, not `--all-extras`.** basedpyright type-checks `benchmarks/` as well as
+`rowform/`, and the benchmark harness's dependencies (fastapi, locust, typer, the
+profilers) live in dependency *groups* — so after `--all-extras` alone, `just typecheck`
+fails with a dozen unresolved imports in code you have not touched. CI syncs
+`--all-groups` for exactly this reason.
+
 ## What CI checks
 
-Four jobs, all of which you can run locally:
+Five jobs, all of which you can run locally:
 
 | | |
 |---|---|

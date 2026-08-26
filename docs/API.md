@@ -377,8 +377,12 @@ uncommitted writes, so the guard has to see it.
 
 The execution primitives one driver needs — `fetch`, `stream`, `execute`,
 `execute_many`, and optionally `copy_in` and `pipeline`. `rf.driver_for(dialect)`
-picks the one a dialect names. Public because it is the seam a mock engine
+picks the one a dialect names, and raises `ConfigurationError` for a dialect with no
+driver here — including every sync one. Public because it is the seam a mock engine
 replaces, not because an application calls it.
+
+Which of the optional primitives each driver has, and what it raises where it does not:
+the backend table in [README.md](../README.md#-backends).
 
 ---
 
