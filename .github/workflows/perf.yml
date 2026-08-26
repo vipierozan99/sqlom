@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UV_PYTHON: "3.11"
+  UV_PYTHON: "3.14"
   # Cheap enough for a per-PR gate, still 150 timed iterations per run. `--pin` is
   # *not* in here: word-splitting an env var turns `--pin ""` into a literal
   # two-quote token rather than an empty one, so it is passed in the command below
@@ -51,7 +51,7 @@ jobs:
         uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Check out the merge base beside it
         id: base
