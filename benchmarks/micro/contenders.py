@@ -57,13 +57,23 @@ none. Left alone, part of rowform's margin was a weaker isolation guarantee bill
 as row-layer speed. Measured cost of closing that gap: 0.711x -> 0.782x against Core
 on sqlite, and 1.015x -> 1.134x against the raw asyncpg floor on postgres.
 
-**On sqlite, the floors spell it with the DBAPI's `commit()` and never literal
-`BEGIN`/`COMMIT` SQL.** They are not interchangeable *there*. pysqlite only implicitly
-begins before DML, so SQLAlchemy's `begin()` around a SELECT emits no `BEGIN` and the
-connection never enters a transaction — a floor issuing the SQL by hand *does* open one
-(measured 0.4445 ms against 0.4182 ms) and would do strictly more work than the
-contenders it bounds, which is the same "floor slower than the thing it bounds" bug
-recorded below, arrived at from the other direction.
+**On sqlite the floors send a literal `BEGIN`, because rowform does.** pysqlite only
+implicitly begins before DML, so SQLAlchemy's `begin()` around a SELECT sends nothing
+and stock Core's read stays in autocommit — but rowform applies SQLAlchemy's own
+pysqlite recipe (`SqliteDriver.configure`), without which `begin_nested()`'s savepoint
+lands outside its transaction. So rowform's read *is* in a transaction here and Core's
+is not, and a floor that skipped the `BEGIN` was a round trip lighter than the thing it
+bounded: it priced "the row layer" as the row layer plus a transaction. That is
+correction 15's bug one backend over, and it survived here because the earlier reasoning
+took "the contenders" to mean the SQLAlchemy ones. `_sqlite_txn_engine` gives the
+same-plumbing floor rowform's two events, and the hand-rolled floors spell it on the
+driver connection, which puts all of them at rowform's five driver round trips.
+
+The asymmetry with Core is left standing rather than erased, because it is real: an
+application writing `engine.begin()` on stock SQLAlchemy genuinely gets no transaction
+on this backend. It is priced instead, from both sides — `rowform (no transaction)`
+takes the guarantee off rowform, and `SQLAlchemy Core (positional, real transaction)`
+puts it onto Core.
 
 **On postgres the opposite holds**, and *every* floor there spells the transaction on
 the driver connection with `conn.transaction()` — a real `BEGIN`/`COMMIT` on the wire —
@@ -103,10 +113,11 @@ import uuid
 from typing import Any
 
 import orjson
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.dialects.postgresql import asyncpg
 from sqlalchemy.dialects.sqlite import aiosqlite
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.util import await_only
 
 import rowform as rf
 
@@ -165,6 +176,34 @@ def dumps(payload: Any) -> bytes:
 
 def _sa_dsn(path: str) -> str:
     return f"sqlite+aiosqlite:///{path}"
+
+
+def _sqlite_txn_engine(path: str) -> Any:
+    """A stock `AsyncEngine` whose `begin()` actually reaches sqlite.
+
+    pysqlite begins implicitly before DML and never before a SELECT, so
+    `sa_conn.begin()` around a read emits nothing and the connection stays in
+    autocommit — while rowform sends a real `BEGIN`, because without one pysqlite
+    puts `begin_nested()`'s savepoint outside the transaction and silently breaks
+    it (`SqliteDriver.configure`). A floor that skips the BEGIN is a round trip
+    lighter than the thing it bounds, which is correction 15's bug one backend
+    over, and it made this floor price "the row layer" as a row layer plus a
+    transaction.
+
+    These are rowform's own two events, spelled the same way, so "same plumbing"
+    covers the transaction and not just the pool.
+    """
+    engine = create_async_engine(_sa_dsn(path), **POOL)
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _no_implicit_begin(dbapi_connection: Any, _record: Any) -> None:
+        dbapi_connection.isolation_level = None
+
+    @event.listens_for(engine.sync_engine, "begin")
+    def _explicit_begin(conn: Any) -> None:
+        await_only(conn.connection.driver_connection.execute("BEGIN"))
+
+    return engine
 
 
 def _sa_dsn_pg(dsn: str) -> str:
@@ -556,6 +595,7 @@ async def flat_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
 
     async def target() -> bytes:
         async with pool.acquire() as conn:
+            await conn.execute("BEGIN")
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
             await conn.commit()
@@ -597,6 +637,7 @@ async def flat_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Tear
 
     async def target() -> bytes:
         async with pool.acquire() as conn:
+            await conn.execute("BEGIN")
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
             await conn.commit()
@@ -632,7 +673,7 @@ async def flat_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Tear
     description="Same pool, same transaction, hand-written dicts — the abstraction floor.",
 )
 async def flat_sa_plumbing_dict(init: ContenderInit) -> tuple[Target, Teardown]:
-    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    sa_engine = _sqlite_txn_engine(init.handle)
     sql, params = _compiled(flat_stmt(init.limit), _SQLITE_DIALECT)
 
     async def target() -> bytes:
@@ -658,6 +699,41 @@ async def flat_sa_plumbing_dict(init: ContenderInit) -> tuple[Target, Teardown]:
 )
 async def flat_sa_core_positional(init: ContenderInit) -> tuple[Target, Teardown]:
     engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    stmt = flat_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return dumps(_flat(result.all()))
+
+    return target, engine.dispose
+
+
+@contender(
+    "SQLAlchemy Core (positional, real transaction)",
+    backend="sqlite",
+    shape="flat",
+    tags=("decomposition",),
+    description="Core with SQLAlchemy's own pysqlite recipe applied — the same read, "
+    "this time actually inside a transaction.",
+)
+async def flat_sa_core_positional_txn(init: ContenderInit) -> tuple[Target, Teardown]:
+    """The row that keeps the sqlite comparison symmetric.
+
+    `engine.begin()` sends nothing to pysqlite before a SELECT, so stock Core's
+    read runs in autocommit: no snapshot shared by two statements, and a
+    `begin_nested()` savepoint that lands outside the transaction its writes open.
+    Both are defects SQLAlchemy documents and declines to fix by default, with the
+    recipe `_sqlite_txn_engine` applies. rowform applies it — so on this backend
+    rowform pays a round trip for a guarantee stock Core does not provide, and the
+    published sqlite ratios were reading that as row-layer cost.
+
+    Neither headline row is doctored to hide it. `rowform (no transaction)` prices
+    the guarantee off rowform's side, this prices it onto Core's, and the table
+    then orders both libraries at both guarantees rather than asserting that the
+    difference between them is speed.
+    """
+    engine = _sqlite_txn_engine(init.handle)
     stmt = flat_stmt(init.limit)
 
     async def target() -> bytes:
@@ -931,6 +1007,7 @@ async def join_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
 
     async def target() -> bytes:
         async with pool.acquire() as conn:
+            await conn.execute("BEGIN")
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
             await conn.commit()
@@ -962,6 +1039,7 @@ async def join_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Tear
 
     async def target() -> bytes:
         async with pool.acquire() as conn:
+            await conn.execute("BEGIN")
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
             await conn.commit()
@@ -980,7 +1058,7 @@ async def join_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Tear
 )
 async def join_sa_plumbing_dict(init: ContenderInit) -> tuple[Target, Teardown]:
     """See the flat twin for why this floor exists alongside the hand-rolled ones."""
-    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    sa_engine = _sqlite_txn_engine(init.handle)
     sql, params = _compiled(join_stmt(init.limit), _SQLITE_DIALECT)
 
     async def target() -> bytes:
@@ -1160,6 +1238,7 @@ async def wide_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
 
     async def target() -> bytes:
         async with pool.acquire() as conn:
+            await conn.execute("BEGIN")
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
             await conn.commit()
@@ -1187,6 +1266,7 @@ async def wide_raw_aiosqlite_hydrated(init: ContenderInit) -> tuple[Target, Tear
 
     async def target() -> bytes:
         async with pool.acquire() as conn:
+            await conn.execute("BEGIN")
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
             await conn.commit()
@@ -1207,7 +1287,7 @@ async def wide_sa_plumbing_dict(init: ContenderInit) -> tuple[Target, Teardown]:
     """The most informative cell of the three: plumbing held constant *and* eight
     of nine columns needing a processor, so what is left between this and
     `rowform` is the compiled hydrator against hand-written conversions."""
-    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    sa_engine = _sqlite_txn_engine(init.handle)
     sql, params = _compiled(wide_stmt(init.limit), _SQLITE_DIALECT)
 
     async def target() -> bytes:

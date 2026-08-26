@@ -59,6 +59,7 @@ ROW_ORDER = (
     "rowform compat (.all())",
     "rowform (mock)",
     "SQLAlchemy Core (positional)",
+    "SQLAlchemy Core (positional, real transaction)",
     "SQLAlchemy Core (positional) (mock)",
     "SQLAlchemy Core (.mappings())",
     "SQLAlchemy ORM",
@@ -84,6 +85,8 @@ LABELS = {
     "rowform compat (.all())": "rowform `execute().all()`",
     "rowform (mock)": "rowform",
     "SQLAlchemy Core (positional)": "SQLAlchemy Core (positional)",
+    "SQLAlchemy Core (positional, real transaction)": "SQLAlchemy Core (positional) "
+    "*(with pysqlite's transaction recipe — prices the guarantee on Core's side)*",
     "SQLAlchemy Core (positional) (mock)": "SQLAlchemy Core (positional)",
     "SQLAlchemy Core (.mappings())": "SQLAlchemy Core (`.mappings()`)",
     "SQLAlchemy ORM": "SQLAlchemy ORM",
