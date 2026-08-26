@@ -34,7 +34,13 @@ class AiosqlitePool:
 
     @classmethod
     async def open(cls, path: str, size: int) -> AiosqlitePool:
-        return cls([await aiosqlite.connect(path) for _ in range(size)])
+        # `isolation_level=None` for the same reason rowform sets it
+        # (`SqliteDriver.configure`): pysqlite otherwise manages transactions
+        # itself, and these floors send their own BEGIN so that what they
+        # bound is what they measure.
+        return cls(
+            [await aiosqlite.connect(path, isolation_level=None) for _ in range(size)]
+        )
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[aiosqlite.Connection]:
