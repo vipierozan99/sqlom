@@ -89,7 +89,11 @@ The short version:
   not the call: `log_statement=all` on postgres, and on sqlite count
   `aiosqlite.Connection._execute` calls per request. The rule binds the transactional
   contenders and every floor; `rowform (no transaction)` is the named exception on both
-  backends, because pricing the cheaper weaker read is the point of that row. Two
+  backends, because pricing the cheaper weaker read is the point of that row — and it
+  has no psycopg twin, since a psycopg connection outside autocommit opens a
+  transaction on its first statement whatever the caller does. Check psycopg's wire
+  the way its driver allows: `info.transaction_status` after the read is `INTRANS`
+  when a transaction is open and `IDLE` when it is not. Two
   corrections came from floors that sent a transaction their name claimed and their
   driver never saw (15 and 16). Where the asymmetry is real it gets a row rather than a
   fudge: `rowform (no transaction)` and `SQLAlchemy Core (positional, real transaction)`

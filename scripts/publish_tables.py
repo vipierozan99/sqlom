@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 SHAPES = ("flat", "join", "wide")
-BACKENDS = ("sqlite", "postgres", "mock")
+BACKENDS = ("sqlite", "postgres", "postgres-psycopg", "mock")
 
 #: Row order for the published tables. Contenders absent from a backend/shape
 #: render as an em dash. Fixed here rather than taken from the registry so the

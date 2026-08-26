@@ -115,6 +115,7 @@ from typing import Any
 import orjson
 from sqlalchemy import event, select
 from sqlalchemy.dialects.postgresql import asyncpg
+from sqlalchemy.dialects.postgresql import psycopg as psycopg_dialect
 from sqlalchemy.dialects.sqlite import aiosqlite
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.util import await_only
@@ -1945,3 +1946,291 @@ def _hydrator(statement: Any, dialect: Any, fields: list[str]) -> Any:
     """The same generated hydrator the engine would build, with the description
     a driver reporting no type codes would give (which is sqlite's)."""
     return rf.compile_hydrator(rf.plan(statement), dialect, [None] * len(fields))
+
+
+# ==========================================================================
+# postgres through psycopg3 — `backend="postgres-psycopg"`
+#
+# **Why its own backend group rather than more rows in `postgres`.** Both the
+# equivalence gate and the `vs rowform` column are per group. Sharing one would
+# price rowform-on-psycopg against rowform-on-asyncpg and print the driver
+# difference as a row-layer result — the exact confusion corrections 12 and 14
+# were about. Here every row is psycopg, so `vs rowform` means what it means in
+# every other cell: the row layer, at equal driver.
+#
+# psycopg is the driver two silent-wrongness bugs needed to be found
+# (`docs/PLAN_SQLA_API.md` §8a) and the only one with pipeline mode, and it had
+# never been measured. It is also the one whose connection is transactional in
+# its own right, which removes one row from the set: there is no
+# `rowform (no transaction)` here, because a psycopg connection that is not in
+# autocommit opens a transaction on its first statement whatever rowform does.
+# ==========================================================================
+
+_PSYCOPG_DIALECT = psycopg_dialect.dialect()
+
+
+def _sa_dsn_psycopg(dsn: str) -> str:
+    """psycopg-style DSN -> the URL SQLAlchemy's psycopg dialect wants.
+
+    The query string stays, unlike `_sa_dsn_pg`: `sslmode` is libpq's own
+    spelling and psycopg speaks libpq, so it is understood rather than forwarded
+    to a driver that has no such keyword.
+    """
+    return dsn.replace("postgresql://", "postgresql+psycopg://", 1)
+
+
+async def _psycopg_pool(dsn: str) -> Any:
+    """psycopg's own pool at the shared ceiling, opened and waited for.
+
+    `open()` returns before the connections exist, so a floor that skipped
+    `wait()` would pay its first few checkouts inside the timed window.
+    """
+    from psycopg_pool import AsyncConnectionPool
+
+    pool = AsyncConnectionPool(dsn, min_size=POOL_MAX, max_size=POOL_MAX, open=False)
+    await pool.open()
+    await pool.wait()
+    return pool
+
+
+# --- flat -----------------------------------------------------------------
+
+
+@contender(
+    "rowform",
+    backend="postgres-psycopg",
+    shape="flat",
+    description="The result-layer claim on psycopg: equal work — unprepared, same payload pass.",
+)
+async def psy_flat_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_psycopg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = flat_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_flat_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (idiomatic)",
+    backend="postgres-psycopg",
+    shape="flat",
+    tags=("idiomatic",),
+    description="The endpoint claim on psycopg: prepared once, dataclasses straight to orjson.",
+)
+async def psy_flat_rowform_idiomatic(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_psycopg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(flat_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(await conn.fetch_all(query))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "SQLAlchemy Core (positional)",
+    backend="postgres-psycopg",
+    shape="flat",
+    description="Identical SQL on the same driver, stock Row/CursorResult result layer.",
+)
+async def psy_flat_sa_core(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn_psycopg(init.handle), **POOL)
+    stmt = flat_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_flat((await conn.execute(stmt)).all()))
+
+    return target, engine.dispose
+
+
+@contender(
+    "SQLAlchemy ORM",
+    backend="postgres-psycopg",
+    shape="flat",
+    description="SQLAlchemy ORM on psycopg, one Session per request.",
+)
+async def psy_flat_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn_psycopg(init.handle), **POOL)
+    stmt = flat_stmt(init.limit, UserORM)
+
+    async def target() -> bytes:
+        async with AsyncSession(engine) as session, session.begin():
+            return dumps(_flat_objs((await session.execute(stmt)).scalars().all()))
+
+    return target, engine.dispose
+
+
+@contender(
+    "floor: hand-rolled (dict)",
+    backend="postgres-psycopg",
+    shape="flat",
+    shipped=False,
+    tags=("floor",),
+    description="The true floor: psycopg tuples straight to dicts, psycopg's own pool.",
+)
+async def psy_flat_raw(init: ContenderInit) -> tuple[Target, Teardown]:
+    """`conn.transaction()` rather than psycopg's implicit begin, so the BEGIN is
+    in this file where a reader can see it — the floors sending what the
+    contenders send is correction 15's whole subject."""
+    pool = await _psycopg_pool(init.handle)
+    sql, params = _compiled(flat_stmt(init.limit), _PSYCOPG_DIALECT)
+
+    async def target() -> bytes:
+        async with pool.connection() as conn, conn.transaction():
+            cursor = await conn.execute(sql, params)
+            rows = await cursor.fetchall()
+        return dumps(_flat(rows))
+
+    return target, pool.close
+
+
+@contender(
+    "floor: on SQLAlchemy (dict)",
+    backend="postgres-psycopg",
+    shape="flat",
+    shipped=False,
+    tags=("floor", "same-plumbing"),
+    description="Same pool, same transaction, hand-written dicts — the abstraction floor.",
+)
+async def psy_flat_sa_plumbing_dict(init: ContenderInit) -> tuple[Target, Teardown]:
+    """SQLAlchemy's pool and checkout, psycopg's cursor, no result layer — so
+    rowform minus this row is the row layer and nothing else.
+
+    The transaction is opened on the driver connection, as in the asyncpg twin
+    and for the same reason: `sa_conn.begin()` marks one in Python and sends
+    nothing until SQLAlchemy itself routes a statement, which this floor never
+    lets it do.
+    """
+    sa_engine = create_async_engine(_sa_dsn_psycopg(init.handle), **POOL)
+    sql, params = _compiled(flat_stmt(init.limit), _PSYCOPG_DIALECT)
+
+    async def target() -> bytes:
+        async with sa_engine.connect() as sa_conn:
+            driver_conn: Any = (await sa_conn.get_raw_connection()).driver_connection
+            async with driver_conn.transaction():
+                cursor = await driver_conn.execute(sql, params)
+                rows = await cursor.fetchall()
+        return dumps(_flat(rows))
+
+    return target, sa_engine.dispose
+
+
+# --- join -----------------------------------------------------------------
+
+
+@contender(
+    "rowform",
+    backend="postgres-psycopg",
+    shape="join",
+    description="The result-layer claim at arity two on psycopg: equal work.",
+)
+async def psy_join_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_psycopg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = join_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_join_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (idiomatic)",
+    backend="postgres-psycopg",
+    shape="join",
+    tags=("idiomatic",),
+    description="The endpoint claim at arity two on psycopg: prepared once, direct to orjson.",
+)
+async def psy_join_rowform_idiomatic(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_psycopg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(join_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(await conn.fetch_all(query))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "SQLAlchemy Core (positional)",
+    backend="postgres-psycopg",
+    shape="join",
+    description="Identical SQL at arity two, stock Row/CursorResult result layer.",
+)
+async def psy_join_sa_core(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn_psycopg(init.handle), **POOL)
+    stmt = join_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_join((await conn.execute(stmt)).all()))
+
+    return target, engine.dispose
+
+
+# --- wide -----------------------------------------------------------------
+
+
+@contender(
+    "rowform",
+    backend="postgres-psycopg",
+    shape="wide",
+    description="The result-layer claim where processors dominate, on psycopg: equal work.",
+)
+async def psy_wide_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_psycopg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = wide_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_wide_objs(await conn.fetch_all(stmt)))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform (idiomatic)",
+    backend="postgres-psycopg",
+    shape="wide",
+    tags=("idiomatic",),
+    description="The endpoint claim over the widened shape on psycopg.",
+)
+async def psy_wide_rowform_idiomatic(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_psycopg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    query = engine.prepare(wide_stmt(init.limit))
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(await conn.fetch_all(query))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "SQLAlchemy Core (positional)",
+    backend="postgres-psycopg",
+    shape="wide",
+    description="Identical SQL and identical processors, run through Row/CursorResult.",
+)
+async def psy_wide_sa_core(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn_psycopg(init.handle), **POOL)
+    stmt = wide_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            return dumps(_wide((await conn.execute(stmt)).all()))
+
+    return target, engine.dispose
