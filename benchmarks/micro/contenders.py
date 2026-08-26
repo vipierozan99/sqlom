@@ -2234,3 +2234,156 @@ async def psy_wide_sa_core(init: ContenderInit) -> tuple[Target, Teardown]:
             return dumps(_wide((await conn.execute(stmt)).all()))
 
     return target, engine.dispose
+
+
+# ==========================================================================
+# The streamed read — `fetch_iter` and its two SQLAlchemy counterparts
+#
+# `fetch_iter` is the other half of the read API and had never been timed. It is
+# not a faster `fetch_all`: it exists so a result larger than memory can be read
+# at all, and what it costs *per chunk* is the number a caller sizing `chunk=`
+# needs. Registered on `flat` at both backends, because the three drivers stream
+# through three different primitives — `fetchmany` on a sqlite cursor, a portal on
+# asyncpg, a `DECLARE`d cursor on psycopg — and a per-chunk cost is exactly where
+# those differ.
+#
+# **Chunked at `CHUNK`, on every arm.** The buffered rows above read 1000 rows in
+# one round trip; these read them in ten. Comparing a ten-round-trip read against
+# a one-round-trip read *between* arms would be measuring the chunk size, so the
+# only comparison these rows support is with each other — which is why they are
+# grouped in this section and say so.
+#
+# Payloads are byte-identical to the buffered rows in the same cell, so the
+# equivalence gate covers streaming against `fetch_all` for free: a chunk boundary
+# that lost or duplicated a row would fail the gate rather than the eye.
+# ==========================================================================
+
+#: Ten chunks over the 1000-row read. Small enough that per-chunk overhead is
+#: visible, large enough not to become a round-trip benchmark.
+CHUNK = 100
+
+
+@contender(
+    "rowform (fetch_iter)",
+    backend="sqlite",
+    shape="flat",
+    tags=("streaming",),
+    description=f"The streamed read: {CHUNK} rows per chunk, hydrated per chunk.",
+)
+async def flat_rowform_stream(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = flat_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            users = [user async for user in conn.fetch_iter(stmt, chunk=CHUNK)]
+        return dumps(_flat_objs(users))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform compat (stream())",
+    backend="sqlite",
+    shape="flat",
+    tags=("streaming",),
+    description="The same chunks through SQLAlchemy's AsyncResult, taken as scalars.",
+)
+async def flat_rowform_stream_compat(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = flat_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            result = await conn.stream(stmt, chunk=CHUNK)
+            users = await result.scalars().all()
+        return dumps(_flat_objs(users))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "SQLAlchemy Core (stream())",
+    backend="sqlite",
+    shape="flat",
+    tags=("streaming",),
+    description=f"Core's own streamed read at yield_per={CHUNK}, taken in partitions.",
+)
+async def flat_sa_core_stream(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    stmt = flat_stmt(init.limit).execution_options(yield_per=CHUNK)
+
+    async def target() -> bytes:
+        rows: list[Any] = []
+        async with engine.begin() as conn:
+            result = await conn.stream(stmt)
+            async for partition in result.partitions(CHUNK):
+                rows.extend(partition)
+        return dumps(_flat(rows))
+
+    return target, engine.dispose
+
+
+@contender(
+    "rowform (fetch_iter)",
+    backend="postgres",
+    shape="flat",
+    tags=("streaming",),
+    description=f"The streamed read on asyncpg: a portal, {CHUNK} rows per chunk.",
+)
+async def pg_flat_rowform_stream(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = flat_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            users = [user async for user in conn.fetch_iter(stmt, chunk=CHUNK)]
+        return dumps(_flat_objs(users))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "rowform compat (stream())",
+    backend="postgres",
+    shape="flat",
+    tags=("streaming",),
+    description="The same portal through SQLAlchemy's AsyncResult, taken as scalars.",
+)
+async def pg_flat_rowform_stream_compat(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = flat_stmt(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            result = await conn.stream(stmt, chunk=CHUNK)
+            users = await result.scalars().all()
+        return dumps(_flat_objs(users))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "SQLAlchemy Core (stream())",
+    backend="postgres",
+    shape="flat",
+    tags=("streaming",),
+    description=f"Core's own server-side cursor at yield_per={CHUNK}, in partitions.",
+)
+async def pg_flat_sa_core_stream(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    stmt = flat_stmt(init.limit).execution_options(yield_per=CHUNK)
+
+    async def target() -> bytes:
+        rows: list[Any] = []
+        async with engine.begin() as conn:
+            result = await conn.stream(stmt)
+            async for partition in result.partitions(CHUNK):
+                rows.extend(partition)
+        return dumps(_flat(rows))
+
+    return target, engine.dispose

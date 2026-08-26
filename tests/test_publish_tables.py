@@ -152,3 +152,18 @@ class TestTwoReadSizesAreTwoColumns:
         run = _run([_cell("rowform", 2.66, limit=1000)], ratios=[])
         rendered = pt.render(pt.load([_write(tmp_path, run)]), "sqlite")
         assert "| contender | flat | | flat |" in rendered
+
+
+class TestItKnowsEveryContender:
+    def test_every_registered_name_is_in_row_order_and_labels(self):
+        """`render` refuses at publish time (see above). This refuses at test
+        time, which is where the person who just registered a contender is
+        looking — and it is a `SystemExit` in a script nobody runs until they are
+        publishing a table, so the gap between the two is a whole sweep long.
+        """
+        import benchmarks.micro.contenders  # noqa: F401 -- registration side-effects
+        from benchmarks.harness import registry
+
+        names = {spec.name for spec in registry.REGISTRY.values()}
+        assert sorted(names - set(pt.ROW_ORDER)) == []
+        assert sorted(names - set(pt.LABELS)) == []
