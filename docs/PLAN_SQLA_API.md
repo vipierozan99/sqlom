@@ -269,9 +269,13 @@ this box. It is §5.1's first item.
    `AsyncpgDriver.enter_transaction` drives that lazy start. psycopg was fine as
    this entry reasoned, and sqlite by way of §8b's recipe.
 
-   Still open, narrowly: a *write* issued with no scope at all, where asyncpg
-   commits and psycopg does not. Refusing it uniformly is still the likely
-   answer.
+   *Now closed entirely.* The narrow remainder — a *write* issued with no scope
+   at all, where this entry expected asyncpg to commit and psycopg not to — is
+   not a divergence: the write one-shots take `_checkout(commit=True)` (§8a), so
+   all three commit.
+   `test_engines.py::TestWrites::test_an_unscoped_write_is_committed_not_merely_visible`
+   reads the row back through a *second* engine, which is the check that tells a
+   committed write from one still visible on the connection that made it.
 
 3. **The per-request tax is real and the benchmark story must say so.** *Reopened.*
    The published "1.2–1.6x SQLAlchemy Core" figure was a per-request-acquire
@@ -297,13 +301,24 @@ this box. It is §5.1's first item.
    §5.1's postgres numbers exist.
 
 5. **Mixing rowform's execution with psycopg pipeline mode** on a connection
-   SQLAlchemy also uses is untested, and is the most likely place for the two to
-   confuse each other.
+   SQLAlchemy also uses. *Closed, and it works.*
+   `test_pipeline.py::TestOnSomebodyElsesConnection` asserts the four things this
+   entry was worried about: pipelined writes land in the caller's transaction and
+   are visible to SQLAlchemy's own cursor on that connection, they roll back with
+   the caller's block, the whole thing works inside an `AsyncSession`, and the
+   deferred error still arrives — at the synchronise, not at the statement. No
+   code change was needed, which is the answer this entry was asking for.
 
 6. **Exception wrapping.** Statements rowform runs raise the driver's exception,
    not `sa.exc.IntegrityError` — a visible seam in an otherwise seamless story,
    and now more visible because the surrounding code is SQLAlchemy's. Out of
    scope for the first pass; tracked separately.
+
+   Still open, but no longer only described: `test_driver_errors.py` pins the
+   exact class each driver raises for one unique violation, next to the
+   `sa.exc.IntegrityError` SQLAlchemy raises for the very same statement. Three
+   spellings against one is the cost, written down where a reader can price it —
+   and if wrapping ever lands, that file is the notice.
 
 ---
 

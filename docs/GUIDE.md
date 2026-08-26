@@ -421,6 +421,13 @@ except asyncpg.UniqueViolationError:
     raise EmailTaken(email) from None
 ```
 
+**Worth checking when you move a write.** SQLAlchemy wraps the same failure as
+`sa.exc.IntegrityError`, so an `except sa.exc.IntegrityError` that used to cover a
+write stops covering it once that write runs through rowform — silently, since
+nothing raises differently until the constraint is actually hit. Catch the
+driver's class, or both. `tests/test_driver_errors.py` lists what each driver
+raises.
+
 ## Wiring it into FastAPI
 
 One engine for the process, opened and closed with the app:

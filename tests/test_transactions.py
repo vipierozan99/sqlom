@@ -306,3 +306,27 @@ class TestSqliteBeginCost:
 
         select = next(i for i, hop in enumerate(hops) if "SELECT" in hop)
         assert hops[:select] == ["execute BEGIN"], hops
+
+    async def test_wrapping_one_engine_twice_still_sends_one_begin(self, sqlite_engine, monkeypatch):
+        """`SqliteDriver.configure` registers the recipe on the `AsyncEngine`, so
+        two `rf.Engine`s over the same one would register it twice — and pysqlite
+        rejects a `BEGIN` inside a transaction, so the second scope would raise
+        rather than merely cost a round trip. The guard that prevents it is one
+        early return, which nothing exercised.
+        """
+        import aiosqlite
+
+        second = rf.Engine(sqlite_engine.sa_engine)
+        hops: list[str] = []
+        original = aiosqlite.Connection._execute
+
+        async def record(self, fn, *args, **kwargs):
+            sql = next((a for a in args if isinstance(a, str)), "")
+            hops.append(f"{getattr(fn, '__name__', '?')} {sql}".strip())
+            return await original(self, fn, *args, **kwargs)
+
+        monkeypatch.setattr(aiosqlite.Connection, "_execute", record)
+        async with second.begin() as conn:
+            await conn.fetch_all(sa.select(Author))
+
+        assert [hop for hop in hops if "BEGIN" in hop] == ["execute BEGIN"], hops
