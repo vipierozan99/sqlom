@@ -137,6 +137,10 @@ from benchmarks.shapes.join import (
     PostORM,
 )
 from benchmarks.shapes.wide import Event, EventDC, EventORM, Severity, events_table
+from benchmarks.shapes.write import orm_params as write_orm_params
+from benchmarks.shapes.write import orm_update as write_orm_update
+from benchmarks.shapes.write import update_params as write_params
+from benchmarks.shapes.write import update_stmt as write_update
 
 FLAT_FIELDS = [str(c.name) for c in users_table.columns]
 WIDE_FIELDS = [str(c.name) for c in events_table.columns]
@@ -2387,3 +2391,194 @@ async def pg_flat_sa_core_stream(init: ContenderInit) -> tuple[Target, Teardown]
         return dumps(_flat(rows))
 
     return target, engine.dispose
+# write shape (`users`, updated by primary key) — the `execute_many` cell
+#
+# The write path had no benchmark at all: `execute_many` is how an application
+# applies a batch, and nothing here priced it against SQLAlchemy's own
+# executemany or against the driver's. Every arm sends the *same* N parameter
+# sets through the same compiled UPDATE, inside one transaction.
+#
+# Why an idempotent UPDATE rather than an INSERT, and what that leaves
+# unmeasured (`copy_in`): `shapes/write.py`.
+#
+# The payload is the parameter-set count, so the equivalence gate here proves
+# only that every arm attempted the same batch — bytes cannot show that rows
+# changed. What shows it is `tests/test_bench_write_parity.py`, which runs each
+# contender and reads the table back.
+# ==========================================================================
+
+
+def _batch(count: int) -> bytes:
+    return dumps({"updated": count})
+
+
+@contender(
+    "rowform execute_many",
+    backend="sqlite",
+    shape="write",
+    description="One compiled UPDATE, N parameter sets, inside one transaction.",
+)
+async def write_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = write_update()
+    params = write_params(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            await conn.execute_many(stmt, params)
+        return _batch(len(params))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "SQLAlchemy Core (executemany)",
+    backend="sqlite",
+    shape="write",
+    description="Identical UPDATE and parameter sets through Core's executemany.",
+)
+async def write_sa_core(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    stmt = write_update()
+    params = write_params(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            await conn.execute(stmt, params)
+        return _batch(len(params))
+
+    return target, engine.dispose
+
+
+@contender(
+    "SQLAlchemy ORM (bulk update)",
+    backend="sqlite",
+    shape="write",
+    description="The ORM's own bulk UPDATE by primary key, one Session per batch.",
+)
+async def write_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn(init.handle), **POOL)
+    stmt = write_orm_update()
+    params = write_orm_params(init.limit)
+
+    async def target() -> bytes:
+        async with AsyncSession(engine) as session, session.begin():
+            await session.execute(stmt, params)
+        return _batch(len(params))
+
+    return target, engine.dispose
+
+
+@contender(
+    "floor: hand-rolled (executemany)",
+    backend="sqlite",
+    shape="write",
+    shipped=False,
+    tags=("floor",),
+    description="aiosqlite's own executemany over the same compiled SQL — the floor.",
+)
+async def write_raw_aiosqlite(init: ContenderInit) -> tuple[Target, Teardown]:
+    from benchmarks.harness.aiosqlite_pool import AiosqlitePool
+
+    pool = await AiosqlitePool.open(init.handle, POOL_MAX)
+    sql, binds = _compiled_many(write_update(), _SQLITE_DIALECT, write_params(init.limit))
+
+    async def target() -> bytes:
+        async with pool.acquire() as conn:
+            await conn.execute("BEGIN")
+            await conn.executemany(sql, binds)
+            await conn.commit()
+        return _batch(len(binds))
+
+    return target, pool.close
+
+
+@contender(
+    "rowform execute_many",
+    backend="postgres",
+    shape="write",
+    description="One compiled UPDATE, N parameter sets, inside one transaction.",
+)
+async def pg_write_rowform(init: ContenderInit) -> tuple[Target, Teardown]:
+    sa_engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    engine = rf.Engine(sa_engine)
+    stmt = write_update()
+    params = write_params(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            await conn.execute_many(stmt, params)
+        return _batch(len(params))
+
+    return target, sa_engine.dispose
+
+
+@contender(
+    "SQLAlchemy Core (executemany)",
+    backend="postgres",
+    shape="write",
+    description="Identical UPDATE and parameter sets through Core's executemany.",
+)
+async def pg_write_sa_core(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    stmt = write_update()
+    params = write_params(init.limit)
+
+    async def target() -> bytes:
+        async with engine.begin() as conn:
+            await conn.execute(stmt, params)
+        return _batch(len(params))
+
+    return target, engine.dispose
+
+
+@contender(
+    "SQLAlchemy ORM (bulk update)",
+    backend="postgres",
+    shape="write",
+    description="The ORM's own bulk UPDATE by primary key, one Session per batch.",
+)
+async def pg_write_sa_orm(init: ContenderInit) -> tuple[Target, Teardown]:
+    engine = create_async_engine(_sa_dsn_pg(init.handle), **POOL)
+    stmt = write_orm_update()
+    params = write_orm_params(init.limit)
+
+    async def target() -> bytes:
+        async with AsyncSession(engine) as session, session.begin():
+            await session.execute(stmt, params)
+        return _batch(len(params))
+
+    return target, engine.dispose
+
+
+@contender(
+    "floor: hand-rolled (executemany)",
+    backend="postgres",
+    shape="write",
+    shipped=False,
+    tags=("floor",),
+    description="asyncpg's own executemany over the same compiled SQL — the floor.",
+)
+async def pg_write_raw_asyncpg(init: ContenderInit) -> tuple[Target, Teardown]:
+    import asyncpg
+
+    pool = await asyncpg.create_pool(init.handle, min_size=POOL_MAX, max_size=POOL_MAX)
+    assert pool is not None
+    sql, binds = _compiled_many(write_update(), _PG_DIALECT, write_params(init.limit))
+
+    async def target() -> bytes:
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.executemany(sql, binds)
+        return _batch(len(binds))
+
+    return target, pool.close
+
+
+def _compiled_many(statement: Any, dialect: Any, params: list[dict[str, Any]]) -> tuple[str, list]:
+    """`(sql, one bound row per parameter set)` — what a driver's `executemany`
+    takes. The SQL is compiled once, as an engine would, and each set is bound
+    through the same processors rather than by hand (`harness/seed.bound_rows`
+    does this for the seeder, for the same reason)."""
+    query = rf.CoreQuery(statement, dialect)
+    return query.sql, [query.bind(row)[1] for row in params]
