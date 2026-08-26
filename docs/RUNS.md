@@ -1,5 +1,106 @@
 # Recorded runs
 
+## 2026-08-26 — sqlite's BEGIN cost three round trips, and the floors were not sending one
+
+Branch **`bench/2026-08-26-sqlite-begin`**. Two matched sweeps on one box, boost off
+throughout, `quotable=True` on every run: a **baseline at `b7c4c71`** and an **after at
+`17e867e`**, so the delta is one library change rather than a comparison against numbers
+taken in August.
+
+Found by asking what the gap between `rowform` and the `raw driver + the same hydrator`
+floor actually contains, and tracing it instead of reasoning about it. Two separate
+things came out, one a library cost and one a benchmark bug.
+
+### 1. rowform's BEGIN was three round trips where one would do
+
+pysqlite needs a literal `BEGIN` or `begin_nested()`'s savepoint lands outside its
+transaction, so `SqliteDriver.configure` has always sent one. It went through
+`conn.exec_driver_sql`, which reaches aiosqlite as three separate worker-thread hops —
+`cursor()`, `execute()`, `close()` — where the driver's own `execute` makes the cursor
+inside the same hop. Traced per contender, one 1-row read:
+
+| contender | hops | sequence |
+|---|---|---|
+| `floor: hand-rolled (dict)` | 4 | BEGIN, execute, fetchall, commit |
+| `floor: on SQLAlchemy (dict)` | 5 | + rollback on pool release |
+| `rowform` | 5 | identical sequence |
+| `rowform (no transaction)` | 3 | execute, fetchall, rollback |
+| `SQLAlchemy Core (positional)` | 6 | cursor, execute, fetchall, close, commit, rollback |
+
+**Measured, sqlite, before → after** (medians of per-trial medians, ms):
+
+| cell | rowform | delta | control: `no transaction` | control: Core |
+|---|---|---|---|---|
+| `flat @1000` | 2.6631 → 2.5552 | **−0.108 (−4.1%)** | 2.3892 → 2.3987 (+0.4%) | 2.4914 → 2.4777 (−0.5%) |
+| `join @1000` | 4.6384 → 4.5244 | **−0.114 (−2.5%)** | — | 4.1207 → 4.0978 (−0.6%) |
+| `wide @1000` | 6.9933 → 6.9225 | **−0.071 (−1.0%)** | — | 6.7197 → 6.6716 (−0.7%) |
+| `flat @1` | 0.4444 → 0.3453 | **−0.099 (−22.3%)** | 0.2333 → 0.2279 (−2.3%) | 0.3816 → 0.3770 (−1.2%) |
+
+The **control rows are the argument**. `rowform (no transaction)` never sends a `BEGIN`
+and did not move; neither did Core, `.mappings()`, or either ORM row. The delta is
+roughly constant in absolute terms across three shapes and two read sizes, which is what
+a per-request cost looks like — and why it reads as 4.1% of a 1000-row `flat` read and
+22.3% of a 1-row one.
+
+**A hop through greenlet costs more than a bare one.** The hand-rolled floors gained
+exactly +0.0453 ms each from their new bare `BEGIN`; the SQLAlchemy-plumbed floor gained
++0.059 ms for the same statement sent through `await_only`. Three greenlet-mediated hops
+becoming one is why the fix is worth ~0.10 ms rather than the ~0.09 two bare hops would
+predict.
+
+### 2. The sqlite floors were a round trip lighter than what they bound
+
+pysqlite begins implicitly before DML and never before a SELECT, so `sa_conn.begin()`
+around a read sends nothing — and the floors were built on the assumption that therefore
+nothing should. rowform sends one. So `floor: on SQLAlchemy (dict)`, whose whole job is
+to isolate the row layer, was pricing the row layer *plus a transaction*, and README's
+"what separates it from rowform is the row layer and nothing else" was false on this
+backend. That is correction 15 one backend over, and it survived because the earlier
+reasoning took "the contenders" to mean the SQLAlchemy ones.
+
+All six hand-rolled floors and all three same-plumbing floors now send it, which puts the
+same-plumbing floor at rowform's exact five-hop sequence. It costs the floors
++0.045–0.059 ms at `flat @1` and moves them +0.2–3.1% at `@1000`. **This flatters rowform
+against its own floors**, so the justification is the rule and not the outcome:
+`contenders.py`'s own "match whatever the contenders' transaction actually costs on this
+backend".
+
+Core keeps its six hops, because sending no `BEGIN` is what stock SQLAlchemy genuinely
+does here — charging it for one would measure a library nobody runs. The asymmetry is
+priced from both sides instead: `rowform (no transaction)` takes the guarantee off
+rowform, and a new `SQLAlchemy Core (positional, real transaction)` row puts it onto
+Core. At `flat @1000` that row lands at 2.5520 against rowform's 2.5552 — **at equal work
+and equal guarantees the two result layers are indistinguishable**.
+
+### The small-read column, and why it exists
+
+Every published cell had been a 1000-row read, where per-request cost is ~8% of the
+number and a fixed-cost change is invisible. `flat @1` is now recorded beside it. It is
+what made both findings legible: at `@1000` the floors' new `BEGIN` moved them +0.2–0.4%,
+inside the ~2% of per-row drift between two sweeps against an ephemeral database, while
+the same statement is an unmissable +30% at `@1`.
+
+It needs a longer window than the big read. At `--iterations 1500` the cell came back
+with 17–24% trial spread; at 20000 (a ~8 s window against 0.6 s) every row but two holds
+under 3%. The recipe in METHODOLOGY carries the larger count for this cell only.
+
+### Dispersion, and what is not clean
+
+Two rows at `flat @1` wander on this box and no claim rests on either: `floor: on
+SQLAlchemy (dict)` recorded 10.2% and 21.3% trial spread in two runs, and `rowform
+(idiomatic)` came back at 0.3405 in one run and 0.3864 in the next — the second reading
+as *slower* than equal-work rowform, which does strictly more work, so it is an artifact
+rather than a result. Every other row reproduced across two independent runs per sha
+within 0.8–5%. This is the same signature as the undiagnosed sqlite `join`/`wide`
+dispersion in the entry below, in a different cell; that one did **not** recur in these
+sweeps, with `join` and `wide` holding under 1.8% throughout.
+
+One sweep was invalidated and re-run because I read interim `run.json` files with
+`uv run python` while the harness was timing — a few hundred ms of interpreter startup
+on a box whose whole point is that nothing else runs on it. The re-run is the one
+published. Nothing in the gate catches this, and nothing can: the harness cannot see
+what else the operator is doing.
+
 ## 2026-08-16 (later) — the postgres join floors, and an undiagnosed sqlite instability
 
 Branch **`bench/2026-08-16-pg-join-floors`** (runs taken at `033812a`). All eight runs

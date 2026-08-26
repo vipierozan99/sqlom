@@ -74,11 +74,18 @@ The short version:
   hydrator over the same driver, and one on SQLAlchemy's own pool and transaction —
   so engine cost, row cost and plumbing cost stay separable. Leaving out the third
   is how a pool-and-transaction gap once got published as row-layer speed.
-* **Every contender reads inside `BEGIN`…`COMMIT`.** SQLAlchemy autobegins and
-  rowform's engine-level `fetch_all()` does not, so a suite that leaves this to
-  each contender is comparing isolation guarantees and calling it throughput.
-  The one exception is named for it — `rowform (no transaction)` — because the
-  cheaper weaker read is worth pricing, just not worth publishing as the headline.
+* **Match the transaction on the wire, per backend — not in Python.** A suite that
+  leaves this to each contender compares isolation guarantees and calls it
+  throughput. What "matching" means differs by driver: on postgres every contender
+  and floor sends a real `BEGIN`, while on sqlite `engine.begin()` around a SELECT
+  sends *nothing* under pysqlite, so stock Core reads in autocommit and rowform —
+  which applies SQLAlchemy's pysqlite recipe, or savepoints break — does not. Check
+  the wire, not the call: `log_statement=all` on postgres, and on sqlite count
+  `aiosqlite.Connection._execute` calls per request. Two corrections came from
+  floors that sent a transaction their name claimed and their driver never saw (15
+  and 16). Where the asymmetry is real it gets a row rather than a fudge:
+  `rowform (no transaction)` and `SQLAlchemy Core (positional, real transaction)`
+  price the guarantee from each side.
 * **`just bench micro run --record`** writes a `run.json`. Commit chosen artifacts
   to a dated branch and note the run in [docs/RUNS.md](docs/RUNS.md), so a number
   can always be traced back to a commit that reproduces it.

@@ -22,9 +22,22 @@ dispersion described below, which is the opposite of the point.
 sqlite is an ephemeral 200,000-row database; postgres 16 is an ephemeral docker container
 on the same box. 1000 rows per read, 1500 timed iterations after 200 warmup, **3 trials,
 one contender per process**, GC off, pinned to two whole physical cores (`--pin auto`),
-**cpu boost disabled**, and **every contender reads inside `BEGIN`…`COMMIT`** — except
-`rowform (no transaction)`, which is registered without one precisely so the cost of the
-guarantee is visible as a row rather than folded into the others.
+**cpu boost disabled**. **Every contender reads inside `BEGIN`…`COMMIT`** with two
+deliberate exceptions and one backend-specific caveat: `rowform (no transaction)` is
+registered without one so the cost of the guarantee is a row rather than folded into the
+others, and on **sqlite the SQLAlchemy contenders send no `BEGIN` at all** — pysqlite
+begins implicitly before DML and never before a SELECT, so `engine.begin()` around a read
+reaches the wire as nothing. rowform does send one, because without it pysqlite puts
+`begin_nested()`'s savepoint outside its transaction. That asymmetry is real rather than a
+handicap, so it is priced from both sides rather than erased: `rowform (no transaction)`
+takes the guarantee off rowform and `SQLAlchemy Core (positional, real transaction)` puts
+it onto Core (correction 16). The floors *do* send it, because a floor exists to isolate
+one variable and had been a round trip lighter than the thing it bounded.
+
+**Two read sizes per shape where both are recorded.** A 1000-row read is ~92% per-row
+work, so a per-request cost is ~8% of it and a change in one is invisible; the `@1`
+column is the same read with the rows taken out, and is where fixed cost is legible. The
+column heading carries the rows-per-read whenever a table holds more than one.
 
 Absolute times are roughly 1.9x the pre-2026-08-16 sweeps' and are *not* comparable to
 them: with turbo off the cores sit at base clock. Ratios are the comparable quantity, and
@@ -41,6 +54,12 @@ for shape in flat join wide; do
   just bench micro run --shape "$shape" \
     --iterations 1500 --warmup 200 --trials 3 --isolate --record
 done
+# The small read. It needs a longer window than the big one and more trials: at
+# ~0.35 ms a request, 1500 iterations is a 0.5 s measurement and the cell came
+# back 17-24% dispersed. The dispersion is between-trial drift rather than
+# sampling noise, so 20000 iterations bounds it and 5 trials bound the estimate.
+just bench micro run --shape flat --limit 1 \
+  --iterations 20000 --warmup 2000 --trials 5 --isolate --record
 for shape in flat join; do
   just bench micro run --shape "$shape" --backend mock \
     --iterations 1500 --warmup 200 --trials 3 --isolate --record
@@ -108,21 +127,22 @@ committed to a dated `bench/` branch by hand and indexed in [RUNS.md](RUNS.md).
 
 ### sqlite
 
-| contender | flat | join | wide | | flat | join | wide |
-|---|---|---|---|---|---|---|---|
-| raw driver → dicts *(floor: no SQLAlchemy)* | 1.9558 | 3.4899 | 5.8374 | | 0.73x | 0.74x | 0.82x |
-| raw driver + the same hydrator *(floor: no SQLAlchemy)* | 2.0178 | 3.6824 | 6.0419 | | 0.76x | 0.78x | 0.85x |
-| same pool + transaction → dicts *(floor: same plumbing)* | 2.0657 | 3.6938 | 6.0553 | | 0.78x | 0.78x | 0.85x |
-| **rowform** `fetch_all()` *(equal work)* | **2.6616** | **4.7183** | **7.1112** | | **1.00x** | **1.00x** | **1.00x** |
-| rowform *(prepared, equal payload — prices the cache key)* | 2.6461 | 4.7059 | — | | ~0.99x | ~1.00x | — |
-| rowform *(idiomatic: prepared once, direct to orjson)* | 2.4332 | 4.1122 | 6.5507 | | 0.91x | 0.87x | 0.92x |
-| rowform `fetch_all()` off the engine *(no transaction)* | 2.3880 | — | — | | 0.90x | — | — |
-| rowform `execute().scalars()` | 2.7143 | — | 7.1629 | | ~1.02x | — | ~1.01x |
-| rowform `execute().all()` | 2.9485 | 5.0114 | — | | 1.11x | 1.06x | — |
-| SQLAlchemy Core (positional) | 2.4941 | 4.1614 | 6.8187 | | 0.94x | 0.88x | ~0.96x |
-| SQLAlchemy Core (`.mappings()`) | 4.7052 | — | — | | 1.77x | — | — |
-| SQLAlchemy ORM | 7.9466 | 13.5265 | 14.5627 | | 2.99x | 2.87x | 2.05x |
-| SQLAlchemy ORM (`MappedAsDataclass`) | 7.9256 | 13.4389 | 14.5511 | | 2.98x | 2.85x | 2.05x |
+| contender | flat @1000 | join @1000 | wide @1000 | flat @1 | | flat @1000 | join @1000 | wide @1000 | flat @1 |
+|---|---|---|---|---|---|---|---|---|---|
+| raw driver → dicts *(floor: no SQLAlchemy)* | 1.9611 | 3.4929 | 6.5579 | 0.1868 | | 0.77x | 0.77x | 0.95x | 0.54x |
+| raw driver + the same hydrator *(floor: no SQLAlchemy)* | 2.0235 | 3.6771 | 6.0907 | 0.1894 | | 0.79x | 0.81x | 0.88x | 0.55x |
+| same pool + transaction → dicts *(floor: same plumbing)* | 2.1281 | 3.6604 | 6.0838 | 0.3082 | | 0.83x | 0.81x | 0.88x | 0.89x |
+| **rowform** `fetch_all()` *(equal work)* | **2.5552** | **4.5244** | **6.9225** | **0.3473** | | **1.00x** | **1.00x** | **1.00x** | **1.00x** |
+| rowform *(prepared, equal payload — prices the cache key)* | 2.5399 | 4.4831 | — | 0.3364 | | ~0.99x | ~0.99x | — | ~0.97x |
+| rowform *(idiomatic: prepared once, direct to orjson)* | 2.3443 | 3.9408 | 6.3580 | 0.3524 | | 0.92x | 0.87x | 0.92x | ~1.01x |
+| rowform `fetch_all()` off the engine *(no transaction)* | 2.3987 | — | — | 0.2263 | | 0.94x | — | — | 0.65x |
+| rowform `execute().scalars()` | 2.5931 | — | 6.9705 | 0.3540 | | ~1.01x | — | ~1.01x | ~1.02x |
+| rowform `execute().all()` | 2.8261 | 4.7974 | — | 0.3589 | | 1.11x | 1.06x | — | ~1.03x |
+| SQLAlchemy Core (positional) | 2.4777 | 4.0978 | 6.6716 | 0.3825 | | ~0.97x | 0.91x | ~0.96x | 1.10x |
+| SQLAlchemy Core (positional) *(with pysqlite's transaction recipe — prices the guarantee on Core's side)* | 2.5520 | — | — | 0.4632 | | ~1.00x | — | — | 1.33x |
+| SQLAlchemy Core (`.mappings()`) | 4.6774 | — | — | 0.3888 | | 1.83x | — | — | 1.12x |
+| SQLAlchemy ORM | 7.9308 | 13.5563 | 14.5928 | 0.5411 | | 3.10x | 3.00x | 2.11x | 1.56x |
+| SQLAlchemy ORM (`MappedAsDataclass`) | 7.8324 | 13.5007 | 14.6669 | 0.5401 | | 3.07x | 2.98x | 2.12x | 1.56x |
 
 ### postgres (asyncpg)
 
@@ -256,8 +276,10 @@ plumbing cost": **0.167 ms per request on postgres `flat`, ~12% of a 1000-row re
 more than either asyncpg pooled path. It is not a constant to carry between shapes — on
 `join` the same-plumbing floor sits only 0.3% over the hand-rolled one, because the
 payload work grows with arity while the per-request pool cost does not. On sqlite, where
-the pool is Python-only and reads open no wire transaction, the same-plumbing floor sits
-0.110 ms over the hand-rolled one (~4% of the read). Earlier editions put the postgres
+the pool is Python-only, the same-plumbing floor sits 0.167 ms over the hand-rolled one
+on `flat` (~6.5% of the read) — a figure that only became meaningful once both floors
+sent the same transaction, since the earlier 0.110 ms compared a floor that opened one
+against a floor that did not (correction 16). Earlier editions put the postgres
 gap at 0.21 ms, then at 0.3–0.4 ms attributed to the checkout alone, then — two sweeps
 ago — at *negative*, which is what a floor missing two round trips looks like. The
 current answer is neither "expensive" nor "free": ~12% of a 1000-row `flat` read, paid
@@ -458,7 +480,7 @@ came from a standard tool" is not a correctness argument.
 
 ---
 
-## The fifteen corrections
+## The sixteen corrections
 
 Each was caught by attacking the benchmark rather than trusting it, and each came from
 a distinct flaw. Figures are as-of each correction; absolute milliseconds are not
@@ -764,6 +786,55 @@ because "does this contender send what its name claims" is a different question 
 > approaching zero and then crosses it is not converging; it is a bug getting closer to
 > the surface. "Treat SQLAlchemy's plumbing as expensive" was unsupported, but so was
 > the replacement, and the honest reading was available the whole time from the wire.
+
+### 16. The sqlite floors sent no transaction, and rowform's cost three round trips
+
+Correction 15 one backend over, found the same way — by asking what a gap *contains* and
+tracing the wire rather than reasoning about it. The question was why `rowform` sits
+0.64 ms above the `raw driver + the same hydrator` floor on sqlite `flat`.
+
+pysqlite begins implicitly before DML and never before a SELECT, so `sa_conn.begin()`
+around a read sends nothing at all. The sqlite floors were built on that fact, with the
+module docstring arguing that a floor issuing `BEGIN` by hand would do *more* work than
+the contenders it bounds. True of the SQLAlchemy contenders. Not true of rowform, which
+applies SQLAlchemy's own pysqlite recipe (`SqliteDriver.configure`) because without it
+`begin_nested()`'s savepoint lands outside its transaction — a silent data-loss bug, and
+the reason that code exists.
+
+So on this backend rowform's read was inside a real transaction and every contender and
+floor it was compared against was in autocommit. Two consequences, both published:
+
+* **`floor: on SQLAlchemy (dict)` was pricing the row layer plus a transaction.** README
+  said "what separates it from rowform is the row layer and nothing else". It was a round
+  trip lighter than the thing it bounded.
+* **The sqlite pool figure was measured against that floor.** "0.110 ms (~4%)" came from
+  a pair where one side sent `BEGIN` and the other did not.
+
+Tracing the hops turned up a second thing, this one a real cost rather than a
+mismeasurement: rowform sent its `BEGIN` through `conn.exec_driver_sql`, which reaches
+aiosqlite as three worker-thread hops — `cursor()`, `execute()`, `close()` — where the
+driver's own `execute` makes the cursor inside the same hop. Seven hops per `begin()`
+scope against Core's six for the same read. Sending it on the driver connection instead
+is worth **0.108 ms per request** on `flat @1000` (−4.1%) and **0.099 ms** at `flat @1`
+(−22.3%), with `rowform (no transaction)` — the one row that never sends a `BEGIN` — flat
+at +0.4% as the control.
+
+**What the fix to the floors costs the claim.** Making the floors wire-equivalent narrows
+their gap to rowform, which flatters rowform. That direction is uncomfortable and the
+justification cannot be the outcome; it is `contenders.py`'s own rule, "match whatever the
+contenders' transaction actually costs on this backend". Core is left at six hops on
+purpose — sending no `BEGIN` is what stock SQLAlchemy really does here, and charging it
+for one would measure a library nobody runs. The asymmetry is priced from both sides
+instead, by `rowform (no transaction)` and by a new `SQLAlchemy Core (positional, real
+transaction)` row.
+
+**Why no gate caught it, again.** Correction 15 recorded that the equivalence gate cannot
+see transaction spelling, because both spellings return identical bytes. That lesson was
+recorded for postgres and the sqlite half of the same bug went on shipping. The audit
+that catches it is per-driver: `log_statement=all` on postgres, and on sqlite counting
+`aiosqlite.Connection._execute` calls per request, which is now what
+`tests/test_transactions.py::TestSqliteBeginCost` asserts — a hop count, because the two
+spellings are behaviourally identical and every other test passes either way.
 
 ---
 
