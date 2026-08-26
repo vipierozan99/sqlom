@@ -29,6 +29,7 @@ import tempfile
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -38,6 +39,7 @@ from benchmarks.backends.sqlite import EphemeralSqlite
 from benchmarks.engines import mock as mock_engines
 from benchmarks.harness import affinity, equivalence, registry, result
 from benchmarks.harness import env as env_module
+from benchmarks.harness import memory as memory_module
 from benchmarks.harness import seed as seed_module
 from benchmarks.harness.registry import ContenderInit
 from benchmarks.harness.stats import ratio_with_spread, sample_shape
@@ -305,6 +307,139 @@ async def _measure(
     return asdict(sample_shape(samples)), None
 
 
+async def _seeded_postgres(pg_dsn: str, shape: str, rows: int) -> str:
+    """Seeded here rather than assumed: the postgres contenders read the same
+    deterministic rows the sqlite ones do, and a server left over from another
+    shape would otherwise be measured against whatever it happened to contain.
+
+    Named rather than inlined because `memory` provisions the same way — a second
+    command seeding differently would compare allocations over different data —
+    and that is also why `data_shape_for` lives in here rather than at the two
+    call sites: a workload shape (`write`) needs the tables of the shape it
+    writes to, and one caller remembering that is one caller too few.
+    """
+    data_shape = seed_module.data_shape_for(shape)
+    seeded = await postgres_backend.attach(pg_dsn).seed(data_shape, rows)
+    typer.echo(f"seeded {seeded} rows into {data_shape} on postgres")
+    return pg_dsn
+
+
+#: `memory`'s columns. Bytes as KiB because a 1000-row read allocates megabytes
+#: and the interesting digits are the leading ones; `bytes/row` is the figure that
+#: transfers to a reader's own row count.
+_MEMORY_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("contender", "<38"),
+    ("peak KiB", ">10"),
+    ("bytes/row", ">10"),
+    ("net KiB", ">9"),
+    (f"vs {REFERENCE}", ">12"),
+)
+
+
+@app.command()
+def memory(
+    shape: str = typer.Option(
+        "flat", help=f"one of {seed_module.RUNNABLE_SHAPES} — {registry.SHAPE_HELP}"
+    ),
+    rows: int = typer.Option(200_000, help="rows seeded into the ephemeral database"),
+    limit: int = typer.Option(1000, help="rows per request"),
+    only: str | None = typer.Option(None, help=registry.ONLY_HELP),
+    backend: str = typer.Option("sqlite", "--backend", help="'sqlite' or 'postgres'"),
+    calls: int = typer.Option(3, help="traced reads per contender"),
+    warmup: int = typer.Option(3, help="untraced reads first, so setup is not counted"),
+    pg_dsn: str | None = typer.Option(None, "--pg-dsn", help="required for --backend postgres"),
+) -> None:
+    """What one read *allocates*, per contender.
+
+    The suite's claim is about what a row layer builds; every other number here is
+    a duration. This one is bytes — peak traced allocation per read, and what is
+    still held after it returns.
+
+    **Not a timing run, and not recorded.** `tracemalloc` taxes the path it
+    measures, so these numbers belong in their own table and never beside a
+    millisecond (`benchmarks/harness/memory.py`, `docs/METHODOLOGY.md`).
+    """
+    if shape not in seed_module.RUNNABLE_SHAPES:
+        raise typer.BadParameter(f"shape must be one of {seed_module.RUNNABLE_SHAPES}")
+    if backend not in ("sqlite", "postgres"):
+        raise typer.BadParameter("--backend must be 'sqlite' or 'postgres'")
+    if backend == "postgres" and not pg_dsn:
+        raise typer.BadParameter("--pg-dsn is required for --backend postgres")
+    assert_unpatched_threading()
+    asyncio.run(_memory(shape, rows, limit, only, backend, calls, warmup, pg_dsn))
+
+
+async def _memory(
+    shape: str,
+    rows: int,
+    limit: int,
+    only: str | None,
+    backend: str,
+    calls: int,
+    warmup: int,
+    pg_dsn: str | None,
+) -> None:
+    specs = registry.select(shape=shape, only=only, backend=backend)
+    if not specs:
+        raise typer.BadParameter(
+            f"no contenders match shape={shape!r} only={only!r} backend={backend!r}"
+        )
+
+    db = (
+        EphemeralSqlite.create(seed_module.data_shape_for(shape), rows)
+        if backend == "sqlite"
+        else None
+    )
+    handle = db.path if db is not None else await _seeded_postgres(str(pg_dsn), shape, rows)
+    init = ContenderInit(handle=handle, limit=limit)
+    instances: dict[str, tuple[Any, Any]] = {}
+    try:
+        for spec in specs:
+            instances[spec.name] = await spec.factory(init)
+
+        # The same gate the timed runs use, for the same reason: a contender
+        # allocating less because it built less is not a smaller row layer.
+        eq = await equivalence.check({name: req for name, (req, _) in instances.items()})
+        typer.echo(
+            f"\n[{shape}/{backend}] equivalence: {'PASS' if eq.passed else 'FAIL'} "
+            f"({eq.payload_bytes} bytes, sha256={eq.payload_sha256})"
+        )
+        for failure in eq.failures:
+            typer.echo(f"  ! {failure}")
+        if not eq.passed:
+            return
+
+        measured: dict[str, memory_module.Allocation] = {}
+        for spec in specs:
+            target = instances[spec.name][0]
+            measured[spec.name] = await memory_module.measure(
+                target, calls=calls, warmup=warmup
+            )
+
+        reference = _reference_name([spec.name for spec in specs])
+        baseline = measured[reference].peak_bytes if reference else 0
+        typer.echo(f"  -- tracemalloc, calls={calls} (allocation, not time) --")
+        typer.echo(_row(_MEMORY_COLUMNS, *(label for label, _ in _MEMORY_COLUMNS)))
+        for spec in specs:
+            alloc = measured[spec.name]
+            ratio = f"{alloc.peak_bytes / baseline:.2f}x" if baseline else "—"
+            typer.echo(
+                _row(
+                    _MEMORY_COLUMNS,
+                    spec.name,
+                    f"{alloc.peak_bytes / 1024:.1f}",
+                    f"{alloc.peak_per_row(limit):.0f}",
+                    f"{alloc.net_bytes / 1024:.1f}",
+                    ratio,
+                )
+            )
+    finally:
+        for _, teardown in instances.values():
+            await teardown()
+        if db is not None:
+            db.close()
+
+
 def _reference_in(group: list[result.Cell]) -> result.Cell | None:
     """The cell everything else is measured against — exact `REFERENCE` name,
     or a unique `REFERENCE`-prefixed one.
@@ -317,10 +452,20 @@ def _reference_in(group: list[result.Cell]) -> result.Cell | None:
     """
     if group and group[0].params.get("backend") == "mock":
         return None
-    exact = [c for c in group if c.contender == REFERENCE]
-    if exact:
-        return exact[0]
-    prefixed = [c for c in group if c.contender.startswith(REFERENCE)]
+    name = _reference_name([c.contender for c in group])
+    return next((c for c in group if c.contender == name), None)
+
+
+def _reference_name(names: list[str]) -> str | None:
+    """`REFERENCE` where a group has it, else a uniquely `REFERENCE`-prefixed
+    name — the `write` cell has `rowform execute_many` and no bare `rowform`.
+
+    Shared with `memory`, which ratios peak allocation the same way, so the two
+    tables cannot disagree about which row is the reference.
+    """
+    if REFERENCE in names:
+        return REFERENCE
+    prefixed = [name for name in names if name.startswith(REFERENCE)]
     return prefixed[0] if len(prefixed) == 1 else None
 
 
@@ -422,15 +567,7 @@ async def _run(
                         f"(start a server with `bench db up`)"
                     )
                     continue
-                # Seeded here rather than assumed: the postgres contenders read
-                # the same deterministic rows the sqlite ones do, and a server
-                # left over from another shape would otherwise be measured
-                # against whatever it happened to contain.
-                server = postgres_backend.attach(pg_dsn)
-                data_shape = seed_module.data_shape_for(shape)
-                seeded = await server.seed(data_shape, rows)
-                typer.echo(f"seeded {seeded} rows into {data_shape} on postgres")
-                handle = pg_dsn
+                handle = await _seeded_postgres(pg_dsn, shape, rows)
             else:
                 typer.echo(f"skipping backend={backend!r}: bench micro has no runner for it yet")
                 continue
