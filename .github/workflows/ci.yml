@@ -192,9 +192,9 @@ jobs:
       - name: Sync dependencies
         run: uv sync --all-groups
 
-      # The gate sits below the measured figure (93% branch coverage) rather than
-      # at it: a threshold set exactly at today's number fails on rounding and
-      # teaches people to ignore the gate.
+      # The gate sits below the measured figure (97% of statements and branches,
+      # measured 2026-08-27) rather than at it: a threshold set exactly at
+      # today's number fails on rounding and teaches people to ignore the gate.
       - name: Coverage
         run: just cov --pg-required --cov-fail-under=90
 

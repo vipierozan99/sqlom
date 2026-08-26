@@ -53,6 +53,14 @@ One class, three jobs:
 > **Status: early.** Implemented, tested against sqlite and PostgreSQL 16, and
 > benchmarked. Not packaged, not on PyPI, never run in production.
 
+```bash
+uv add "rowform @ git+https://github.com/vipierozan99/sqlom"
+uv add asyncpg          # or psycopg[binary] + psycopg-pool, or aiosqlite
+```
+
+SQLAlchemy comes with it and is not optional. Which driver is in play comes from the
+URL — see [Backends](#-backends) for what each one supports.
+
 ---
 
 ## 🚫 No implicit queries
@@ -211,6 +219,35 @@ Full numbers, and a log of **sixteen published claims that turned out to be wron
 the most recent being the sqlite half of the one before it, floors in this very table that
 sent no transaction while rowform did:
 [METHODOLOGY.md](docs/METHODOLOGY.md).
+
+---
+
+## 🔌 Backends
+
+Three async drivers, dispatched from the URL. Anything else — a sync engine, MySQL,
+Oracle, SQL Server — raises `ConfigurationError` at `rf.Engine(...)` rather than failing
+later: rowform runs statements on the driver connection itself, so there has to be one it
+knows how to await.
+
+| | `sqlite+aiosqlite` | `postgresql+asyncpg` | `postgresql+psycopg` |
+|---|---|---|---|
+| reads, writes, transactions, savepoints | ✅ | ✅ | ✅ |
+| `fetch_iter` / `stream()` | cursor `fetchmany` | server-side portal | `DECLARE`d cursor |
+| …streaming a write with `RETURNING` | ✅ | ✅ | ❌ `UnsupportedError` — postgres will not `DECLARE` a cursor for one |
+| `copy_in` | ❌ `UnsupportedError` — use `execute_many` | ✅ binary COPY | ✅ `COPY … FROM STDIN` |
+| `pipeline()` | ❌ `UnsupportedError` | ❌ `UnsupportedError` — asyncpg has no such API | ✅ needs libpq 14+ |
+| what a driver error arrives as | `sqlite3.*` | `asyncpg.exceptions.*` | `psycopg.errors.*` |
+
+Two of those rows are why the test suite runs every engine test three times rather than
+twice. sqlite is put in autocommit and given SQLAlchemy's explicit-`BEGIN` recipe (without
+it, savepoints are silently wrong under pysqlite); asyncpg has no implicit transaction at
+all, so rowform starts the one `begin()` only promised; psycopg's connection is
+transactional in its own right, which is why it was the only driver that could show a
+write being discarded ([PLAN_SQLA_API.md](docs/PLAN_SQLA_API.md) §8).
+
+Driver exceptions are **not** wrapped — see the last row, and
+[GUIDE.md](docs/GUIDE.md#handling-errors) for what that means when you move a write onto
+rowform.
 
 ---
 
@@ -431,9 +468,9 @@ db = rf.Engine(sa_engine)
 await sa_engine.dispose()      # yours to open, yours to close
 ```
 
-`aiosqlite`, `asyncpg` and `psycopg` are supported; which one is in play comes from the
-URL, and the dialect statements compile for is the engine's own — one SQLAlchemy has
-already run `initialize()` against, so it knows the server version.
+The dialect statements compile for is the engine's own — one SQLAlchemy has already run
+`initialize()` against, so it knows the server version. Three drivers are supported, and
+they do not support the same things: see [Backends](#-backends).
 
 Giving up rowform's own pool costs something, paid per *checkout* rather than per row or
 per statement — with the connection in hand, executing on a SQLAlchemy-pooled connection
@@ -553,7 +590,7 @@ Stated plainly, because most of it is not recoverable:
 
 ```bash
 git clone https://github.com/vipierozan99/sqlom && cd sqlom
-uv sync --all-extras
+uv sync --all-groups          # groups, not extras: typecheck covers benchmarks/
 just test          # sqlite + postgres, plus the type checker
 just lint
 just typecheck
