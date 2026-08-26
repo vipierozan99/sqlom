@@ -81,6 +81,9 @@ Raw `run.json` artifacts live on the `bench/<date>-<topic>` branches named above
 - The row layer itself is ~0.07 ms per 1000 rows of 4 columns, for dicts, for the
   generated hydrator, for a dataclass constructor and for SQLAlchemy's C `Row` alike.
   The only path materially below it is one that builds no Python object per row.
+- In bytes, a 1000-row `flat` read peaks at ~0.52 MB for rowform — within 1% of
+  raw-driver dicts on sqlite, 10% on postgres — against +13–18% for Core and 3.3–3.6x
+  for the ORM (`just bench micro memory`).
 - GC on/off made no difference to the row layer in isolation; it is off for the
   published runs because it collapses trial spread on `join`.
 

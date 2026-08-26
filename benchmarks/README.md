@@ -1,10 +1,11 @@
 # The benchmark suite
 
-Two commands. Numbers and how to read them: [docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
+Three commands. Numbers and how to read them: [docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
 
 | command | measures | cases |
 |---|---|---|
 | `just bench micro run` | latency of one read, in-process, per contender | `micro/contenders.py` |
+| `just bench micro memory` | peak allocation of one read, per contender | `micro/contenders.py` |
 | `just bench load run` | HTTP throughput under concurrency, via locust | `service/app.py` routes |
 
 Every case has one slug, `{backend}-{shape}-{name}`: `just bench contenders list`
