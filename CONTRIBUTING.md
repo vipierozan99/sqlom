@@ -60,7 +60,7 @@ whether you got it right.
 ## Benchmarks
 
 Read [docs/METHODOLOGY.md](docs/METHODOLOGY.md) before quoting a number, and
-especially before adding one. It carries a log of thirteen published claims that
+especially before adding one. It carries a log of sixteen published claims that
 turned out to be wrong, with how each was caught; most of them are mistakes that
 are easy to repeat.
 
@@ -75,16 +75,18 @@ The short version:
   so engine cost, row cost and plumbing cost stay separable. Leaving out the third
   is how a pool-and-transaction gap once got published as row-layer speed.
 * **Match the transaction on the wire, per backend — not in Python.** A suite that
-  leaves this to each contender compares isolation guarantees and calls it
-  throughput. What "matching" means differs by driver: on postgres every contender
-  and floor sends a real `BEGIN`, while on sqlite `engine.begin()` around a SELECT
-  sends *nothing* under pysqlite, so stock Core reads in autocommit and rowform —
-  which applies SQLAlchemy's pysqlite recipe, or savepoints break — does not. Check
-  the wire, not the call: `log_statement=all` on postgres, and on sqlite count
-  `aiosqlite.Connection._execute` calls per request. Two corrections came from
-  floors that sent a transaction their name claimed and their driver never saw (15
-  and 16). Where the asymmetry is real it gets a row rather than a fudge:
-  `rowform (no transaction)` and `SQLAlchemy Core (positional, real transaction)`
+  leaves this to each contender compares isolation guarantees and calls it throughput.
+  What "matching" means differs by driver: on postgres every transactional contender and
+  floor sends a real `BEGIN`, while on sqlite `engine.begin()` around a SELECT sends
+  *nothing* under pysqlite, so stock Core reads in autocommit and rowform — which
+  applies SQLAlchemy's pysqlite recipe, or savepoints break — does not. Check the wire,
+  not the call: `log_statement=all` on postgres, and on sqlite count
+  `aiosqlite.Connection._execute` calls per request. The rule binds the transactional
+  contenders and every floor; `rowform (no transaction)` is the named exception on both
+  backends, because pricing the cheaper weaker read is the point of that row. Two
+  corrections came from floors that sent a transaction their name claimed and their
+  driver never saw (15 and 16). Where the asymmetry is real it gets a row rather than a
+  fudge: `rowform (no transaction)` and `SQLAlchemy Core (positional, real transaction)`
   price the guarantee from each side.
 * **`just bench micro run --record`** writes a `run.json`. Commit chosen artifacts
   to a dated branch and note the run in [docs/RUNS.md](docs/RUNS.md), so a number

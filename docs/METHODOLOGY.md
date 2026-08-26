@@ -1,6 +1,6 @@
 # Benchmarks, and how to trust them
 
-The numbers, the practices that produced them, and the fifteen published claims that
+The numbers, the practices that produced them, and the sixteen published claims that
 turned out to be wrong.
 
 One rule sits above the rest: **a result that flatters the thing you built is a bug
@@ -10,18 +10,21 @@ report until you have tried to break it.**
 
 ## Results
 
-**Two shas, one per table, and the reason is stated rather than smoothed.** The sqlite
-and mock tables were taken at `122e035`; the postgres table at `033812a`, which adds the
-postgres `join` floors and nothing that touches sqlite. Both are `quotable=True`, taken
-the same day on the same box under the same recipe, with artifacts on
-`bench/2026-08-16-boost-off-floors` and `bench/2026-08-16-pg-join-floors`, indexed in
-[RUNS.md](RUNS.md). Only the postgres table was re-recorded because only postgres
-contenders changed; re-recording sqlite would have replaced good numbers with the
-dispersion described below, which is the opposite of the point.
+**Three shas, one per table, and the reason is stated rather than smoothed.** The sqlite
+table was taken at `17e867e` (2026-08-26), which is where sqlite's `BEGIN` became one
+round trip and the sqlite floors started sending one — so every earlier sqlite number is
+superseded rather than merely older, and the baseline it is measured against, `b7c4c71`,
+is archived beside it. The mock table is still at `122e035` and the postgres table at
+`033812a`; neither backend is touched by a change inside `SqliteDriver`. All
+`quotable=True`, same box, same recipe, with artifacts on
+`bench/2026-08-26-sqlite-begin`, `bench/2026-08-16-boost-off-floors` and
+`bench/2026-08-16-pg-join-floors`, indexed in [RUNS.md](RUNS.md). Each table is
+re-recorded only when its own contenders change, which is why they do not share a sha.
 
 sqlite is an ephemeral 200,000-row database; postgres 16 is an ephemeral docker container
-on the same box. 1000 rows per read, 1500 timed iterations after 200 warmup, **3 trials,
-one contender per process**, GC off, pinned to two whole physical cores (`--pin auto`),
+on the same box. 1000 rows per read except where a column says `@1`, 1500 timed
+iterations after 200 warmup (20000 after 2000 for `@1`), **3 trials, one contender per
+process** (5 for `@1`), GC off, pinned to two whole physical cores (`--pin auto`),
 **cpu boost disabled**. **Every contender reads inside `BEGIN`…`COMMIT`** with two
 deliberate exceptions and one backend-specific caveat: `rowform (no transaction)` is
 registered without one so the cost of the guarantee is a row rather than folded into the
