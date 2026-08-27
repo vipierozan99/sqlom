@@ -65,6 +65,12 @@ ROW_ORDER = (
     "SQLAlchemy ORM",
     "SQLAlchemy ORM (mock)",
     "SQLAlchemy ORM (DC)",
+    # The streamed reads, last and as a block: they read the same rows in ten
+    # chunks rather than one, so they are comparable with each other and not with
+    # the buffered rows above (contenders.py's streaming section).
+    "rowform (fetch_iter)",
+    "rowform compat (stream())",
+    "SQLAlchemy Core (stream())",
 )
 
 #: How the contender names are spelled in prose, where the registry's names are
@@ -92,6 +98,10 @@ LABELS = {
     "SQLAlchemy ORM": "SQLAlchemy ORM",
     "SQLAlchemy ORM (mock)": "SQLAlchemy ORM",
     "SQLAlchemy ORM (DC)": "SQLAlchemy ORM (`MappedAsDataclass`)",
+    "rowform (fetch_iter)": "rowform `fetch_iter()` *(streamed in chunks — the three "
+    "streamed rows compare with each other, not with the buffered ones above)*",
+    "rowform compat (stream())": "rowform `stream()` *(streamed)*",
+    "SQLAlchemy Core (stream())": "SQLAlchemy Core `stream()` *(streamed, in partitions)*",
 }
 
 #: Rows whose values are bolded as well as their label — the contender the ratio

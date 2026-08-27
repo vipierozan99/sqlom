@@ -291,6 +291,40 @@ just bench micro run --backend postgres-psycopg --shape flat \
 python scripts/publish_tables.py benchmarks/results/runs/*/run.json
 ```
 
+### The streamed read (`fetch_iter`)
+
+**No table yet — the arm exists, the sweep has not been run.** `fetch_iter` is
+half the read API and had never been timed. It is not a faster `fetch_all`: it
+exists so a result larger than memory can be read at all, and the number a caller
+sizing `chunk=` wants is what a chunk boundary costs. Three contenders on `flat`,
+at both backends, all reading the same 1000 rows in ten chunks of 100 — rowform's
+`fetch_iter`, rowform's `stream()` compat track, and Core's own `stream()` at
+`yield_per=100`.
+
+They compare only with **each other**. A ten-round-trip read against the
+one-round-trip buffered rows in the same cell would be measuring the chunk size,
+which is why the section says so and the rows carry a `streaming` tag. What the
+gate does cover for free: the payloads are byte-identical to `fetch_all`'s, so a
+chunk boundary that dropped or duplicated a row fails equivalence rather than
+review.
+
+**Correction 9's rule earned its keep before anything was published.** The Core
+arm first iterated its `AsyncResult` row by row — `async for row in result` — and
+measured 12.2 ms on sqlite against rowform's 3.6, which would have been published
+as a 3.4x result. It is not one: taken the tuned way, in `result.partitions(100)`,
+the same read is 3.6 ms. Nothing about the result layer changed; the 3.4x was
+per-row `__anext__` on an async iterator, which a caller who reads the streaming
+docs never pays. Both arms now take partitions/chunks.
+
+To fill this section in:
+
+```bash
+just bench env check
+just bench micro run --shape flat --iterations 1500 --warmup 200 \
+    --trials 3 --isolate --record
+python scripts/publish_tables.py benchmarks/results/runs/*/run.json
+```
+
 ### Row layer alone (`mock` backend, zero driver cost)
 
 The instrument that isolates the row layer. No connection, no pool, no transaction —
