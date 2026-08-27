@@ -33,6 +33,7 @@ import pytest
 import benchmarks.micro.contenders  # noqa: F401  — importing registers every contender
 from benchmarks.backends import postgres as pg_backend
 from benchmarks.harness import registry
+from benchmarks.harness import seed as seed_module
 
 #: Enough rows to make the reads real, few enough to seed per test. The counts
 #: asserted below do not depend on how many rows come back.
@@ -111,11 +112,11 @@ async def seeded_shape(pg_dsn, request):
     against CI's service container as well as a `bench db up` box.
     """
     shape = request.param
-    await pg_backend.attach(pg_dsn).seed(shape, ROWS)
+    await pg_backend.attach(pg_dsn).seed(seed_module.data_shape_for(shape), ROWS)
     return shape
 
 
-@pytest.mark.parametrize("seeded_shape", ["flat", "join"], indirect=True)
+@pytest.mark.parametrize("seeded_shape", ["flat", "join", "write"], indirect=True)
 async def test_every_contender_in_a_cell_opens_one_transaction_per_read(
     seeded_shape, pg_dsn, monkeypatch
 ):
@@ -139,8 +140,8 @@ async def test_every_contender_in_a_cell_opens_one_transaction_per_read(
     }
     actual = {name: c["BEGIN"] for name, c in counts.items()}
     assert actual == expected, (
-        "these contenders did not send one BEGIN per read; a floor that sends "
-        "fewer is not a floor (correction 15)"
+        "these contenders did not send one BEGIN per timed call; a floor that "
+        "sends fewer is not a floor (correction 15)"
     )
 
     unbalanced = {n: c for n, c in counts.items() if c["BEGIN"] != c["COMMIT"]}

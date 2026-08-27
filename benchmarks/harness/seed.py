@@ -28,7 +28,18 @@ from benchmarks.shapes import flat, join, wide
 # two contenders reading different data is not a fair comparison.
 RNG_SEED = 42
 
+#: The *data* shapes — one set of tables and rows each. `create_all_shapes`
+#: iterates this, so a workload that reuses another shape's table must not be
+#: here or its DDL would run twice against one database.
 SHAPES = ("flat", "join", "wide")
+
+#: What `bench micro --shape` accepts: the data shapes, plus the workloads
+#: defined over them. `write` updates `flat`'s rows (see `shapes/write.py`), so
+#: it is a group of contenders rather than a set of tables.
+RUNNABLE_SHAPES = (*SHAPES, "write")
+
+#: Which shape's tables and rows a runnable shape needs provisioned.
+_DATA_SHAPE = {"write": "flat"}
 
 _DIALECT_URLS = {"sqlite": "sqlite://", "postgres": "postgresql://"}
 
@@ -149,6 +160,12 @@ def insert_sql(table: Any, dialect: Any) -> str:
     import rowform
 
     return rowform.CoreQuery(sa.insert(table), dialect).sql
+
+
+def data_shape_for(shape: str) -> str:
+    """The data shape behind a runnable one — itself, unless it is a workload
+    over somebody else's table."""
+    return _DATA_SHAPE.get(shape, shape)
 
 
 def _module_for(shape: str):

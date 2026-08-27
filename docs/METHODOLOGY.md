@@ -321,6 +321,42 @@ To fill this section in:
 ```bash
 just bench env check
 just bench micro run --shape flat --iterations 1500 --warmup 200 \
+### The write path (`execute_many`)
+
+**No table yet — the arm exists, the sweep has not been run.** `execute_many` is
+how an application applies a batch, and nothing here had ever priced it. Four
+contenders under `--shape write`, at both backends: rowform's `execute_many`,
+Core's executemany, the ORM's bulk UPDATE by primary key, and the driver's own
+`executemany` as the floor. Every arm sends the same compiled UPDATE and the same
+N parameter sets inside one transaction — asserted, not assumed:
+`tests/test_bench_write_parity.py` captures what goes to the cursor and requires
+one identical statement across all three spellings.
+
+**The workload is an idempotent UPDATE by primary key, and that is not a
+preference.** `harness/timing.per_iteration` times one callable N times with no
+reset between calls, so an INSERT workload grows its table under the measurement
+and charges page splits and index maintenance to the API. Updating the same N
+keys to the same N values costs the same on iteration 1500 as on iteration 1.
+
+**Which leaves `copy_in` unmeasured, and this is where that is written down.**
+COPY only inserts, so it cannot use the trick above. The two honest ways to
+measure it are a per-iteration reset hook in the harness, or a `TRUNCATE` priced
+into every arm of the cell — the second changes what the number means and would
+need saying beside the table. Neither is done; `copy_in`'s only published figures
+remain the ones in its own docstring.
+
+**What the equivalence gate does and does not cover here.** A write contender's
+payload is its parameter-set count, so the gate proves every arm attempted the
+same batch and nothing more — bytes cannot show that rows changed. The read-back
+check in `test_bench_write_parity.py` is what covers the rest, per contender, on
+both backends. Transaction parity is covered by the existing
+`test_bench_wire_parity.py`, which now runs over the `write` cell too.
+
+To fill this section in:
+
+```bash
+just bench env check
+just bench micro run --shape write --iterations 1500 --warmup 200 \
     --trials 3 --isolate --record
 python scripts/publish_tables.py benchmarks/results/runs/*/run.json
 ```

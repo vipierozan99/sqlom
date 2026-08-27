@@ -71,6 +71,12 @@ ROW_ORDER = (
     "rowform (fetch_iter)",
     "rowform compat (stream())",
     "SQLAlchemy Core (stream())",
+    # The `write` cell (contenders.py's write section). Its own shape, so these
+    # never share a table with the read rows above.
+    "floor: hand-rolled (executemany)",
+    "rowform execute_many",
+    "SQLAlchemy Core (executemany)",
+    "SQLAlchemy ORM (bulk update)",
 )
 
 #: How the contender names are spelled in prose, where the registry's names are
@@ -102,6 +108,10 @@ LABELS = {
     "streamed rows compare with each other, not with the buffered ones above)*",
     "rowform compat (stream())": "rowform `stream()` *(streamed)*",
     "SQLAlchemy Core (stream())": "SQLAlchemy Core `stream()` *(streamed, in partitions)*",
+    "floor: hand-rolled (executemany)": "raw driver `executemany` *(floor: no SQLAlchemy)*",
+    "rowform execute_many": "**rowform** `execute_many()`",
+    "SQLAlchemy Core (executemany)": "SQLAlchemy Core (executemany)",
+    "SQLAlchemy ORM (bulk update)": "SQLAlchemy ORM (bulk UPDATE by primary key)",
 }
 
 #: Rows whose values are bolded as well as their label — the contender the ratio
@@ -110,7 +120,10 @@ LABELS = {
 #: exists to remove. `rowform (mock)` is deliberately absent: the mock group has
 #: no reference — cross-mapper mock ratios compare two seams that exclude
 #: different layers, so the harness stopped recording them.
-BOLD_ROWS = frozenset({"rowform"})
+#: `rowform execute_many` is the `write` cell's reference: `_reference_in` falls
+#: back to a unique `rowform`-prefixed contender when there is no bare `rowform`,
+#: and in that cell there is not one.
+BOLD_ROWS = frozenset({"rowform", "rowform execute_many"})
 
 
 def load(paths: list[Path], gc: str = "off") -> dict[tuple[str, str, int], dict[str, Any]]:

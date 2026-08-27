@@ -138,7 +138,9 @@ def _row(columns: tuple[tuple[str, str], ...], *cells: str) -> str:
 
 @app.command()
 def run(
-    shape: str = typer.Option("flat", help=f"one of {seed_module.SHAPES} — {registry.SHAPE_HELP}"),
+    shape: str = typer.Option(
+        "flat", help=f"one of {seed_module.RUNNABLE_SHAPES} — {registry.SHAPE_HELP}"
+    ),
     rows: int = typer.Option(200_000, help="rows seeded into the ephemeral database"),
     limit: int = typer.Option(1000, help="rows per request"),
     iterations: int = typer.Option(1000, help="timed iterations per contender"),
@@ -182,8 +184,8 @@ def run(
 ) -> None:
     """Run every registered contender for `--shape`, gated by output
     equivalence (per backend group), and print per-iteration medians."""
-    if shape not in seed_module.SHAPES:
-        raise typer.BadParameter(f"shape must be one of {seed_module.SHAPES}")
+    if shape not in seed_module.RUNNABLE_SHAPES:
+        raise typer.BadParameter(f"shape must be one of {seed_module.RUNNABLE_SHAPES}")
     gc_modes = ["on", "off"] if gc == "both" else [gc]
     if any(mode not in ("on", "off") for mode in gc_modes):
         raise typer.BadParameter("--gc must be 'on', 'off', or 'both'")
@@ -409,7 +411,7 @@ async def _run(
         for backend, backend_specs in by_backend.items():
             db = None
             if backend == "sqlite":
-                db = EphemeralSqlite.create(shape, rows)
+                db = EphemeralSqlite.create(seed_module.data_shape_for(shape), rows)
                 handle = db.path
             elif backend == "mock":
                 handle = await mock_engines.canned_rows(shape, limit)
@@ -425,8 +427,9 @@ async def _run(
                 # left over from another shape would otherwise be measured
                 # against whatever it happened to contain.
                 server = postgres_backend.attach(pg_dsn)
-                seeded = await server.seed(shape, rows)
-                typer.echo(f"seeded {seeded} rows into {shape} on postgres")
+                data_shape = seed_module.data_shape_for(shape)
+                seeded = await server.seed(data_shape, rows)
+                typer.echo(f"seeded {seeded} rows into {data_shape} on postgres")
                 handle = pg_dsn
             else:
                 typer.echo(f"skipping backend={backend!r}: bench micro has no runner for it yet")
