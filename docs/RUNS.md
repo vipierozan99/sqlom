@@ -1,5 +1,76 @@
 # Recorded runs
 
+## 2026-08-27 — the postgres table, re-measured at main, on a different server
+
+Branch **`bench/2026-08-27-postgres-attached`** (runs at `e28c2e0`). Nine runs, every one
+`quotable=True`, boost off and verified still off at the end of each. Local dates here;
+this box is UTC+2, so the artifacts are stamped `2026-08-26T22:44Z` through `23:35Z` —
+look for those rather than for `2026-08-27T*`.
+
+Why at all: the published postgres table came from `033812a` on 2026-08-16, which predates
+the transaction-parity work the sqlite table was rebuilt for, and it had no `@1` column —
+so the second half of the performance story was quoting an older library than the first.
+
+**The server changed, and that is the caveat to carry.** These ran against an attached
+PostgreSQL 16.15 on `127.0.0.1` (stock `shared_buffers=128MB`, `fsync=on`) rather than the
+ephemeral container `bench db up` provisions. Ratios inside a column are unaffected —
+every contender in a cell talks to one server — but absolutes are not comparable with the
+August tables, and `wide` shows it: rowform 5.1598 → 4.3672 and Core 5.1655 → 4.2733,
+both ~15% down, while the ORM moves 3% on code neither sha touched. A driver-side change
+would not have that shape.
+
+**What reproduced, across a server change and eleven days:**
+
+| rung | 2026-08-16 | 2026-08-27 | delta |
+|---|---|---|---|
+| one dedicated connection, no pool | 0.8690 | 0.8685 | 0.06% |
+| + `asyncpg.Pool`, `reset` off | 0.9296 | 0.9241 | 0.6% |
+| + its reset round trip | 1.0008 | 0.9896 | 1.1% |
+| SQLAlchemy's pool instead | 1.0360 | 1.0327 | 0.3% |
+
+Three independent boost-off sweeps now agree on all four rungs to within 1.1%, the third
+on different hardware conditions than the first two. The published figure moves 0.167 →
+**0.164 ms per request**, and "2.8x what asyncpg's pool costs with its reset disabled"
+becomes 3.0x.
+
+**The `@1` column, new on postgres.** `rowform (no transaction)` at 0.1936 against
+rowform's 0.3384 prices the transaction at **0.145 ms, 43% of a single-row read** — where
+on sqlite the same row is 0.12 ms of Python. At one row rowform *ties* the raw-asyncpg
+floor (0.3384 both), which is not a claim about the row layer: the floor pays asyncpg's
+release-time reset and rowform does not, and the decomposition rungs above say so.
+
+**Warm-up length was measuring itself.** The first `@1` attempt used `--warmup 200` and
+came back with five rows above 5% trial spread (four floors at 17–18%, `compat
+(.scalars())` at 12.4%). Re-run at the documented `--warmup 2000`, one row is above 5%
+(`floor: on SQLAlchemy (dict)`, 18.3%) and rowform's own row goes 3.3% → 1.2%. Both runs
+are archived; the 200-warmup one is superseded and labelled, because it is the evidence.
+
+**The sqlite re-run is a replication, not a replacement.** Taken in the same sitting at
+the same sha, 43 cells compared against the published 2026-08-26 table: the median row is
+**0.9%** away and every row is within **3.4%** — except exactly two, and this run flags
+both itself. `wide`'s hand-rolled floor is 5.5% away with a 29.5% trial spread (against
+5.7% when it was published), and `@1`'s `rowform (idiomatic)` is 5.9% away with 14.1%.
+The rows a claim rests on — rowform, Core, the ORM pair, the same-plumbing floor — are all
+inside 1.7% on the `@1000` cells.
+
+That is the useful result, since that table is what the README leads with. It is not
+published, because it is the noisier of the two runs, and a noisier measurement of the
+same number is not an update. The box's undiagnosed `wide`/`@1` dispersion is still
+undiagnosed, and now has one more sighting.
+
+```bash
+DSN="postgresql://postgres:postgres@127.0.0.1:5432/rowform_bench?sslmode=disable"
+for shape in flat join wide; do
+  just bench micro run --shape "$shape" --backend postgres \
+    --iterations 1500 --warmup 200 --trials 3 --isolate --record --pg-dsn "$DSN"
+done
+just bench micro run --shape flat --backend postgres --limit 1 \
+  --iterations 20000 --warmup 2000 --trials 5 --isolate --record --pg-dsn "$DSN"
+uv run python scripts/publish_tables.py benchmarks/results/runs/*_e28c2e0/run.json
+```
+
+200,000 rows, 1000 per read (1 for `@1`), gc off, `--pin auto`, cpu boost off.
+
 ## 2026-08-26 — sqlite's BEGIN cost three round trips, and the floors were not sending one
 
 Branch **`bench/2026-08-26-sqlite-begin`**. Two matched sweeps on one box, boost off

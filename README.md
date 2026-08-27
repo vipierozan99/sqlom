@@ -145,9 +145,9 @@ iterations the cell came back 17–24% dispersed, so it runs 20000 over 5 trials
 | SQLAlchemy ORM | 7.9308 | 13.5563 | 14.5928 | 0.5411 | | 3.10x | 3.00x | 2.11x | 1.56x |
 | SQLAlchemy ORM (`MappedAsDataclass`) | 7.8324 | 13.5007 | 14.6669 | 0.5401 | | 3.07x | 2.98x | 2.12x | 1.56x |
 
-**SQLAlchemy's ORM takes 2.1–3.1x the equal-work rowform time here, 2.8–5.0x on
+**SQLAlchemy's ORM takes 2.1–3.1x the equal-work rowform time here, 2.8–4.9x on
 postgres. Against Core's result layer, at strictly equal work: a tie on `flat` and
-`wide`, Core ahead on `join`** (0.91–0.97x here, 0.83–0.94x on postgres). That ordering is
+`wide`, Core ahead on `join`** (0.91–0.97x here, 0.81–0.98x on postgres). That ordering is
 this table's most load-bearing number, and it is newer than the project: an earlier
 revision measured rowform with a prepared statement and C-level serialization its rivals
 didn't get, and published the blended margin as a result-layer win (correction 14 in
@@ -173,10 +173,12 @@ issuing a read, and it orders the libraries differently — rowform 0.3473 again
 0.3825, with the transaction rowform pays for putting Core at 0.4632 once it pays for one
 too. Until 2026-08-26 rowform *lost* this column to stock Core, 1.17x, because its
 `BEGIN` was taking three round trips to aiosqlite's worker thread where one would do
-(correction 16). Two thirds of a fixed cost, invisible in every column to its left. The postgres tables, the pool decomposition (going
-through SQLAlchemy's pool costs 0.167 ms/request against a bare connection — **more**
-than `asyncpg.Pool`, correcting an earlier claim to the contrary), and the mock
-instrument that isolates the row layer alone are in
+(correction 16). Two-thirds of a fixed cost, invisible in every column to its left. The postgres tables — re-recorded 2026-08-27, where
+the `@1` column is a different story again: two real round trips rather than sqlite's
+Python, so the transaction alone is **43%** of a single-row read there — the pool
+decomposition (going through SQLAlchemy's pool costs 0.164 ms/request against a bare
+connection — **more** than `asyncpg.Pool`, correcting an earlier claim to the contrary),
+and the mock instrument that isolates the row layer alone are in
 [METHODOLOGY.md](docs/METHODOLOGY.md).
 
 Three things matter more than the ratios. **Every contender runs identical SQL**,
@@ -208,10 +210,12 @@ sides run the same ones.
 > box where a scheduler hiccup is 30x the median. Their *medians* reproduced across two
 > independent runs to within 0.6–4%, which is the reason they are quoted at all, and no
 > claim here rests on those three rows. The postgres table in
-> [METHODOLOGY.md](docs/METHODOLOGY.md) is unchanged and comes from an earlier sweep at
-> **3.0%**. Absolute times are not comparable to tables published before boost was
-> disabled — ratios are. Raw artifacts are on `bench/2026-08-26-sqlite-begin` (sqlite,
-> both shas) and `bench/2026-08-16-pg-join-floors` (postgres), indexed in
+> [METHODOLOGY.md](docs/METHODOLOGY.md) was re-recorded on 2026-08-27 at the same sha as
+> this one: **under 4.0%** trial spread on all three `@1000` cells, one row above 5% in
+> its `@1` cell. Absolute times are not comparable to tables published before boost was
+> disabled — nor, for postgres, across the server change that table names; ratios are.
+> Raw artifacts are on `bench/2026-08-26-sqlite-begin` (sqlite, both shas) and
+> `bench/2026-08-27-postgres-attached` (postgres), indexed in
 > [RUNS.md](docs/RUNS.md), which also records the **undiagnosed** dispersion problem this
 > box shows — in sqlite `join`/`wide` previously, and in the `@1` cell here.
 
@@ -476,12 +480,12 @@ Giving up rowform's own pool costs something, paid per *checkout* rather than pe
 per statement — with the connection in hand, executing on a SQLAlchemy-pooled connection
 costs what executing on rowform's own did. What it buys is the `bind=` case above, which
 an engine owning its own pool cannot do at any price. The suite prices it against a
-floor with no pool at all: **0.167 ms per request on postgres `flat`, ~12% of a 1000-row
-read** — more than `asyncpg.Pool` costs, and 2.8x what asyncpg's pool costs with its
-release-time reset disabled. It does not scale with the shape: on `join` the same pair is
-0.3% apart, because payload work grows with arity while per-request pool cost does not.
-On sqlite, where the pool is Python-only, the same pair is 0.167 ms apart on `flat`
-(~6.5% of the read).
+floor with no pool at all: **0.164 ms per request on postgres `flat`, ~12% of a 1000-row
+read** — more than `asyncpg.Pool` costs, and 3.0x what asyncpg's pool costs with its
+release-time reset disabled. It does not scale with the shape: on `join` the two floors
+land 0.0001 ms apart, because payload work grows with arity
+while per-request pool cost does not. On sqlite, where the pool is Python-only, the same
+pair is 0.167 ms apart on `flat` (~6.5% of the read).
 
 Both figures are third attempts, and the first two were wrong the same way. This one read
 ~0.01 ms until the postgres same-plumbing floor was found to be sending no transaction at

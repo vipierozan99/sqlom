@@ -14,18 +14,25 @@ report until you have tried to break it.**
 table was taken at `17e867e` (2026-08-26), which is where sqlite's `BEGIN` became one
 round trip and the sqlite floors started sending one — so every earlier sqlite number is
 superseded rather than merely older, and the baseline it is measured against, `b7c4c71`,
-is archived beside it. The mock table is still at `122e035` and the postgres table at
-`033812a`; neither backend is touched by a change inside `SqliteDriver`. All
-`quotable=True`, same box, same recipe, with artifacts on
-`bench/2026-08-26-sqlite-begin`, `bench/2026-08-16-boost-off-floors` and
-`bench/2026-08-16-pg-join-floors`, indexed in [RUNS.md](RUNS.md). Each table is
-re-recorded only when its own contenders change, which is why they do not share a sha.
+is archived beside it. The postgres table is at `e28c2e0` (2026-08-27), re-recorded
+because the one it replaces predated the transaction-parity work and had no `@1` column;
+a sqlite re-run taken in the same sitting reproduced the published sqlite table to a
+median of 0.9% across 43 cells (every row within 3.4% bar two the run itself flags as
+dispersed) and is archived rather than published, being the noisier of the two. The mock
+table is still at `122e035`, untouched by anything since. All `quotable=True`, same box,
+with artifacts on `bench/2026-08-26-sqlite-begin`,
+`bench/2026-08-27-postgres-attached` and `bench/2026-08-16-boost-off-floors`, indexed in
+[RUNS.md](RUNS.md). Each table is re-recorded only when its own contenders change or the
+sha it names goes stale, which is why they do not share one.
 
-sqlite is an ephemeral 200,000-row database; postgres 16 is an ephemeral docker container
-on the same box. 1000 rows per read except where a column says `@1`, 1500 timed
-iterations after 200 warmup (20000 after 2000 for `@1`), **3 trials, one contender per
-process** (5 for `@1`), GC off, pinned to two whole physical cores (`--pin auto`),
-**cpu boost disabled**. **Every contender reads inside `BEGIN`…`COMMIT`** with two
+sqlite is an ephemeral 200,000-row database. The postgres table's server is an attached
+PostgreSQL 16.15 on the same box (stock `shared_buffers=128MB`, `fsync=on`), where the
+sqlite table's postgres-side predecessors used the ephemeral container `bench db up`
+provisions — so postgres absolutes are comparable *within* this table and not with
+tables dated 2026-08-16 or earlier. 1000 rows per read except where a column says `@1`,
+1500 timed iterations after 200 warmup (20000 after 2000 for `@1`), **3 trials, one
+contender per process** (5 for `@1`), GC off, pinned to two whole physical cores
+(`--pin auto`), **cpu boost disabled**. **Every contender reads inside `BEGIN`…`COMMIT`** with two
 deliberate exceptions and one backend-specific caveat: `rowform (no transaction)` is
 registered without one so the cost of the guarantee is a row rather than folded into the
 others, and on **sqlite the SQLAlchemy contenders send no `BEGIN` at all** — pysqlite
@@ -149,21 +156,43 @@ committed to a dated `bench/` branch by hand and indexed in [RUNS.md](RUNS.md).
 
 ### postgres (asyncpg)
 
-| contender | flat | join | wide | | flat | join | wide |
-|---|---|---|---|---|---|---|---|
-| one dedicated connection → dicts *(floor: no pool)* | 0.8690 | — | — | | 0.64x | — | — |
-| raw driver + pool, `reset` off → dicts *(floor: prices asyncpg's reset)* | 0.9296 | — | — | | 0.68x | — | — |
-| raw driver → dicts *(floor: no SQLAlchemy)* | 1.0008 | 1.9468 | — | | 0.73x | 0.74x | — |
-| same pool + transaction → dicts *(floor: same plumbing)* | 1.0360 | 1.9520 | — | | 0.76x | 0.74x | — |
-| **rowform** `fetch_all()` *(equal work)* | **1.3637** | **2.6411** | **5.1598** | | **1.00x** | **1.00x** | **1.00x** |
-| rowform *(prepared, equal payload — prices the cache key)* | 1.3521 | 2.6274 | — | | ~0.99x | ~0.99x | — |
-| rowform *(idiomatic: prepared once, direct to orjson)* | 1.1397 | 2.0892 | 4.6134 | | 0.84x | 0.79x | 0.89x |
-| rowform `fetch_all()` off the engine *(no transaction)* | 1.3034 | — | — | | ~0.96x | — | — |
-| rowform `execute().scalars()` | 1.3926 | — | 5.1696 | | ~1.02x | — | ~1.00x |
-| rowform `execute().all()` | 1.6189 | 2.8658 | — | | 1.19x | 1.09x | — |
-| SQLAlchemy Core (positional) | 1.2816 | 2.1796 | 5.1655 | | 0.94x | 0.83x | ~1.00x |
-| SQLAlchemy Core (`.mappings()`) | 3.5055 | — | — | | 2.57x | — | — |
-| SQLAlchemy ORM | 7.3421 | 12.0354 | 12.5414 | | 5.38x | 4.56x | 2.43x |
+| contender | flat @1000 | join @1000 | wide @1000 | flat @1 | | flat @1000 | join @1000 | wide @1000 | flat @1 |
+|---|---|---|---|---|---|---|---|---|---|
+| one dedicated connection → dicts *(floor: no pool)* | 0.8685 | — | — | 0.2068 | | 0.63x | — | — | 0.61x |
+| raw driver + pool, `reset` off → dicts *(floor: prices asyncpg's reset)* | 0.9241 | — | — | 0.2708 | | 0.67x | — | — | 0.80x |
+| raw driver → dicts *(floor: no SQLAlchemy)* | 0.9896 | 1.9463 | — | 0.3384 | | 0.72x | 0.72x | — | ~1.00x |
+| same pool + transaction → dicts *(floor: same plumbing)* | 1.0327 | 1.9462 | — | 0.3213 | | 0.75x | 0.72x | — | 0.95x |
+| **rowform** `fetch_all()` *(equal work)* | **1.3740** | **2.7085** | **4.3672** | **0.3384** | | **1.00x** | **1.00x** | **1.00x** | **1.00x** |
+| rowform *(prepared, equal payload — prices the cache key)* | 1.3611 | 2.6480 | — | 0.3336 | | ~0.99x | ~0.98x | — | ~0.99x |
+| rowform *(idiomatic: prepared once, direct to orjson)* | 1.1353 | 2.1317 | 3.7737 | 0.3319 | | 0.83x | 0.79x | 0.86x | ~0.98x |
+| rowform `fetch_all()` off the engine *(no transaction)* | 1.3243 | — | — | 0.1936 | | ~0.96x | — | — | 0.57x |
+| rowform `execute().scalars()` | 1.3848 | — | 4.3705 | 0.3524 | | ~1.01x | — | ~1.00x | ~1.04x |
+| rowform `execute().all()` | 1.5721 | 2.8818 | — | 0.3557 | | 1.14x | 1.06x | — | ~1.05x |
+| SQLAlchemy Core (positional) | 1.2780 | 2.1892 | 4.2733 | 0.3702 | | 0.93x | 0.81x | ~0.98x | 1.09x |
+| SQLAlchemy Core (`.mappings()`) | 3.5021 | — | — | 0.3884 | | 2.55x | — | — | 1.15x |
+| SQLAlchemy ORM | 6.7805 | 11.4116 | 12.1444 | 0.5889 | | 4.93x | 4.21x | 2.78x | 1.74x |
+
+**Re-recorded 2026-08-27 at `e28c2e0`, against a different postgres.** The table this
+replaces was taken at `033812a` on the ephemeral container `bench db up` provisions; this
+one ran against an attached PostgreSQL 16.15 on the same box. **Ratios inside a column
+are unaffected** — every contender in a cell talks to one server — but absolute
+milliseconds across the two are not comparable, and `wide` says so plainly: rowform and
+Core both come in ~15% under their August figures while the ORM moves 3%, on code neither
+sha touched. What the re-run buys is a table at the same sha as the library it describes,
+with a `@1` column the postgres side never had.
+
+**The `@1` column is where the transaction shows up.** On sqlite it costs ~0.12 ms of
+Python; here it is two real round trips, and `rowform (no transaction)` at 0.1936 against
+0.3384 prices them at **0.145 ms — 43% of the whole single-row read**. Apart from that row
+and the ORM's 1.74x, nothing in the column separates by more than 15%: at one row rowform
+ties the raw-asyncpg floor (0.3384 both, and the floor pays asyncpg's reset round trip
+that rowform does not), and Core is 1.09x. Read the `@1` ratios as per-request costs, not as row-layer ones.
+
+Dispersion, per the tie rule: the three `@1000` cells hold **under 4.0%** trial spread on
+every row. The `@1` cell is looser but far tighter than its first attempt — one row above
+5% (`floor: on SQLAlchemy (dict)`, 18.3%) against five when the same cell was run with
+200 warmup instead of the documented 2000, which is the evidence that the warm-up length
+is what those cells were measuring.
 
 **The previous sweep's oddity was a bug in a floor, not a finding about pools.** The
 same-plumbing floor sat *below* the raw-asyncpg floor because it was sending no
@@ -172,8 +201,9 @@ emits `BEGIN` lazily with the first statement it routes itself — but that floo
 deliberately awaits the driver connection directly, so the read went out as a bare
 `SELECT` in autocommit while every contender it bounds sent `BEGIN`/`SELECT`/`COMMIT`.
 Two round trips light. Correction 15 has the audit; the floor now opens the transaction
-on the driver connection, and the ordering anomaly is gone (1.0008 → 1.0360, above the
-raw floor rather than below it, and the same way round on `join`).
+on the driver connection, and the ordering anomaly is gone (1.0008 → 1.0360 in the
+2026-08-16 numbers that caught it, above the raw floor rather than below it, and the same
+way round on `join`; the 2026-08-27 re-run has it the same way round again).
 
 With that fixed and `asyncpg.Pool`'s release-time reset priced as its own rung, the
 ladder reads cleanly for the first time — each step one variable, all four floors
@@ -181,21 +211,22 @@ sending identical SQL and identical payloads:
 
 | step | ms | over `no pool` | of a 1000-row read |
 |---|---|---|---|
-| one dedicated connection, no pool | 0.8690 | — | — |
-| + `asyncpg.Pool` acquire/release, `reset` off | 0.9296 | 0.0606 | 4.4% |
-| + its reset round trip (`asyncpg.Pool` as shipped) | 1.0008 | 0.1317 | 9.7% |
-| SQLAlchemy's pool instead | 1.0360 | 0.1670 | 12.2% |
+| one dedicated connection, no pool | 0.8685 | — | — |
+| + `asyncpg.Pool` acquire/release, `reset` off | 0.9241 | 0.0556 | 4.0% |
+| + its reset round trip (`asyncpg.Pool` as shipped) | 0.9896 | 0.1211 | 8.8% |
+| SQLAlchemy's pool instead | 1.0327 | 0.1642 | 12.0% |
 
 **This inverts what the 2026-08-15 sweep published.** Going through SQLAlchemy's pool
-costs **0.167 ms per request against a bare connection — 1.27x what `asyncpg.Pool` as
-shipped costs, and 2.8x what it costs with its reset disabled.** The earlier claim
+costs **0.164 ms per request against a bare connection — 1.36x what `asyncpg.Pool` as
+shipped costs, and 3.0x what it costs with its reset disabled.** The earlier claim
 (SQLAlchemy's checkout ~0.008 ms, asyncpg's ~0.058 ms, SQLAlchemy ~7x cheaper) was
-entirely the missing `BEGIN`/`COMMIT`; it is withdrawn. Two independent boost-off sweeps
-agree on all four rungs to within ~1%, which is the strongest thing said about any
-number here.
+entirely the missing `BEGIN`/`COMMIT`; it is withdrawn. **Three independent boost-off
+sweeps agree on all four rungs to within 1.1%** — and the third ran against a different
+postgres server, which is what makes this the most robust number in the document rather
+than merely the most repeated one.
 
 Two caveats on reading the table, both in the conservative direction for SQLAlchemy.
-Its 0.167 ms is the *pool path*, not the checkout alone — the floor also builds a
+Its 0.164 ms is the *pool path*, not the checkout alone — the floor also builds a
 `Connection` and awaits `get_raw_connection()` per request, so the checkout by itself is
 smaller. And asyncpg's reset is not waste: `SELECT pg_advisory_unlock_all(); CLOSE ALL;
 UNLISTEN *; RESET ALL;` buys session hygiene that SQLAlchemy's `reset_on_return='rollback'`
@@ -213,13 +244,14 @@ as reads get larger — but it is a real trade to state rather than a rounding e
 **The `join` floors close an extrapolation, and it was the wrong size.** The join column
 carries this suite's largest ORM multiple, and until now had no postgres floor under it:
 "idiomatic runs ~13% above its floor" was carried over from sqlite. Measured, the
-same-plumbing floor is 1.9520 ms and `rowform (idiomatic)` is 2.0892 — **+7.0%, not
+same-plumbing floor is 1.9462 ms and `rowform (idiomatic)` is 2.1317 — **+9.5%, not
 ~13%** (sqlite's own figure is +11.3%, so the borrowed number was closer to sqlite's than
 to postgres's, which is exactly the failure mode of borrowing it). Equal-work rowform is
-+35.3% over the same floor and Core positional +11.7%. And the two `join` floors land
-0.3% apart (1.9468 hand-rolled against 1.9520 on SQLAlchemy's plumbing), against 3.5%
-apart on `flat` — at arity two the payload work grows while the per-request pool cost does
-not, so the plumbing matters proportionally less. That is the argument for instrumenting
++39.2% over the same floor and Core positional +12.5%. And the two `join` floors land
+**0.0001 ms apart** (1.9463 hand-rolled against 1.9462 on SQLAlchemy's plumbing, a
+0.005% difference where the August pair was 0.3%), against 4.4% apart on `flat` — at
+arity two the payload work grows while the per-request pool cost does not, so the
+plumbing matters proportionally less. That is the argument for instrumenting
 each shape instead of scaling one shape's floor.
 
 ### Row layer alone (`mock` backend, zero driver cost)
@@ -272,12 +304,12 @@ against a pool that skips the hygiene entirely.
 Both `flat` and `join` carry the hand-rolled and same-plumbing pair on postgres now.
 `join` was the gap worth closing: it holds the largest ORM multiple in the suite and its
 floor claim was borrowed from sqlite, which turned out to be the wrong size (+11.3% there
-against +7.0% measured here).
+against +9.5% measured here).
 
 The distance from *no pool* to *on SQLAlchemy* is the answer to "what does SQLAlchemy's
-plumbing cost": **0.167 ms per request on postgres `flat`, ~12% of a 1000-row read**, and
+plumbing cost": **0.164 ms per request on postgres `flat`, ~12% of a 1000-row read**, and
 more than either asyncpg pooled path. It is not a constant to carry between shapes — on
-`join` the same-plumbing floor sits only 0.3% over the hand-rolled one, because the
+`join` the two floors land 0.0001 ms apart, which is no difference at all, because the
 payload work grows with arity while the per-request pool cost does not. On sqlite, where
 the pool is Python-only, the same-plumbing floor sits 0.167 ms over the hand-rolled one
 on `flat` (~6.5% of the read) — a figure that only became meaningful once both floors
@@ -773,7 +805,8 @@ came out below the raw-asyncpg floor because it skipped `BEGIN`/`COMMIT`, not be
 SQLAlchemy's checkout is cheap. With the transaction opened on the driver connection the
 ordering anomaly disappears and the sign of the headline flips: **SQLAlchemy's pool path
 costs 0.167 ms per request against a bare connection, 1.27x `asyncpg.Pool` as shipped
-and 2.8x it with `reset` disabled.** The 7x-cheaper claim is withdrawn.
+and 2.8x it with `reset` disabled** — the numbers this correction was written from; the
+2026-08-27 re-run reads 0.164 ms, 1.36x and 3.0x. The 7x-cheaper claim is withdrawn.
 
 **Why the equivalence gate could not catch it.** Both spellings return byte-identical
 payloads — that is what the gate compares. Transaction *spelling* is invisible to it,
