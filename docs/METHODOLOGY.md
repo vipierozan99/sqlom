@@ -359,6 +359,59 @@ just bench env check
 just bench micro run --shape write --iterations 1500 --warmup 200 \
     --trials 3 --isolate --record
 python scripts/publish_tables.py benchmarks/results/runs/*/run.json
+### What a read allocates (`bench micro memory`)
+
+Every other number here is a duration, and the claim they defend is about what a row layer
+*builds*: slotted dataclasses against `Row`s, `RowMapping`s, or ORM instances with an
+identity map behind them. This is that claim in bytes — peak traced allocation for one
+1000-row read, and what is still held after it returns.
+
+`flat`, 1000 rows, 20,000-row database, `tracemalloc`, three calls after three untraced
+warm-ups (2026-08-27, `e28c2e0`):
+
+| contender | sqlite peak KiB | B/row | postgres peak KiB | B/row | | vs rowform |
+|---|---|---|---|---|---|---|
+| raw driver → dicts *(floor: no SQLAlchemy)* | 533.7 | 547 | 472.8 | 484 | | 0.90–0.99x |
+| raw driver + the same hydrator *(floor)* | 518.3 | 531 | — | — | | 0.96x |
+| same pool + transaction → dicts *(floor: same plumbing)* | 535.6 | 548 | 502.0 | 514 | | 0.96–0.99x |
+| **rowform** `fetch_all()` | **539.5** | **552** | **522.7** | **535** | | **1.00x** |
+| rowform *(idiomatic)* | 523.1 | 536 | 507.4 | 520 | | 0.97x |
+| rowform `execute().scalars()` | 538.7 | 552 | 521.6 | 534 | | 1.00x |
+| rowform `execute().all()` | 585.3 | 599 | 569.4 | 583 | | 1.08–1.09x |
+| SQLAlchemy Core (positional) | 609.9 | 625 | 602.6 | 617 | | 1.13–1.15x |
+| SQLAlchemy Core (`.mappings()`) | 719.0 | 736 | 712.1 | 729 | | 1.33–1.36x |
+| SQLAlchemy ORM | 1768.0 | 1810 | 1838.7 | 1883 | | 3.28–3.52x |
+| SQLAlchemy ORM (`MappedAsDataclass`) | 1767.9 | 1810 | — | — | | 3.28x |
+
+**The ORM allocates ~3.3–3.5x what rowform does for the same rows, and rowform allocates
+within 1% of hand-written dicts on sqlite** (10% above them on postgres, where asyncpg
+hands back `Record`s the floor turns into dicts without an intermediate object). Both
+directions matter: the second says the row layer is not paying for itself in bytes, and
+the first is the same 2–3x the timed tables show, in a currency a service feels as GC
+pressure rather than as latency. `execute().all()` costs +8% for the `Row` per row it
+builds — the same seam its millisecond column shows.
+
+**The `write` cell answers the same question about a batch.** `--shape write` at 200
+parameter sets: rowform 62.3 KiB, Core 69.3 (1.11x), the ORM's bulk update 228.1 (3.66x)
+— and the driver's own `executemany` 8.4 KiB, an eighth of any of them. Both API layers
+build a bound dict or tuple per parameter set where the driver binds from the caller's
+own; that is where a batch write's allocation goes, and it is the write path's version of
+the `Row`-per-row seam above.
+
+**Not comparable with the timed tables, deliberately.** `tracemalloc` taxes the path it
+measures several-fold, which is why this is its own command and its own table rather than
+another column. It is also not recorded to `run.json`: a `quotable` gate is about timing
+discipline (isolation, trials, spread), and none of those clauses mean anything for an
+allocation count that reproduces to the byte.
+
+The **net** column the command prints is a check on the peak, not a second result: what a
+contender still holds when the call returns. A stable ~88 KiB on sqlite across every arm
+including the raw floor is driver and interpreter caching; the ORM's 271 KiB is the row
+that stands out, and the reason to look at it at all.
+
+```bash
+just bench micro memory --shape flat --rows 20000
+just bench micro memory --shape flat --rows 20000 --backend postgres --pg-dsn "$(just bench db dsn)"
 ```
 
 ### Row layer alone (`mock` backend, zero driver cost)
