@@ -61,7 +61,11 @@ class ContenderSpec:
     name: str
     slug: str  # unique kebab-case id: "{backend}-{shape}-{kebab(name)}"
     description: str
-    backend: str  # "sqlite" | "postgres" | "mock" | "none" (pure-Python tier)
+    # "sqlite" | "postgres" (asyncpg) | "postgres-psycopg" | "mock" | "none".
+    # One group per driver where two drivers exist, because the equivalence gate
+    # and the `vs rowform` ratio are both per group — see contenders.py's psycopg
+    # section.
+    backend: str
     shape: str  # "flat" | "join" | "n/a"
     shipped: bool  # False for a floor/baseline that ships nothing (e.g. raw asyncpg)
     factory: ContenderFactory

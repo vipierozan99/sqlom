@@ -171,3 +171,74 @@ async def test_the_reset_rung_is_the_only_floor_without_asyncpg_s_reset(
         "asyncpg.Pool no longer resets on release, so the reset rung prices nothing"
     )
     assert no_reset["reset"] == 0, "create_pool(reset=...) no longer suppresses the reset"
+
+
+class _TransactionStatusSpy:
+    """What state psycopg's connection was in when each read went out.
+
+    The asyncpg spy above counts statements because asyncpg's transaction control
+    passes through `Connection.execute`. psycopg's does not — `BEGIN` goes out
+    through libpq as its own command — so counting would see nothing and report
+    every psycopg contender as transactionless.
+
+    What *is* observable, and is what correction 15 was actually about, is whether
+    the read ran inside a transaction at all: after a statement,
+    `info.transaction_status` is `INTRANS` when one is open and `IDLE` when the
+    connection is in autocommit. Recorded per `AsyncCursor.execute`, which every
+    path here goes through — rowform's driver, SQLAlchemy's adapter, and a floor
+    awaiting the connection directly.
+    """
+
+    def __init__(self) -> None:
+        self.statuses: list[str] = []
+        self.recording = False
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import psycopg
+
+        original = psycopg.AsyncCursor.execute
+
+        async def spy(cursor: Any, *args: Any, **kwargs: Any) -> Any:
+            result = await original(cursor, *args, **kwargs)
+            if self.recording:
+                self.statuses.append(cursor.connection.info.transaction_status.name)
+            return result
+
+        monkeypatch.setattr(psycopg.AsyncCursor, "execute", spy)
+
+
+async def _statuses(spec: Any, dsn: str, spy: _TransactionStatusSpy) -> set[str]:
+    target, teardown = await spec.factory(registry.ContenderInit(handle=dsn, limit=LIMIT))
+    try:
+        for _ in range(WARMUP):
+            await target()
+        spy.statuses.clear()
+        spy.recording = True
+        try:
+            for _ in range(ITERATIONS):
+                await target()
+        finally:
+            spy.recording = False
+    finally:
+        await teardown()
+    return set(spy.statuses)
+
+
+@pytest.mark.parametrize("seeded_shape", ["flat", "join", "wide"], indirect=True)
+async def test_every_psycopg_contender_reads_inside_a_transaction(
+    seeded_shape, pg_dsn, monkeypatch
+):
+    """Transaction parity for the psycopg cell — the same invariant as the
+    asyncpg test above, in the terms psycopg makes observable."""
+    spy = _TransactionStatusSpy()
+    spy.install(monkeypatch)
+
+    seen = {}
+    for spec in registry.select(backend="postgres-psycopg", shape=seeded_shape):
+        seen[spec.name] = await _statuses(spec, pg_dsn, spy)
+
+    assert seen, f"no psycopg contenders registered for {seeded_shape!r}"
+    assert all(statuses == {"INTRANS"} for statuses in seen.values()), (
+        f"these psycopg contenders ran a read outside a transaction: "
+        f"{ {name: s for name, s in seen.items() if s != {'INTRANS'}} }"
+    )

@@ -254,6 +254,43 @@ arity two the payload work grows while the per-request pool cost does not, so th
 plumbing matters proportionally less. That is the argument for instrumenting
 each shape instead of scaling one shape's floor.
 
+### postgres (psycopg)
+
+**No table yet — the arm exists, the sweep has not been run.** psycopg is a
+supported driver, the only one with pipeline mode, and the one that surfaced both
+silent-wrongness bugs in `docs/PLAN_SQLA_API.md` §8a; it had never appeared in a
+benchmark. `bench micro` now carries it as its own backend group,
+`postgres-psycopg`, with twelve contenders: rowform equal-work and idiomatic on
+all three shapes, stock Core beside each of them, the ORM on `flat`, and two
+floors under `flat` (raw psycopg through its own pool, and the same-plumbing floor
+on SQLAlchemy's).
+
+**Its own group rather than more rows in the asyncpg table**, because both the
+equivalence gate and the `vs rowform` ratio are per group. Sharing one would
+compare rowform-on-psycopg against rowform-on-asyncpg and print a driver
+difference as a row-layer result, which is corrections 12 and 14 in a new costume.
+Within the group every row is psycopg, so the ratio means what it means elsewhere.
+
+One row is deliberately absent. There is no `rowform (no transaction)` here: a
+psycopg connection that is not in autocommit opens a transaction on its first
+statement whatever rowform does, so the sqlite and asyncpg trick of taking the
+guarantee off rowform has nothing to take off. That also means transaction parity
+across this cell cannot be pinned by counting `BEGIN`s the way
+`test_bench_wire_parity.py` does for asyncpg — psycopg's transaction control does
+not pass through `Connection.execute`. It is pinned by what psycopg does expose:
+after each read, `info.transaction_status` must be `INTRANS` for every contender
+in the cell, which is `IDLE` for anything that slipped into autocommit.
+
+To fill this section in:
+
+```bash
+just bench env check
+just bench micro run --backend postgres-psycopg --shape flat \
+    --iterations 1500 --warmup 200 --trials 3 --isolate --record \
+    --pg-dsn "$(just bench db dsn)"
+python scripts/publish_tables.py benchmarks/results/runs/*/run.json
+```
+
 ### Row layer alone (`mock` backend, zero driver cost)
 
 The instrument that isolates the row layer. No connection, no pool, no transaction —
@@ -904,6 +941,8 @@ Postgres is **two separate pipelines** — they collide on port 5432 if mixed:
 # db seed` does the same by hand, for inspecting the data without a run.
 just bench db up
 just bench micro run --backend postgres --isolate --trials 3 --record --pg-dsn "$(just bench db dsn)"
+# the same server serves the psycopg group; it is a separate --backend, not a flag
+just bench micro run --backend postgres-psycopg --isolate --trials 3 --record --pg-dsn "$(just bench db dsn)"
 just bench db down            # also clears the state file after a reboot/prune
 
 # load & profile-load: provision their OWN container per run. With a

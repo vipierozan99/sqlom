@@ -147,8 +147,9 @@ def run(
     backend: str | None = typer.Option(
         None,
         "--backend",
-        help="only this backend ('sqlite', 'postgres', 'mock'). A recorded run "
-        "carries one equivalence block, so pick the backend you mean to publish",
+        help="only this backend ('sqlite', 'postgres', 'postgres-psycopg', "
+        "'mock'). A recorded run carries one equivalence block, so pick the "
+        "backend you mean to publish",
     ),
     gc: str = typer.Option(
         "off", help="'on', 'off', or 'both'"
@@ -412,7 +413,7 @@ async def _run(
                 handle = db.path
             elif backend == "mock":
                 handle = await mock_engines.canned_rows(shape, limit)
-            elif backend == "postgres":
+            elif backend in ("postgres", "postgres-psycopg"):
                 if not pg_dsn:
                     typer.echo(
                         f"skipping backend={backend!r}: pass --pg-dsn to run it "
