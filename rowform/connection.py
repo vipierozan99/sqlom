@@ -1,33 +1,13 @@
-"""One connection, two ways to read it.
+"""One checked-out connection, two ways to read it.
 
-    async with db.begin() as conn:
-        # SQLAlchemy's names, SQLAlchemy's semantics, to the letter
-        users = (await conn.execute(sa.select(User))).scalars().all()
-        for row in await conn.execute(sa.select(User.name, User.id)):
-            row.name, row[1]
+Methods spelled as SQLAlchemy spells them (`execute`, `scalars`, `stream`,
+`begin`, `commit`) behave as SQLAlchemy's do: `execute()` hands rowform's
+hydrated rows to SQLAlchemy's own `Result` (`result.py`). Methods spelled
+`fetch_*` are rowform's and return plain hydrated objects with no `Row`.
 
-        # rowform's names, rowform's rows: no Result, no Row, no wrap
-        users = await conn.fetch_all(sa.select(User))
-
-The two tracks are told apart by *name*, never by a subtle difference in what a
-method returns. Anything spelled the way SQLAlchemy spells it behaves the way
-SQLAlchemy behaves, because `execute()` hands its rows to SQLAlchemy's own
-`Result` (`result.py`). Anything spelled `fetch_*` is rowform's, hands back plain
-hydrated objects, and pays for no row machinery at all.
-
-That is what makes ported code safe: a `row[0]` that meant something under
-SQLAlchemy still means it here, rather than silently indexing the string a
-single-column select would otherwise have handed back.
-
-**Transactions are SQLAlchemy's.** `conn.begin()` and `conn.begin_nested()` return
-its `AsyncTransaction` unchanged — rowform does not wrap it, so `commit()`,
-`rollback()`, `is_active` and `is_nested` are the real ones.
-
-**Autobegin.** The first statement on a `Connection` opens a transaction if one is
-not already open, as `AsyncConnection` does — so two reads in one scope share a
-snapshot, and a write is committed by `commit()` rather than discarded by the
-pool's rollback on release. `Engine`'s one-shot `fetch_*` are outside that rule
-and say so: they are rowform's own API, not a scope.
+Transactions are SQLAlchemy's: `begin()`/`begin_nested()` return its
+`AsyncTransaction` unwrapped, and the first statement autobegins as it does on
+an `AsyncConnection`.
 """
 
 from __future__ import annotations
@@ -58,25 +38,14 @@ R2 = TypeVar("R2")
 R3 = TypeVar("R3")
 R4 = TypeVar("R4")
 
-# Holds the innermost active Connection for the current task. contextvars, not an
-# instance attribute: one engine serves many concurrent tasks, and each needs its
-# own answer. Reading it costs ~30 ns, which is why the guard on the hot path is
-# affordable at all.
+# The innermost active Connection for the current task.
 _ACTIVE: contextvars.ContextVar[Connection | None] = contextvars.ContextVar(
     "rowform_active_connection", default=None
 )
 
 
 def active_connection() -> Connection | None:
-    """The innermost `Connection` scope open in this task, or None.
-
-    Every scope registers for the life of its block, one bound with
-    `connect(bind=...)` included: an `engine.fetch_*` one-shot inside a bound
-    scope would take a *different* pooled connection and miss the bound
-    transaction's uncommitted writes, so the guard has to see the bound scope to
-    refuse it. try/finally scopes the registration to the block, so one-shots are
-    refused only inside the scope, not for the rest of the task.
-    """
+    """The innermost `Connection` scope open in this task, or None."""
     return _ACTIVE.get()
 
 
@@ -102,20 +71,15 @@ class Connection:
         owns: bool = True,
     ):
         self._engine = engine
-        # Read once: `_autobegin` runs before every statement, and for the two
-        # drivers that need nothing this keeps it an attribute load.
         self._defers_txn = engine.driver.defers_transaction
         #: SQLAlchemy's connection — what owns the transaction.
         self.sa_connection = sa_connection
         #: The driver connection under it — what statements actually run on.
         self.connection = connection
-        # False when bound to somebody else's connection: their transaction, so
-        # rowform neither opens nor ends one.
+        # False when bound to somebody else's connection: rowform neither opens nor ends one.
         self._owns = owns
         self._token: Any = None
-        #: The scope this one was opened inside, so `_reject_if_in_transaction`
-        #: can walk the stack rather than seeing only the innermost. Set on
-        #: `_enter`, because only a registered scope is on it.
+        #: The scope this one was opened inside, for `_reject_if_in_transaction`.
         self._outer: Connection | None = None
 
     # --- scope bookkeeping ---------------------------------------------------
@@ -133,10 +97,8 @@ class Connection:
         conn = self.sa_connection
         if self._owns and not conn.in_transaction():
             await conn.begin()
-        # Not `elif`, and not folded into the branch above: the transaction may be
-        # one the caller opened — `conn.begin()` by hand, or a session bound with
-        # `bind=` — and on asyncpg it is not on the driver connection until this
-        # runs (`AsyncpgDriver.enter_transaction`).
+        # Not `elif`: a transaction the caller opened (`conn.begin()`, `bind=`) is not
+        # on the asyncpg driver connection until this runs.
         if self._defers_txn and conn.in_transaction():
             await self._engine.driver.enter_transaction(conn)
 
@@ -151,13 +113,8 @@ class Connection:
         return self.sa_connection.begin_nested()
 
     def _refuse_if_bound(self, method: str) -> None:
-        """A bound scope does not own its transaction, so it must not end it.
-
-        `_owns` already keeps `_autobegin` from *starting* one; without the same
-        guard here, `conn.close()` on a scope bound to somebody's session closed
-        the connection under them and their next statement raised
-        `ResourceClosedError`. `connect()` promises the caller's block is the
-        scope, and these are the three methods that could break that promise.
+        """A bound scope does not own its transaction, so it must not end it — closing
+        it here closed it under the caller's session.
         """
         if not self._owns:
             raise EngineStateError(
@@ -198,30 +155,17 @@ class Connection:
     async def execute(
         self, statement: Any, parameters: Any = None, **params: Any
     ) -> Result[Any]:
-        """Run `statement` and return a SQLAlchemy `Result`.
-
-        `parameters` is a dict, or a list of dicts for an executemany — the
-        signature `AsyncConnection.execute` has. `**params` is rowform's
-        extension, and merges into it, except on the executemany path where
-        there is no one set to merge into: passing both there is refused rather
-        than silently dropped.
-
-        A statement with no result set returns a closed `Result`: `.rowcount`
-        works, and `.all()` raises `ResourceClosedError`, which is what
-        SQLAlchemy raises rather than returning an empty list that reads as
-        "nothing matched".
+        """Run `statement` and return a SQLAlchemy `Result`. `parameters` is a dict, or
+        a list of dicts for an executemany; `**params` is rowform's extension and
+        merges into it. A statement with no result set returns a closed `Result`.
         """
         return await self._execute_any(statement, parameters, params, None)
 
     async def _execute_any(
         self, statement: Any, parameters: Any, params: dict[str, Any], resolved: Any
     ) -> Result[Any]:
-        """`execute()`, with the compiled query optionally already in hand.
-
-        `Engine.execute` has to resolve it before opening the scope — the commit
-        decision depends on `is_select` — and passing it down keeps that from
-        being a second structural cache-key computation per one-shot, which is
-        the expensive half of `_query_for`.
+        """`execute()`, with the compiled query optionally already in hand so
+        `Engine.execute` does not compute the structural cache key twice.
         """
         engine = self._engine
         await self._autobegin()
@@ -234,9 +178,6 @@ class Connection:
             )
         query, extracted = resolved if resolved is not None else engine._query_for(statement)
         if many:
-            # `resolved` is reused here too, not just on the row path: the
-            # executemany used to re-resolve the statement, the exact second
-            # structural cache-key computation `resolved` exists to avoid (F8).
             return _result.no_rows(await self._execute_many(query, extracted, parameters))
         bound = {**(parameters or {}), **params}
         if not query.returns_rows:
@@ -258,10 +199,7 @@ class Connection:
         self, statement: Any, parameters: Any = None, *, chunk: int = 1000, **params: Any
     ) -> AsyncResult[Any]:
         """`AsyncResult` over a server-side cursor — `conn.stream()`, with rowform
-        hydrating each chunk.
-
-        `chunk` is rowform's extension; SQLAlchemy takes the same idea through
-        `execution_options(yield_per=...)`.
+        hydrating each chunk. `chunk` is rowform's spelling of `yield_per`.
         """
         engine = self._engine
         await self._autobegin()
@@ -280,9 +218,7 @@ class Connection:
         return (await self.stream(statement, parameters, chunk=chunk, **params)).scalars()
 
     async def exec_driver_sql(self, sql: str, parameters: Any = None) -> Result[Any]:
-        """A literal string on the driver, for the DDL and session state a
-        statement object cannot express. No compilation, and therefore no rows to
-        hydrate — this always reports rather than returns."""
+        """A literal string on the driver: no compilation, so no rows to hydrate."""
         engine = self._engine
         await self._autobegin()
         observer = engine.observer
@@ -318,11 +254,8 @@ class Connection:
     async def fetch_all(self, statement: Any, **params: Any) -> list[Any]: ...
 
     async def fetch_all(self, statement: Any, **params: Any) -> Any:
-        """Hydrated rows, with no `Result` and no `Row` between them and you.
-
-        One selected entity yields that entity; two or more yield a tuple
-        (`planner.py`). For SQLAlchemy's shape — a `Row` even at arity one — use
-        `execute()`.
+        """Hydrated rows, with no `Result` and no `Row` between them and you. One
+        selected entity yields that entity; two or more yield a tuple (`planner.py`).
         """
         engine = self._engine
         await self._autobegin()
@@ -355,8 +288,7 @@ class Connection:
     async def fetch_one(self, statement: Any, **params: Any) -> Any: ...
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
-        """The first row, or None — narrowed to `LIMIT 1` where that is safe, as
-        on the engine (`query._one_row`)."""
+        """The first row, or None — narrowed to `LIMIT 1` where that is safe."""
         rows = await self.fetch_all(_one_row(statement), **params)
         return rows[0] if rows else None
 
@@ -391,44 +323,33 @@ class Connection:
     ) -> AsyncIterator[Any]: ...
 
     def fetch_iter(self, statement: Any, *, chunk: int = 1000, **params: Any) -> Any:
-        """`Engine.fetch_iter` on this connection: the same rows `fetch_all`
-        gives, `chunk` at a time, without a `Result`."""
+        """`Engine.fetch_iter` on this connection."""
         return self._fetch_iter(statement, chunk, params)
 
     async def _fetch_iter(
         self, statement: Any, chunk: int, params: dict[str, Any]
     ) -> AsyncIterator[Any]:
-        """Autobegin, then delegate. Written out rather than returned directly so
-        the stream counts as this scope's first statement like every other one —
-        otherwise a `connect()` that opens with `fetch_iter` is not in a
-        transaction, and the `commit()` after it ends nothing."""
+        """Autobegin, then delegate — so a scope that opens with a stream is in a
+        transaction and the `commit()` after it ends something.
+        """
         await self._autobegin()
         async for row in self._engine._iterate(statement, chunk, params, self._pinned):
             yield row
 
     async def execute_many(self, statement: Any, params: Sequence[dict[str, Any]]) -> Any:
-        """One compiled statement, many parameter sets, one round trip. Returns
-        the driver's own report; `execute(stmt, [ ... ])` wraps the same thing in
-        a `Result`."""
+        """One compiled statement, many parameter sets, one round trip; the driver's own report."""
         await self._autobegin()
         query, extracted = self._engine._query_for(statement)
         return await self._execute_many(query, extracted, params)
 
     async def _execute_many(self, query: Any, extracted: Any, params: Sequence[dict[str, Any]]) -> Any:
-        """`execute_many`, with the query already resolved — so the `execute()`
-        executemany path can pass down the one it already has (F8). Both entrances
-        pass through here, so the empty-batch no-op and the expanding-bind refusal
-        cover `execute(stmt, [ ... ])` as well."""
+        """`execute_many` with the query already resolved; both entrances pass through here."""
         if not params:
             return None
         engine = self._engine
         if query._expanding:
-            # executemany sends one SQL string for every set, but a post-compile
-            # bind rewrites that string from its own values — an expanding IN over
-            # a list, or a literal-execute bind — so sets that render differently
-            # need different SQL. sqlite then fails with a binding count the caller
-            # cannot trace back to this, and psycopg's dict paramstyle ignores the
-            # surplus keys and writes the wrong rows without complaining.
+            # A post-compile bind rewrites the SQL per set; psycopg would silently
+            # write the wrong rows.
             raise StatementError(
                 "execute_many cannot run a statement whose SQL is rewritten per "
                 "parameter set by a post-compile bind — an expanding bind (an IN "
@@ -461,25 +382,10 @@ class Connection:
         return await self._engine._copy_in(self.connection, table, rows, columns)
 
     def pipeline(self) -> AbstractAsyncContextManager[Any]:
-        """Send statements without waiting for each result in turn.
-
-            async with db.begin() as conn, conn.pipeline():
-                for row in rows:
-                    await conn.execute_many(update, [row])
-
-        Only worth it when the round trip is the cost. Measured over 200 updates:
-        on loopback it is slightly *slower* than issuing them one by one (56 ms
-        against 44 ms, the batching being pure overhead when latency is nil), and
-        at 1 ms of network latency it is **13.5x** faster (42 ms against 564 ms).
-
-        It lives here because a pipeline is a property of one connection. Two
-        consequences, both inherent: a statement's result is not available while
-        the pipeline is open — psycopg reports a rowcount of -1 — and an error
-        raises when the pipeline synchronises rather than at the statement that
-        caused it.
-
-        psycopg only; the others raise `UnsupportedError` rather than accepting
-        the block and doing nothing.
+        """psycopg's pipeline mode: statements go out without waiting for each result.
+        Worth it only when the round trip is the cost. A statement's result is not
+        available until the pipeline synchronises, and an error raises there rather
+        than at the statement. Other drivers raise `UnsupportedError`.
         """
         return self._engine.driver.pipeline(self.connection)
 
@@ -495,8 +401,7 @@ class Connection:
         return report
 
     def _pinned(self) -> AbstractAsyncContextManager[Any]:
-        """Stands in for the engine's pool checkout, handing back this scope's
-        already-held connection so `_run` is shared verbatim."""
+        """Stands in for the engine's pool checkout, handing back this scope's connection."""
         return _Held(self.connection)
 
     def __repr__(self) -> str:

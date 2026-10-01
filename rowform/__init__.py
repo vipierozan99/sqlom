@@ -1,45 +1,19 @@
-"""rowform — SQLAlchemy's schema and SQL, compiled hydration, no instance state.
-
-SQLAlchemy Core compiles the statement, owns the schema, and owns the pool.
-rowform owns the row path: a generated hydrator fills plain dataclasses with
-`object.__new__` plus straight attribute stores, so a read never builds a `Row`, a
-`CursorResult`, or an ORM identity.
+"""rowform: SQLAlchemy Core statements and schema, typed dataclass rows, no ORM session.
 
     import sqlalchemy as sa
-    from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy.orm import Mapped
     import rowform as rf
 
-    class Base(rf.Base):
-        pass
-
-    class User(Base):
+    class User(rf.Base):
         __tablename__ = "users"
         id: Mapped[int] = rf.mapped_column(primary_key=True)
         name: Mapped[str]
-        email: Mapped[str | None]
 
-    db = rf.Engine(create_async_engine("sqlite+aiosqlite:///app.db"))
-    await db.create_all(Base.metadata)
+    db = rf.Engine(create_async_engine("postgresql+asyncpg://localhost/app"))
+    users = await db.fetch_all(sa.select(User).where(User.name == "ada"))  # list[User]
 
-    users = await db.fetch_all(sa.select(User).where(User.name == "ada"))
-
-Two ways to read, told apart by name. `fetch_all()` is rowform's: hydrated objects,
-no `Row`, no `Result`. `execute()` is SQLAlchemy's, to the letter — it returns a
-real `sqlalchemy.Result`, so `.scalars().all()`, `.mappings()`, `row.name` and
-`NoResultFound` all behave exactly as they do upstream:
-
-    async with db.connect() as conn:
-        users = (await conn.execute(sa.select(User))).scalars().all()
-        rows  = await conn.fetch_all(sa.select(User))
-
-`User` is one declaration serving three jobs: `User.__table__` feeds
-`create_all()`, `Inspector` and Alembic's `target_metadata`; `sa.select(User)`
-builds real SQL; and instances are ordinary dataclasses.
-
-Because the engine is SQLAlchemy's, rowform can also read on a connection an
-existing application already holds — `db.connect(bind=session)` — so adoption is
-one query at a time. See docs/PLAN_SQLA_API.md for what that costs and why.
+`fetch_*` returns hydrated objects; `execute()` returns SQLAlchemy's own `Result`.
+`db.connect(bind=session)` reads inside an existing session's transaction.
 """
 
 from .compile import compile_hydrator, result_processor
@@ -59,8 +33,7 @@ from .model import DEFAULT_TYPE_MAP, Base, ModelMeta, alias, mapped_column, mode
 from .planner import Plan, plan
 from .query import CoreQuery
 
-#: Read by [tool.hatch.version] in pyproject.toml, so this is the one place the
-#: version is written.
+#: Read by [tool.hatch.version] in pyproject.toml.
 __version__ = "0.1.0"
 
 __all__ = [
