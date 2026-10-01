@@ -118,7 +118,7 @@ class TestTheGate:
         listener; a read that skipped it would run at the wrong level."""
         base = create_async_engine(url)
         try:
-            db = rf.Engine(base.execution_options(isolation_level="READ UNCOMMITTED"))
+            db = rf.Engine(base.execution_options(isolation_level="SERIALIZABLE"))
             await seed(db)
             del sa_calls[:]
             assert [r.name for r in await db.fetch_all(BY_NAME)] == NAMES
