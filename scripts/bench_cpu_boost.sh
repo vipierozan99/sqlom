@@ -4,7 +4,7 @@
 # `quotable=False` on this box.
 #
 #     sudo scripts/bench_cpu_boost.sh off
-#     <run the sweep as yourself — see docs/METHODOLOGY.md "Results">
+#     <run the sweep as yourself — see docs/BENCHMARKS.md "Results">
 #     sudo scripts/bench_cpu_boost.sh on
 #
 # Deliberately does *not* run the sweep. An earlier version of this file did the

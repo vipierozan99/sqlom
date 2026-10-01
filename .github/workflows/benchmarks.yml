@@ -15,7 +15,7 @@ name: Benchmarks (periodic)
 #
 # Caveat baked into the output: GitHub-hosted runners are shared and unpinned,
 # so these numbers are a *trend / regression* signal, not a quotable baseline
-# (docs/METHODOLOGY.md: absolutes drift with the machine). The in-process micro
+# (docs/BENCHMARKS.md: absolutes drift with the machine). The in-process micro
 # suite is used precisely because it has the best signal-to-noise here — no
 # docker, no event-loop/pool/TLS.
 

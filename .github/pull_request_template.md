@@ -23,5 +23,5 @@ Delete this section if the change cannot touch the row path.
 The gate compares against the merge base and fails over 1.25x. If it fires and
 you think the cost is justified, say so here with the numbers. If you are claiming
 an improvement, say which contender and on what machine — see
-docs/METHODOLOGY.md, and remember absolutes are machine-specific.
+docs/BENCHMARKS.md, and remember absolutes are machine-specific.
 -->

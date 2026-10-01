@@ -1,34 +1,14 @@
-"""The FastAPI worker `bench load`/`bench service run`/`bench profile load`
-drive traffic at — plain, hand-written routes, one real `async def` per case.
+"""The FastAPI worker `bench load`/`bench service run` drive traffic at — plain,
+hand-written routes, one named `async def` per case, so a profiler shows real
+frames. Each route's path is a `bench micro` contender slug; the duplication
+with `contenders.py` is deliberate (this is the HTTP+driver path under load,
+that is the mapper in-process).
 
-This is deliberately *not* generated from `bench micro`'s contender registry
-(`harness/registry.py`, `contenders.py`) the way an earlier revision of this
-file did. That was convenient to write once, but a flamegraph full of
-`registry.contender.<locals>.decorator.<locals>.route`/`<locals>.target`
-frames is much harder to read than a real, named function you can set a
-breakpoint in — and this file exists specifically to be profiled
-(`bench profile load` attaches py-spy/austin to it). The duplication with
-`contenders.py` (the same queries, the same hydration) is accepted on
-purpose, not an oversight: these two files answer different questions (one
-isolates the mapper in-process, this one is the actual HTTP+driver path
-under concurrent load) and sharing code between them is what made this file
-confusing to profile in the first place.
-
-**Every route reads inside `BEGIN`...`COMMIT`**, for the reason spelled out in
-`micro/contenders.py`: the ORM code this is measured against is written that way,
-and SQLAlchemy's autobegin means its contenders were paying for a transaction that
-rowform's engine-level `fetch_all()` never opened.
-
-`limit` is a query parameter (`?limit=N`), read per request — not baked into
-a query built once at startup — the same way a hand-written endpoint would
-do it. Each route acquires its connection from a pool set up once in
-`lifespan()` and stored on `app.state`.
-
-Configured from two environment variables — `BENCH_HANDLE` (the sqlite db
-path) and `BENCH_PG_DSN` (the postgres DSN), each backend's pools opened only
-if its variable is set. `launch.py` starts this as a uvicorn subprocess per
-worker, and env vars are the plumbing that survives a subprocess boundary
-without needing a config file.
+Every route reads inside `BEGIN`...`COMMIT`, as in `micro/contenders.py`.
+`limit` is a query parameter read per request, as a hand-written endpoint would.
+Configured from `BENCH_HANDLE` (sqlite path) and `BENCH_PG_DSN`; each backend's
+pools open only if its variable is set, because env vars survive the uvicorn
+subprocess boundary `launch.py` crosses.
 """
 
 from __future__ import annotations
@@ -163,14 +143,14 @@ async def sqlite_flat_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Resp
     return Response(content=orjson.dumps(rows), media_type=JSON)
 
 
-@app.get("/sqlite-flat-floor-hand-rolled-dict")
-async def sqlite_flat_floor_hand_rolled_dict(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
+@app.get("/sqlite-flat-floor-raw-driver-dict")
+async def sqlite_flat_floor_raw_driver_dict(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     sql = "SELECT id, name, email, is_active FROM users WHERE is_active = 1 AND id > 100 LIMIT ?"
     async with app.state.aiosqlite.acquire() as conn:
+        await conn.execute("BEGIN")
         cur = await conn.execute(sql, (limit,))
         rows = await cur.fetchall()
-        # The DBAPI's commit, not a literal COMMIT: see `micro/contenders.py` — the
-        # SQL spelling would open a transaction no other contender here opens.
+        # Literal BEGIN + the DBAPI's commit, matching rowform on sqlite (`micro/contenders.py`).
         await conn.commit()
     payload = [
         {
@@ -184,24 +164,8 @@ async def sqlite_flat_floor_hand_rolled_dict(limit: int = Query(default=DEFAULT_
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/sqlite-flat-sqlalchemy-core-mappings")
-async def sqlite_flat_sqlalchemy_core_mappings(
-    limit: int = Query(default=DEFAULT_LIMIT),
-) -> Response:
-    stmt = (
-        select(users_table)
-        .where(users_table.c.is_active == True)
-        .where(users_table.c.id > 100)
-        .limit(limit)
-    )
-    async with app.state.sa_engine.begin() as conn:
-        result = await conn.execute(stmt)
-        payload = [{str(k): v for k, v in m.items()} for m in result.mappings()]
-    return Response(content=orjson.dumps(payload), media_type=JSON)
-
-
-@app.get("/sqlite-flat-sqlalchemy-core-positional")
-async def sqlite_flat_sqlalchemy_core_positional(
+@app.get("/sqlite-flat-sqlalchemy-core")
+async def sqlite_flat_sqlalchemy_core(
     limit: int = Query(default=DEFAULT_LIMIT),
 ) -> Response:
     stmt = (
@@ -254,8 +218,8 @@ async def sqlite_join_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Resp
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/sqlite-join-sqlalchemy-core-positional")
-async def sqlite_join_sqlalchemy_core_positional(
+@app.get("/sqlite-join-sqlalchemy-core")
+async def sqlite_join_sqlalchemy_core(
     limit: int = Query(default=DEFAULT_LIMIT),
 ) -> Response:
     stmt = (
@@ -323,8 +287,8 @@ async def postgres_flat_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Re
     return Response(content=orjson.dumps(rows), media_type=JSON)
 
 
-@app.get("/postgres-flat-floor-hand-rolled-dict")
-async def postgres_flat_floor_hand_rolled_dict(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
+@app.get("/postgres-flat-floor-raw-driver-dict")
+async def postgres_flat_floor_raw_driver_dict(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     sql = "SELECT id, name, email, is_active FROM users WHERE is_active AND id > 100 LIMIT $1"
     async with app.state.pg_asyncpg.acquire() as conn, conn.transaction():
         rows = await conn.fetch(sql, limit)
@@ -332,24 +296,8 @@ async def postgres_flat_floor_hand_rolled_dict(limit: int = Query(default=DEFAUL
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/postgres-flat-sqlalchemy-core-mappings")
-async def postgres_flat_sqlalchemy_core_mappings(
-    limit: int = Query(default=DEFAULT_LIMIT),
-) -> Response:
-    stmt = (
-        select(users_table)
-        .where(users_table.c.is_active == True)
-        .where(users_table.c.id > 100)
-        .limit(limit)
-    )
-    async with app.state.pg_sa_engine.begin() as conn:
-        result = await conn.execute(stmt)
-        payload = [{str(k): v for k, v in m.items()} for m in result.mappings()]
-    return Response(content=orjson.dumps(payload), media_type=JSON)
-
-
-@app.get("/postgres-flat-sqlalchemy-core-positional")
-async def postgres_flat_sqlalchemy_core_positional(
+@app.get("/postgres-flat-sqlalchemy-core")
+async def postgres_flat_sqlalchemy_core(
     limit: int = Query(default=DEFAULT_LIMIT),
 ) -> Response:
     stmt = (
@@ -404,8 +352,8 @@ async def postgres_join_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Re
     return Response(content=orjson.dumps(payload), media_type=JSON)
 
 
-@app.get("/postgres-join-sqlalchemy-core-positional")
-async def postgres_join_sqlalchemy_core_positional(
+@app.get("/postgres-join-sqlalchemy-core")
+async def postgres_join_sqlalchemy_core(
     limit: int = Query(default=DEFAULT_LIMIT),
 ) -> Response:
     stmt = (

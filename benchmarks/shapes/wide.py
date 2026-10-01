@@ -31,7 +31,7 @@ import enum
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 import rowform as rf
 
@@ -75,24 +75,6 @@ class ORMBase(DeclarativeBase):
 
 
 class EventORM(ORMBase):
-    __tablename__ = TABLE_NAME
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    label: Mapped[str]
-    seen: Mapped[bool]
-    at: Mapped[dt.datetime]
-    day: Mapped[dt.date]
-    amount: Mapped[decimal.Decimal] = mapped_column(sa.Numeric(12, 3))
-    severity: Mapped[Severity]
-    trace: Mapped[uuid.UUID]
-    note: Mapped[str | None]
-
-
-class DCBase(MappedAsDataclass, DeclarativeBase):
-    pass
-
-
-class EventDC(DCBase):
     __tablename__ = TABLE_NAME
 
     id: Mapped[int] = mapped_column(primary_key=True)

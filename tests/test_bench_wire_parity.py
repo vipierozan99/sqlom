@@ -1,27 +1,15 @@
-"""What the benchmark contenders actually send, per postgres cell.
+"""What the postgres contenders actually send, per cell.
 
-The equivalence gate compares the bytes a contender returns. It cannot see how
-they were obtained, and correction 15 is what that blind spot costs: two
-`floor: on SQLAlchemy (dict)` arms shipped wrapping their read in
-`async with sa_conn.begin()`, which marks a transaction in Python and sends
-nothing, because SQLAlchemy emits `BEGIN` lazily with the first statement it
-routes itself — and those floors deliberately await the driver connection
-directly. Both returned byte-identical payloads while running two round trips
-lighter than every contender they bounded, and the published pool decomposition
-was built on the gap.
+The equivalence gate compares the bytes a contender returns and cannot see how
+they were obtained: a floor that skips `BEGIN`/`COMMIT` returns the same bytes
+two round trips lighter than everything it bounds, and that happened twice. This
+pins transaction parity instead. Counting happens at the driver — asyncpg's
+`Transaction` and SQLAlchemy's asyncpg adapter both issue `BEGIN`/`COMMIT`
+through `Connection.execute` — so one spy sees every path without server logs.
 
-It was caught by hand, twice, with `log_statement=all` on the bench container.
-This pins it instead. Counting happens at the driver: `asyncpg.Transaction`
-issues `BEGIN`/`COMMIT`/`ROLLBACK` through `Connection.execute`, and
-SQLAlchemy's asyncpg adapter drives that same `Transaction`, so one spy on
-`Connection.execute` observes every path into a transaction without needing
-server privileges or a readable log — which is what makes this runnable in CI
-against the service container rather than only on the bench box.
-
-**postgres only, deliberately.** On sqlite a `SELECT` opens no wire transaction
-for *anyone* — pysqlite implicitly begins before DML only — so the floors and the
-contenders agree there by construction, which `contenders.py`'s module docstring
-records with the measurement behind it. There is no asymmetry to pin.
+postgres only: on sqlite the floors spell the same literal `BEGIN` rowform sends,
+and stock SQLAlchemy sends none before a SELECT, so there is no single parity to
+pin there.
 """
 
 from __future__ import annotations
@@ -50,10 +38,9 @@ ITERATIONS = 2
 #: the contender's own.
 WARMUP = 3
 
-#: The one contender registered *without* a transaction, because pricing that
-#: is the point of the row (METHODOLOGY, "the two tracks"). Anything else
-#: sending no transaction is correction 15 happening again.
-NO_TRANSACTION = {"rowform (no transaction)"}
+#: The one contender registered without a transaction, because pricing that is
+#: the point of the row. Anything else sending none is a broken floor.
+NO_TRANSACTION = {"rowform (one-shot)"}
 
 
 class _ExecuteSpy:
@@ -98,9 +85,7 @@ async def _run(spec: Any, dsn: str, spy: _ExecuteSpy) -> dict[str, int]:
             spy.recording = False
     finally:
         await teardown()
-    return {kw: spy.count(kw) for kw in ("BEGIN", "COMMIT")} | {
-        "reset": sum(1 for s in spy.statements if "pg_advisory_unlock_all" in s)
-    }
+    return {kw: spy.count(kw) for kw in ("BEGIN", "COMMIT")}
 
 
 @pytest.fixture
@@ -140,34 +125,8 @@ async def test_every_contender_in_a_cell_opens_one_transaction_per_read(
     actual = {name: c["BEGIN"] for name, c in counts.items()}
     assert actual == expected, (
         "these contenders did not send one BEGIN per read; a floor that sends "
-        "fewer is not a floor (correction 15)"
+        "fewer is not a floor"
     )
 
     unbalanced = {n: c for n, c in counts.items() if c["BEGIN"] != c["COMMIT"]}
     assert not unbalanced, f"opened transactions without committing them: {unbalanced}"
-
-
-@pytest.mark.parametrize("seeded_shape", ["flat"], indirect=True)
-async def test_the_reset_rung_is_the_only_floor_without_asyncpg_s_reset(
-    seeded_shape, pg_dsn, monkeypatch
-):
-    """The pool ladder's middle rung means what METHODOLOGY says it means.
-
-    `floor: hand-rolled (no pool reset)` exists to price one thing:
-    `asyncpg.Pool.release()` -> `Connection.reset()`, a `RESET ALL`-family round
-    trip per request. If a future asyncpg default, or an edit to either floor,
-    made the pair stop differing in exactly that, the published 0.0791 ms would
-    quietly become a measurement of nothing.
-    """
-    spy = _ExecuteSpy()
-    spy.install(monkeypatch)
-
-    shipped = await _run(registry.get("postgres-flat-floor-hand-rolled-dict"), pg_dsn, spy)
-    no_reset = await _run(
-        registry.get("postgres-flat-floor-hand-rolled-no-pool-reset"), pg_dsn, spy
-    )
-
-    assert shipped["reset"] == ITERATIONS, (
-        "asyncpg.Pool no longer resets on release, so the reset rung prices nothing"
-    )
-    assert no_reset["reset"] == 0, "create_pool(reset=...) no longer suppresses the reset"

@@ -1,32 +1,13 @@
-"""Per-statement code generation: raw driver rows -> model instances.
+"""Per-statement code generation: driver rows -> model instances.
 
-A generic hydrator would walk the plan and use `setattr` with a string name on
-every field of every row. Since a statement's result layout is fixed and known
-once, we compile a specialised function for it instead, whose field accesses are
-ordinary `STORE_ATTR` bytecode against a fixed name.
+One function is generated per statement shape so each field store is a plain
+`STORE_ATTR` against a fixed name, which CPython's specialising interpreter
+quickens; `setattr`/descriptor calls defeat that. The source is kept on the
+function as `__source__`.
 
-Three things make the generated code fast, and all three are deliberate:
-
-* The row tuple is unpacked by the `for` statement itself — one
-  `UNPACK_SEQUENCE` per row instead of a subscript per field.
-* `list.append` is bound once outside the loop.
-* Field stores are written as plain attribute assignments. CPython 3.11's
-  specialising interpreter (PEP 659) quickens `obj.x = v` into a cached
-  `STORE_ATTR`; routing through `setattr()` or a descriptor's `__set__` is an
-  ordinary call that defeats that inline cache and measures several times slower.
-
-The generated source is attached to the returned function as `__source__`, so the
-codegen stays inspectable rather than being magic.
-
-**Type conversion comes from SQLAlchemy, not from a table here.** Each selected
-column's `result_processor` is asked of the *dialect-adapted* type, so a
-`DateTime` on sqlite (stored as a string) or a `Numeric` on postgres decodes
-exactly as it would through `Row`. Where the driver already returns the right
-Python object the processor is `None` and the field compiles to a bare store —
-which is most columns on asyncpg, and why bypassing `Row` costs nothing there.
-An earlier design hand-maintained `SQLITE_CONVERTERS = {bool: bool}` instead;
-measured against a widened shape, that covered 1 of 8 columns that need
-conversion (docs/METHODOLOGY.md correction 11).
+Type conversion is SQLAlchemy's: each column's `result_processor` is asked of
+the dialect-adapted type and inlined, so sqlite's string `DateTime` or
+postgres's `Numeric` decode exactly as they would through `Row`.
 """
 
 from __future__ import annotations
@@ -43,27 +24,18 @@ _LOG = logging.getLogger("rowform")
 def result_processor(column: Any, dialect: Any, coltype: Any) -> Any:
     """SQLAlchemy's own value decoder for one selected column, or None.
 
-    `_cached_result_processor` rather than the public `type.result_processor`
-    because the processor has to come from the *dialect's* implementation of the
-    type — `sa.Numeric` becomes `_PsycopgNumeric` on psycopg, and only that
-    subclass knows how to read the driver's output. This is the same call
-    `DefaultExecutionContext.get_result_processor` makes, and the same memo
-    dict, so it is the contract Row itself runs on.
-
-    `coltype` is the DBAPI type code from `cursor.description`. It is not
-    optional decoration: postgres `Numeric.result_processor` *raises* for an
-    unknown code, which is why hydrators are planned after the first execute
-    rather than at compile time.
+    `_cached_result_processor` (private) because the processor must come from the
+    dialect's implementation of the type — `sa.Numeric` is `_PsycopgNumeric` on
+    psycopg. `coltype` is the DBAPI type code: postgres `Numeric` raises without
+    one, which is why hydrators are built after the first execute.
     """
     return column.type._cached_result_processor(dialect, coltype)
 
 
 def compile_hydrator(plan: Plan, dialect: Any, coltypes: list[Any]) -> Any:
-    """Build a `rows -> list` function for one planned statement.
-
-    `coltypes` are the DBAPI type codes from `cursor.description`, positionally
-    aligned with `plan.columns`. Drivers that report no type code (sqlite) pass
-    `None` for every column, which is exactly what SQLAlchemy passes there too.
+    """Build a `rows -> list` function for one planned statement. `coltypes` are the
+    DBAPI type codes from `cursor.description`, aligned with `plan.columns`; sqlite
+    reports `None` for every column.
     """
     if len(coltypes) != len(plan.columns):
         raise PlanError(
@@ -93,10 +65,7 @@ def compile_hydrator(plan: Plan, dialect: Any, coltypes: list[Any]) -> Any:
         "def _hydrate(rows):",
         "    out = []",
         "    append = out.append",
-        # The trailing comma is load-bearing: `for f0 in rows` binds each row
-        # *tuple* to f0 instead of unpacking it, so a single selected column
-        # would nest. `for f0, in rows` unpacks, and the comma is harmless at
-        # every other arity.
+        # The trailing comma is load-bearing: `for f0, in rows` unpacks a 1-tuple.
         f"    for {', '.join(field_vars)}, in rows:",
     ]
 
@@ -116,11 +85,8 @@ def compile_hydrator(plan: Plan, dialect: Any, coltypes: list[Any]) -> Any:
 
         indent = "        "
         if nullable:
-            # Reached through an OUTER join, so an all-NULL run means "no match"
-            # and hydrates as None rather than an object with every field None.
-            # The test is "every selected column of this entity is NULL", so an
-            # entity whose columns are all genuinely NULL in the data also
-            # becomes None; give such a query at least one NOT NULL column.
+            # Reached through an OUTER join: all-NULL means "no match" -> None. A row
+            # whose columns are all genuinely NULL also becomes None.
             lines.append(f"{indent}if {' is None and '.join(mine)} is None:")
             lines.append(f"{indent}    {target} = None")
             lines.append(f"{indent}else:")
@@ -141,8 +107,5 @@ def compile_hydrator(plan: Plan, dialect: Any, coltypes: list[Any]) -> Any:
     exec(source, namespace)  # noqa: S102 -- our own generated source, not external input
     hydrate = namespace["_hydrate"]
     hydrate.__source__ = source
-    # The generated function is also on `hydrate.__source__`; logging it means a
-    # question about what a statement hydrated into is answerable from a log at
-    # DEBUG, without reaching into the query object.
     _LOG.debug("hydrator built:\n%s", source)
     return hydrate

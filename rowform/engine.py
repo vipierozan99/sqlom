@@ -1,36 +1,9 @@
-"""What is left of an engine once SQLAlchemy owns both the SQL and the pool: a
-compiled-statement cache, an execute, and the compiled hydrator.
+"""`rf.Engine`: rowform's read/write layer over a SQLAlchemy `AsyncEngine`.
 
-Engines used to generate SQL. Then they stopped, and `CoreQuery` held the
-compiled string and the parameter recipe. Now they no longer pool either —
-`rf.Engine` wraps a SQLAlchemy `AsyncEngine` and takes its connections from it:
-
-    sa_engine = create_async_engine("postgresql+asyncpg://localhost/app")
-    db = rf.Engine(sa_engine)
-
-    users = await db.fetch_all(sa.select(User))
-
-**Why give up rowform's own pool.** What it buys is the thing an own pool
-structurally cannot: rowform reads that run *inside somebody else's
-transaction*, so an application can adopt this one query at a time without
-giving up its engine, its sessions or its migrations (`CLAUDE.md`, goal 2).
-
-**What it costs is currently unmeasured.** It was once recorded as ~0.09 ms per
-checkout against SQLAlchemy's ~0.40 ms (`docs/PLAN_SQLA_API.md` §2), and that
-comparison is withdrawn: every measurement behind it was taken with the
-benchmark CLI importing locust, whose `gevent.monkey.patch_all()` replaced
-`threading.Thread` process-wide and moved every timing by ~30%. Nothing has
-re-compared the two pools since, so treat "SQLAlchemy's pool is dearer than the
-one we removed" as an untested belief rather than a finding. What *is* measured
-is a bound on both together: the checkout plus the transaction cost roughly
-0.2 ms per read on sqlite (`docs/METHODOLOGY.md`, the three floors).
-
-The one part that survives independently is the shape of the cost — it is paid
-per *checkout*, not per row and not per statement, so holding a connection for a
-whole request amortises it however many reads that request does.
-
-rowform never opens or disposes the `AsyncEngine`. That stays the caller's, which
-is the whole point of handing one in.
+SQLAlchemy owns the pool, the transactions and the schema; rowform compiles
+statements once (`query.py`) and runs them on the driver connection beneath
+SQLAlchemy's, which is what lets a read run inside a caller's own session
+transaction (`connect(bind=...)`). rowform never opens or disposes the engine.
 """
 
 from __future__ import annotations
@@ -46,6 +19,7 @@ from typing import Any, TypeVar, overload
 import sqlalchemy as sa
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.util import greenlet_spawn
 
 from .connection import _ACTIVE, Connection
 from .drivers import Driver, driver_for
@@ -59,23 +33,16 @@ from .query import CoreQuery, _one_row
 _LOG = logging.getLogger("rowform")
 
 
-#: What an `observer` is handed after every statement: the SQL as executed, how
-#: long the round trip took in seconds, and how many rows came back — `None` for a
-#: statement that returns none, where the driver's own report is the useful number
-#: and `execute()` already returns it.
+#: Called after every statement with the SQL, the round-trip seconds, and the row
+#: count (`None` for a statement that returns none).
 Observer = Callable[[str, float, "int | None"], None]
 
 
-#: How many compiled statements an engine keeps. Matches SQLAlchemy's own
-#: `compiled_cache` default, and for the same reason: an application's statement
-#: set is normally small and fixed, but one built from a request — a filter set
-#: that varies, an `IN` whose length varies — mints a new cache key every time,
-#: and an uncapped dict would hold every one of them for the life of the process.
+#: Compiled statements kept (LRU). SQLAlchemy's `compiled_cache` default, for the
+#: same reason: statements built per request would otherwise accumulate forever.
 DEFAULT_CACHE_SIZE = 500
 
-# One type variable per selected entity. The overloads below are written out per
-# arity rather than with a variadic, because that is exactly the information a
-# checker has: `Select` is parameterised by a tuple of its selected types.
+# One type variable per selected entity: `Select` is parameterised by a tuple.
 R = TypeVar("R")
 R2 = TypeVar("R2")
 R3 = TypeVar("R3")
@@ -83,7 +50,7 @@ R4 = TypeVar("R4")
 
 
 class Engine:
-    """rowform's row layer over a SQLAlchemy `AsyncEngine`. See module docstring."""
+    """rowform's row layer over a SQLAlchemy `AsyncEngine`."""
 
     def __init__(
         self,
@@ -102,27 +69,21 @@ class Engine:
                 f"Build one with create_async_engine(url) and hand it here; rowform "
                 f"does not open connections of its own."
             )
-        #: The wrapped engine. rowform reads its dialect and takes connections
-        #: from it, and never opens or disposes it.
+        #: The wrapped engine; never opened or disposed here.
         self.sa_engine = engine
         self.driver: Driver = driver_for(engine.dialect)
         self.driver.configure(engine)
-        #: Called after every statement with `(sql, seconds, rows)` — the hook for
-        #: slow-query logs, per-request counters or a tracing span. Reassignable at
-        #: any time; `None` disables it, which is one attribute load and a branch
-        #: per statement and nothing at all per row. Exceptions raised inside it
-        #: are not caught: it runs on the caller's path, so it must be cheap and
-        #: must not throw.
+        #: Reassignable at any time; `None` disables it. Exceptions it raises are
+        #: not caught — it runs on the caller's path.
         self.observer = observer
         self._cache_size = cache_size
         self._queries: OrderedDict[Any, CoreQuery[Any]] = OrderedDict()
 
     @property
     def dialect(self) -> Any:
-        """The dialect statements compile for, and whose type `result_processor`s
-        decode rows. It is the engine's own — one SQLAlchemy has run
-        `initialize()` against, so it knows the server version, where a freshly
-        constructed dialect does not."""
+        """The engine's own dialect — one SQLAlchemy has run `initialize()` against, so
+        it knows the server version where a freshly constructed dialect does not.
+        """
         return self.sa_engine.dialect
 
     def __repr__(self) -> str:
@@ -150,36 +111,21 @@ class Engine:
     def prepare(self, statement: Any) -> Any:
         """Compile a statement for this engine's dialect, once.
 
-        Hoist this out of the request when you can. `fetch_all` will do it for
-        you and cache the result, but that costs a structural cache-key
-        computation per call that a hoisted `CoreQuery` does not.
+        `fetch_all` does this for you and caches the result under SQLAlchemy's
+        structural cache key; hoisting a `CoreQuery` only saves that lookup.
         """
         return CoreQuery(statement, self.dialect)
 
     def _query_for(self, statement: Any) -> tuple[CoreQuery[Any], Any]:
         """The compiled query, plus this statement's own literal values.
 
-        SQLAlchemy's structural cache key deliberately ignores literals, so two
-        statements built the same way from different values share one entry —
-        that is what makes compiling once worthwhile. The consequence is that the
-        cached compiled object holds the *first* statement's literals, so the
-        caller's have to travel separately as `CacheKey.bindparams`. Returning
-        the two together is what stops that being forgettable.
-
-        `.key` rather than the `CacheKey` itself, whose `__hash__` deliberately
-        returns None — only the structural tuple inside it is hashable.
-
-        The cache is bounded and least-recently-used. Unbounded, an application
-        that builds statements per request holds every one of them forever; a
-        plain cap would instead evict whatever happened to be compiled first,
-        which for a long-lived service is its startup statements — the hot ones.
-        The bookkeeping is one `move_to_end` per cached execute, measured at no
-        cost against the flat micro shape.
+        The structural cache key ignores literals, so the cached compiled object holds
+        the *first* statement's; the caller's travel separately as `CacheKey.bindparams`
+        (private, like `_generate_cache_key`). `.key` because `CacheKey` is unhashable.
+        Bounded LRU so statements built per request do not accumulate forever.
         """
         if isinstance(statement, CoreQuery):
-            # A query compiled for another driver carries the wrong paramstyle and
-            # would run as a cryptic driver error. The `bind=` path checks the same
-            # parity in `_resolve`; this is its equivalent for the CoreQuery track.
+            # Another driver's paramstyle would fail as a cryptic driver error.
             if statement.dialect.driver != self.dialect.driver:
                 raise ConfigurationError(
                     f"this CoreQuery was compiled for {statement.dialect.name}+"
@@ -190,13 +136,8 @@ class Engine:
             return statement, None
         cache_key = statement._generate_cache_key()
         if cache_key is None:
-            # SQLAlchemy declines to cache some constructs, and says so by
-            # returning no cache key at all — `postgresql.insert()` sets
-            # `inherit_cache = False`, so every ON CONFLICT upsert arrives here,
-            # as does any user construct that has not opted in. Compile it fresh
-            # rather than crash on `cache_key.key`: the compiled object then
-            # holds *this* statement's literals, which is exactly the case where
-            # `extracted` is unnecessary.
+            # Uncacheable construct (e.g. `postgresql.insert()`, `inherit_cache=False`):
+            # compile fresh; the compiled object then holds this statement's literals.
             return self.prepare(statement), None
         queries = self._queries
         query = queries.get(cache_key.key)
@@ -210,10 +151,7 @@ class Engine:
 
     @property
     def cached_statements(self) -> int:
-        """How many compiled statements are held. Worth watching: an application
-        whose statement set is fixed sits at a constant here, and one building
-        statements per request pins itself to `cache_size` and recompiles
-        forever."""
+        """How many compiled statements are held."""
         return len(self._queries)
 
     # --- reads --------------------------------------------------------------
@@ -245,23 +183,15 @@ class Engine:
     async def fetch_all(self, statement: Any, **params: Any) -> Any:
         """Hydrated rows. `**params` supplies the statement's `bindparam()` values.
 
-        What each row *is* comes from the statement, not the model. One selected
-        entity yields that entity — `select(User)` gives `User`s and
-        `select(User.name)` gives `str`s; two or more yield a tuple, so
-        `select(User, Post)` gives `(User, Post)` and `select(User.name, User.id)`
-        gives `(str, int)` (`planner.py`).
+        The statement decides the row: one selected entity yields that entity
+        (`select(User)` -> `User`, `select(User.name)` -> `str`); two or more yield a
+        tuple. The overloads say the same by arity, which is the most a checker can
+        tell; past four entities the row is `Any`.
 
-        The overloads above mirror that rule exactly, which is why it is stated in
-        terms of arity: a checker can tell `Select[Tuple[User]]` from
-        `Select[Tuple[User, Post]]`, but not `Select[Tuple[User]]` from
-        `Select[Tuple[str]]`. Past four selected entities the row degrades to
-        `list[Any]`.
-
-        Takes a connection from the pool for this one statement. A SELECT does not
-        open a transaction; a write with `RETURNING` does and commits, or the
-        pool's rollback on release would discard it (`_acquire_for`). To run
-        several statements together — or inside anyone else's transaction — use
-        `connect()` or `begin()`.
+        A one-shot: a SELECT runs outside any transaction, straight from the pool
+        (`_direct_connection`), so no isolation level applies to it — a read that
+        needs one belongs in `begin()`. A write with RETURNING commits, or the pool's
+        rollback on release would discard it.
         """
         self._reject_if_in_transaction("fetch_all")
         query, extracted = self._require_rows(statement)
@@ -299,27 +229,11 @@ class Engine:
     ) -> AsyncIterator[Any]: ...
 
     def fetch_iter(self, statement: Any, *, chunk: int = 1000, **params: Any) -> Any:
-        """The same rows as `fetch_all`, `chunk` at a time, without ever holding
-        them all.
+        """The same rows as `fetch_all`, `chunk` at a time, through a server-side cursor.
 
-            async for user in db.fetch_iter(sa.select(User), chunk=500):
-                await sink.write(user)
-
-        `fetch_all` builds one list, so peak memory is the whole result; an export
-        or a backfill over a large table is the case that does not fit. Here each
-        chunk is hydrated by the same generated function and handed over row by
-        row, so what is live is one chunk, not one result set.
-
-        The connection is held for the whole iteration — that is what makes it a
-        cursor rather than repeated `LIMIT`/`OFFSET` queries, and it means a slow
-        consumer holds a pooled connection for as long as it takes. Abandoning the
-        loop early is safe: leaving the `async for` closes the cursor.
-
-        Not every statement can stream on every driver, and the difference is the
-        server's, not this library's: psycopg uses a server-side cursor, which
-        postgres cannot `DECLARE` for `INSERT ... RETURNING` — it raises
-        `UnsupportedError` saying so. asyncpg streams the same statement through a
-        portal, and sqlite streams anything.
+        The connection is held for the whole iteration; leaving the `async for` early
+        closes the cursor. psycopg cannot stream `INSERT ... RETURNING` (postgres will
+        not DECLARE a cursor for it) and raises `UnsupportedError`; asyncpg and sqlite can.
         """
         self._reject_if_in_transaction("fetch_iter")
         return self._iterate(statement, chunk, params, None)
@@ -327,16 +241,15 @@ class Engine:
     async def _iterate(
         self, statement: Any, chunk: int, params: dict[str, Any], acquire: Any
     ) -> AsyncIterator[Any]:
-        """Shared by `Engine.fetch_iter` and `Connection.fetch_iter`; the only
-        difference is whether the connection comes from the pool or is the
-        transaction's own. `acquire=None` means the former, and is resolved once
-        the statement is compiled — a `RETURNING` write needs the committing
-        checkout (`_acquire_for`)."""
+        """Shared by `Engine.fetch_iter` and `Connection.fetch_iter`; `acquire=None`
+        means take a pooled connection, resolved after compiling (a RETURNING write
+        needs the committing checkout).
+        """
         if chunk < 1:
             raise ConfigurationError(f"chunk must be at least 1, got {chunk}")
         query, extracted = self._require_rows(statement)
         if acquire is None:
-            acquire = self._acquire_for(query)
+            acquire = self._acquire_for(query, stream=True)
         sql, bound = query.bind(params, extracted)
         observer = self.observer
         start = perf_counter() if observer is not None else 0.0
@@ -353,14 +266,8 @@ class Engine:
                     for row in hydrate(rows):
                         yield row
         finally:
-            # One call for the whole stream, with the total row count. Unlike the
-            # other paths, this duration includes the consumer's own time between
-            # chunks — there is no round trip to time in isolation.
-            #
-            # In `finally` because breaking out of the `async for` closes this
-            # generator, and an abandoned export is exactly the stream an
-            # observer wants to hear about. It reports the rows actually
-            # delivered, not the rows the statement would have produced.
+            # One call per stream, rows actually delivered, consumer time included;
+            # in `finally` so an abandoned iteration is still reported.
             self._observe(observer, sql, start, total)
 
     @overload
@@ -388,19 +295,10 @@ class Engine:
     async def fetch_one(self, statement: Any, **params: Any) -> Any: ...
 
     async def fetch_one(self, statement: Any, **params: Any) -> Any:
-        """The first row, or None. The row is shaped as `fetch_all` shapes it.
+        """The first row, or None, shaped as `fetch_all` shapes it.
 
-        The statement is narrowed to one row where that is safe (`_one_row`), so
-        this is a `LIMIT 1` rather than a whole result set with everything after
-        the first discarded.
-
-        For one *column* of that row, narrow the statement rather than the row:
-        `select(User.id, User.name).with_only_columns(User.id)` keeps the exact
-        type and does not fetch the column it is going to discard.
-
-        Written out rather than delegating to `fetch_all` so the guard names this
-        method: telling a caller inside a scope to use `conn.fetch_all()` when
-        they called `fetch_one()` points them at a call they never made.
+        Narrowed to `LIMIT 1` where that is safe (`_one_row`). For one column of the
+        row, narrow the statement with `with_only_columns` instead.
         """
         self._reject_if_in_transaction("fetch_one")
         query, extracted = self._require_rows(_one_row(statement))
@@ -413,26 +311,15 @@ class Engine:
     async def execute(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
         """Run a statement in a scope of its own and return a SQLAlchemy `Result`.
 
-        The compatibility track's one-shot: equivalent to opening `connect()`,
-        executing, and closing. `parameters` is a dict, or a list of dicts for an
-        executemany, exactly as `AsyncConnection.execute` takes it; `**params` is
-        rowform's extension and merges into it.
-
-        A SELECT runs without committing; anything else is committed, because a
-        write on a connection the pool resets would otherwise be discarded. The
-        test is `is_select` rather than "returns rows": `insert(...).returning(...)`
-        does return rows and is still a write, and treating it as a read is how
-        the discard survived §8a's fix. A sequence of parameter sets takes the
-        executemany path, which is a write however the statement was written, so
-        it commits too.
+        Anything but a SELECT is committed, because the pool's rollback on release
+        would otherwise discard it. Keyed on `is_select`, not "returns rows": a write
+        with RETURNING returns rows and is still a write. An executemany commits too.
         """
         self._reject_if_in_transaction("execute")
         return await self._execute_scoped(statement, parameters, params)
 
     async def _execute_scoped(self, statement: Any, parameters: Any, params: dict[str, Any]) -> Any:
-        """`execute()` past the in-transaction guard, so `scalar()`/`scalars()`
-        can run that guard once under their own name and still share the body,
-        rather than each running it and then triggering `execute`'s too (F11)."""
+        """`execute()` past the in-transaction guard, so `scalar()`/`scalars()` share it."""
         resolved = self._query_for(statement)
         many = isinstance(parameters, (list, tuple))
         async with self._scope(commit=many or not resolved[0].is_select) as conn:
@@ -444,16 +331,13 @@ class Engine:
         return (await self._execute_scoped(statement, parameters, params)).scalar()
 
     async def scalars(self, statement: Any, parameters: Any = None, **params: Any) -> Any:
-        """`execute(...).scalars()`, in a scope of its own. The rows are already
-        buffered, so the `ScalarResult` outlives the connection."""
+        """`execute(...).scalars()`, in a scope of its own; rows are already buffered."""
         self._reject_if_in_transaction("scalars")
         return (await self._execute_scoped(statement, parameters, params)).scalars()
 
     async def execute_many(self, statement: Any, params: Sequence[dict[str, Any]]) -> Any:
         """One compiled statement, many parameter sets, one driver round trip.
-
-        rowform's own: returns the driver's report rather than a `Result`. The
-        SQLAlchemy spelling of the same thing is `execute(stmt, [ ... ])`.
+        Returns the driver's report; `execute(stmt, [...])` wraps the same in a `Result`.
         """
         self._reject_if_in_transaction("execute_many")
         async with self._scope(commit=True) as conn:
@@ -468,27 +352,10 @@ class Engine:
     ) -> int:
         """Bulk-load rows through the server's COPY path. Returns how many.
 
-            await db.copy_in(User.__table__, [{"id": 1, "name": "ada"}, ...])
-
-        `execute_many` sends one INSERT per row's worth of parameters; COPY sends
-        a stream the server parses without planning a statement per row, which is
-        the difference between a backfill that takes minutes and one that takes
-        seconds. It is a load path, not a write path: no RETURNING, no ON
-        CONFLICT, no per-row result.
-
-        `columns` defaults to every column of the table; name a subset to let
-        server defaults fill the rest. Every row must carry each named column.
-
-        **Values go through the same bind processors a parameterised INSERT
-        uses** (`column.type._cached_bind_processor`), because COPY bypasses the
-        statement path where those normally run — and a `Decimal`, `datetime`,
-        `Enum` or `dict` that skipped them would land as something the round trip
-        does not return unchanged. The tests assert `copy_in` and `execute_many`
-        produce identical rows for every type in the type map.
-
-        Refused inside `transaction()`, as the reads are: it would take a
-        different pooled connection and commit on its own, so a rollback of the
-        surrounding block would leave the loaded rows behind.
+        A load path, not a write path: no RETURNING, no ON CONFLICT. `columns` defaults
+        to every column of the table. Values go through the same bind processors a
+        parameterised INSERT uses, since COPY bypasses the statement path where those
+        run. Refused inside a scope, as the one-shot reads are.
         """
         self._reject_if_in_transaction("copy_in")
         async with self._checkout(commit=True) as (_, conn):
@@ -525,28 +392,14 @@ class Engine:
     # --- schema -------------------------------------------------------------
 
     async def create_all(self, metadata: sa.MetaData) -> None:
-        """Create every table in `metadata`, in dependency order.
-
-        The whole reason for this design: the model declaration *is* the table
-        declaration, so tests and fixtures stop hand-writing DDL strings.
-
-        SQLAlchemy's own `SchemaGenerator` through `run_sync`, so this gets
-        dependency ordering, indexes, and the `CREATE TYPE` a postgres enum
-        column needs before its table. `checkfirst=False` — this is bootstrap,
-        not schema management; for an existing database point Alembic at the same
-        `metadata`, which is the whole point of building a real `MetaData`.
+        """Create every table in `metadata`, through SQLAlchemy's own `SchemaGenerator`.
+        `checkfirst=False`: this is bootstrap; point Alembic at the same `metadata` otherwise.
         """
         async with self.sa_engine.begin() as conn:
             await conn.run_sync(metadata.create_all, checkfirst=False)
 
     async def drop_all(self, metadata: sa.MetaData, *, ignore_missing: bool = True) -> None:
-        """Drop every table in `metadata`, dependants first.
-
-        `ignore_missing` becomes SQLAlchemy's `checkfirst`, which asks the
-        catalogue what exists rather than dropping blind and swallowing the
-        error — so this stays usable as a test reset without knowing what state
-        the database was left in.
-        """
+        """Drop every table in `metadata`; `ignore_missing` is SQLAlchemy's `checkfirst`."""
         async with self.sa_engine.begin() as conn:
             await conn.run_sync(metadata.drop_all, checkfirst=ignore_missing)
 
@@ -556,66 +409,90 @@ class Engine:
     async def _checkout(self, *, commit: bool = False) -> AsyncIterator[tuple[Any, Any]]:
         """One pooled checkout, as `(sqlalchemy_connection, driver_connection)`.
 
-        `driver_connection` is the real `asyncpg.Connection` /
-        `aiosqlite.Connection` / `psycopg.AsyncConnection` under SQLAlchemy's
-        adapter, so statements run on it are awaited directly rather than through
-        `greenlet_spawn` — measured at ~0.17 ms per statement cheaper than going
-        through the adapter's DBAPI shim (`docs/PLAN_SQLA_API.md` §2c).
-
-        **`commit` is not a nicety.** Without it a one-shot write is *silently
-        discarded* on two of the three drivers: `connect()` hands back a
-        connection the pool resets with a rollback on release, and a statement
-        run straight on the driver connection sits inside whatever transaction
-        that driver opened for it — pysqlite's implicit BEGIN, psycopg's
-        transactional connection. Only asyncpg is autocommit, so only asyncpg
-        would have committed. `begin()` makes all three agree, on the safe answer.
-
-        Cancellation is the other thing this handles, and the driver connection is
-        resolved *before* the yield so that path needs no await of its own while
-        unwinding.
+        `commit=True` is load-bearing: a one-shot write run on the driver connection
+        sits in the driver's own implicit transaction (pysqlite, psycopg) and the pool's
+        rollback on release silently discards it. Also handles cancellation and
+        disconnect (`_is_disconnect`).
         """
         cm = self.sa_engine.begin() if commit else self.sa_engine.connect()
         async with cm as conn:
-            driver_conn = (await conn.get_raw_connection()).driver_connection
+            fairy = await conn.get_raw_connection()
+            driver_conn = fairy.driver_connection
             try:
                 yield conn, driver_conn
             except asyncio.CancelledError:
-                # The statement may still be running with nobody waiting for it,
-                # and SQLAlchemy's pool will hand this connection to the next
-                # borrower regardless. Measured on aiosqlite, which runs each
-                # statement in a worker thread the cancelled task cannot stop:
-                # without this the next borrower queues behind abandoned work,
-                # which looks exactly like a leaked connection.
+                # The statement may still be running (aiosqlite's worker thread) and
+                # the pool will hand this connection to the next borrower regardless.
                 await self.driver.on_cancelled(driver_conn)
                 raise
+            except Exception as err:
+                if self._is_disconnect(err, fairy.dbapi_connection):
+                    await conn.invalidate()
+                raise
+
+    def _is_disconnect(self, err: Exception, dbapi_connection: Any) -> bool:
+        """Ask the dialect whether `err` means the connection is dead.
+
+        rowform runs statements on the driver connection, so SQLAlchemy never sees the
+        exception and never runs this itself; without it a dead connection goes back
+        into the pool.
+        """
+        return bool(self.dialect.is_disconnect(err, dbapi_connection, None))
+
+    @asynccontextmanager
+    async def _direct_connection(self) -> AsyncIterator[Any]:
+        """A pooled driver connection with no `Connection` around it, for one-shot reads.
+
+        `Pool.connect()` directly keeps the pool (pre-ping, recycle, pool events, the
+        sqlite `connect` listener) and skips `Connection`/`AsyncConnection` and two
+        greenlet crossings. What it skips is exactly the `engine_connect` event, so an
+        engine with any listener there (`execution_options(isolation_level=...)`,
+        a caller's own) takes the ordinary checkout instead (`_acquire_for`). The
+        driver puts the connection in autocommit for the block (`Driver.autocommit`).
+        """
+        pool = self.sa_engine.sync_engine.pool
+        fairy = await greenlet_spawn(pool.connect)
+        dbapi_conn = fairy.dbapi_connection
+        assert dbapi_conn is not None  # a fresh checkout is never invalidated
+        driver_conn = dbapi_conn.driver_connection
+        try:
+            async with self.driver.autocommit(driver_conn):
+                yield driver_conn
+        except asyncio.CancelledError:
+            await self.driver.on_cancelled(driver_conn)
+            raise
+        except Exception as err:
+            if self._is_disconnect(err, dbapi_conn):
+                # The adapter's close needs a greenlet to await in.
+                await greenlet_spawn(fairy.invalidate)
+            raise
+        finally:
+            await greenlet_spawn(fairy.close)
 
     @asynccontextmanager
     async def _connection(self) -> AsyncIterator[Any]:
-        """The read seam: a checked-out driver connection, nothing committed.
-
-        Every read goes through here, which is what makes a mock engine possible:
-        override this and nothing else changes.
+        """The read seam: a checked-out driver connection, nothing committed. A mock
+        engine overrides this and `_direct_connection`.
         """
         async with self._checkout() as (_, driver_conn):
             yield driver_conn
 
     @asynccontextmanager
     async def _write_connection(self) -> AsyncIterator[Any]:
-        """`_connection()`, committed on the way out. See `_checkout`."""
+        """`_connection()`, committed on the way out."""
         async with self._checkout(commit=True) as (_, driver_conn):
             yield driver_conn
 
-    def _acquire_for(self, query: CoreQuery[Any]) -> Any:
-        """Which checkout a one-shot read should take.
-
-        Keyed on `is_select`, not on `returns_rows`: a write with `RETURNING`
-        does both, and taking the non-committing checkout for it is the silent
-        discard of `docs/PLAN_SQLA_API.md` §8a reached by the other branch. Only
-        psycopg shows it — sqlite is put in autocommit by `SqliteDriver.configure`
-        and asyncpg has no implicit transaction — which is why it survived a suite
-        that runs the write matrix on sqlite and asyncpg alone.
+    def _acquire_for(self, query: CoreQuery[Any], *, stream: bool = False) -> Any:
+        """Which checkout a one-shot takes: committing for a write, direct for a SELECT
+        unless something listens on `engine_connect`, ordinary for a stream (psycopg's
+        server-side cursor needs a transaction).
         """
-        return self._connection if query.is_select else self._write_connection
+        if not query.is_select:
+            return self._write_connection
+        if stream or len(self.sa_engine.sync_engine.dispatch.engine_connect):
+            return self._connection
+        return self._direct_connection
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[Any]:
@@ -625,52 +502,23 @@ class Engine:
 
     @asynccontextmanager
     async def _scope(self, *, commit: bool) -> AsyncIterator[Connection]:
-        """One checkout as a `Connection`, for the engine's own one-shots.
-
-        Not `connect()`: these do not autobegin for a read, which is what keeps
-        the shorthand a shorthand rather than a transaction (a `begin`/`commit`
-        pair measured at +31% on a single 1000-row read).
+        """One checkout as a `Connection` that does not autobegin, for the engine's own
+        `execute`-track one-shots.
         """
         async with self._checkout(commit=commit) as (sa_conn, driver_conn):
             yield Connection(self, sa_conn, driver_conn, owns=False)
 
     @asynccontextmanager
     async def connect(self, bind: Any = None, **execution_options: Any) -> AsyncIterator[Connection]:
-        """A connection scope — `AsyncEngine.connect()`, with rowform's two tracks
-        on it.
+        """A connection scope — `AsyncEngine.connect()`: commit-as-you-go, the first
+        statement autobegins, leaving without `commit()` rolls back.
 
-            async with db.connect() as conn:
-                users = (await conn.execute(sa.select(User))).scalars().all()
-                await conn.execute(sa.insert(User.__table__).values(name="ada"))
-                await conn.commit()
-
-        Commit-as-you-go, as SQLAlchemy has it: the first statement begins a
-        transaction and leaving the block without `commit()` rolls it back. Use
-        `begin()` for the begin-once form.
-
-        `bind=` runs on a connection somebody else owns — an `AsyncConnection` or
-        an `AsyncSession`. Statements then see that transaction's uncommitted
-        writes and roll back with it, and rowform neither begins nor ends
-        anything: the caller's block is the scope.
-
-            async with Session() as session, session.begin():
-                session.add(AuditRow(...))
-                await session.flush()          # see below — rowform will not
-                async with db.connect(bind=session) as conn:
-                    hot = await conn.fetch_all(sa.select(User))
-
-        **Flush before you read.** "Uncommitted" means uncommitted *in the
-        database*. rowform reads the connection under the session, not the
-        session, so nothing it does triggers autoflush — a `session.add()` that
-        has not been flushed is still pending in the identity map, and a rowform
-        read will not see it. Flushing is the caller's because the alternative is
-        worse: a read that silently flushes somebody else's session reorders their
-        writes, and rowform has no way to know that is wanted. An
-        `AsyncConnection` has no such state, so this applies to sessions only.
-
-        `execution_options` reach `AsyncConnection.execution_options()`, so
-        isolation is spelled the way SQLAlchemy spells it —
-        `isolation_level="SERIALIZABLE"`, `postgresql_readonly=True`.
+        `bind=` runs on an `AsyncConnection` or `AsyncSession` somebody else owns:
+        statements see that transaction's uncommitted writes and roll back with it,
+        and rowform neither begins nor ends anything. Flush the session first: rowform
+        reads the connection under it, so a pending `add()` is not yet in the database
+        and nothing here autoflushes it. `execution_options` reach
+        `AsyncConnection.execution_options()`.
         """
         if bind is not None:
             if execution_options:
@@ -680,11 +528,7 @@ class Engine:
                 )
             sa_conn = await self._resolve(bind)
             conn = Connection(self, sa_conn, await self._driver_connection(sa_conn), owns=False)
-            # Register even though it is bound: an `engine.fetch_*` one-shot inside
-            # this block would take a *different* pooled connection and miss the
-            # bound transaction's uncommitted writes, so the guard has to see it.
-            # try/finally scopes the registration to the block — it refuses
-            # one-shots only inside, not for the rest of the task.
+            # Registered even though bound, so `engine.fetch_*` inside is refused.
             conn._enter()
             try:
                 yield conn
@@ -703,11 +547,8 @@ class Engine:
 
     @asynccontextmanager
     async def begin(self, **execution_options: Any) -> AsyncIterator[Connection]:
-        """A connection scope with a transaction already open — `AsyncEngine.begin()`.
-
-        Commits on clean exit, rolls back on any exception, and nests as
-        savepoints through `conn.begin_nested()`. All three are SQLAlchemy's, on
-        every driver.
+        """A connection scope with a transaction open — `AsyncEngine.begin()`: commits on
+        clean exit, rolls back on exception, `conn.begin_nested()` for savepoints.
         """
         async with self._checkout() as (sa_conn, driver_conn):
             if execution_options:
@@ -746,16 +587,10 @@ class Engine:
         return (await conn.get_raw_connection()).driver_connection
 
     def _reject_if_in_transaction(self, method: str) -> None:
-        """Inside `connect()` or `begin()` this method would take a *different*
-        pooled connection, so it would not see the scope's uncommitted writes and
-        would not roll back with it. Fail loudly rather than return plausible
-        wrong results — or, for the one-shots that commit, leave a write behind
-        after the surrounding block rolled back. A fixed `pool_size=1` engine
-        turns the same mistake into a deadlock instead."""
-        # Walk the whole stack, not just the innermost: `db_a.begin()` wrapping
-        # `db_b.begin()` leaves db_b innermost, and a `db_a.fetch_all()` there is
-        # exactly the mistake this guard is for — it takes a second connection
-        # from db_a's pool and misses db_a's uncommitted writes.
+        """Inside `connect()`/`begin()` a one-shot would take a *different* pooled
+        connection and miss the scope's uncommitted state; fail loudly instead.
+        """
+        # Walk the whole stack: another engine's scope may be innermost.
         active = _ACTIVE.get()
         while active is not None and active._engine is not self:
             active = active._outer
@@ -781,19 +616,14 @@ class Engine:
     async def _run(
         self, query: CoreQuery[Any], params: dict[str, Any], acquire: Any, extracted: Any = None
     ) -> Any:
-        """Execute and return `(rows, hydrator)`.
-
-        The driver is asked to describe its result only while the hydrator is
-        still unbuilt — once per statement, not once per request — because the
-        per-column `result_processor` needs the DBAPI type codes and postgres
-        `Numeric` raises without them.
+        """Execute and return `(rows, hydrator)`. The driver describes its result only
+        while the hydrator is unbuilt: postgres `Numeric` needs the DBAPI type codes.
         """
         sql, bound = query.bind(params, extracted)
         hydrate = query._hydrate
         observer = self.observer
         async with acquire() as conn:
-            # Timed from here, not before the checkout: the observer's contract is
-            # the driver round trip, and the pool checkout is not part of it (F4).
+            # Timed from here: the observer's contract is the driver round trip.
             start = perf_counter() if observer is not None else 0.0
             rows, description = await self.driver.fetch(conn, sql, bound, hydrate is None)
         if hydrate is None:
@@ -803,16 +633,12 @@ class Engine:
 
     def _chunks(self, query: CoreQuery[Any], params: dict[str, Any], extracted: Any,
                 default_chunk: int, acquire: Any) -> Any:
-        """A factory of async chunk iterators for `Connection.stream()`.
-
-        Called with the size SQLAlchemy asks for — `result.partitions(50)` fetches
-        fifty at a time — falling back to the `chunk=` the caller set.
+        """A factory of async chunk iterators for `Connection.stream()`, sized by what
+        SQLAlchemy asks for (`partitions(50)`) or the caller's `chunk=`.
         """
 
         async def chunks(size: int | None) -> AsyncIterator[list[Any]]:
-            # `size if size is not None`, not `size or`: an explicit 0 is a bad
-            # size and must reach the guard below, not fall back to the default
-            # the way None does — the sibling `fetch_iter` path already rejects it.
+            # Not `size or default`: an explicit 0 must reach the guard below.
             wanted = size if size is not None else default_chunk
             if wanted < 1:
                 raise ConfigurationError(f"chunk must be at least 1, got {wanted}")
@@ -834,16 +660,9 @@ class Engine:
         return chunks
 
     def _observe(self, observer: Observer | None, sql: str, start: float, rows: int | None) -> None:
-        """Hand one completed statement to `observer`, if there is one.
-
-        `observer` is captured by the caller at the start of the operation and
-        passed in, not re-read here: an observer attached *between* start and now
-        would otherwise fire with a `start` of 0.0 and report the whole process
-        uptime as the duration.
-
-        Timing covers the driver round trip, not hydration: hydration is the part
-        this library controls and benchmarks, while the round trip is what a
-        slow-query log is actually about.
+        """Hand one completed statement to `observer`. Captured by the caller at start,
+        not re-read here, so an observer attached mid-statement cannot see a 0.0 start.
+        Timing is the driver round trip, not hydration.
         """
         if observer is not None:
             observer(sql, perf_counter() - start, rows)

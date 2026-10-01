@@ -51,7 +51,7 @@ Homepage = "https://github.com/vipierozan99/sqlom"
 Repository = "https://github.com/vipierozan99/sqlom"
 Issues = "https://github.com/vipierozan99/sqlom/issues"
 Documentation = "https://github.com/vipierozan99/sqlom/blob/main/docs/GUIDE.md"
-Benchmarks = "https://github.com/vipierozan99/sqlom/blob/main/docs/METHODOLOGY.md"
+Benchmarks = "https://github.com/vipierozan99/sqlom/blob/main/docs/BENCHMARKS.md"
 
 [project.optional-dependencies]
 asyncpg = ["asyncpg>=0.29"]
@@ -110,7 +110,7 @@ dev = [
 
 # Contenders and load generators. Kept out of `dev` so a plain `uv sync` does not
 # pull SQLAlchemy/FastAPI, but declared so that `just bench` is reproducible —
-# previously these were a manual `pip install` line in docs/METHODOLOGY.md.
+# previously these were a manual `pip install` line in the benchmark docs.
 bench = [
     "fastapi>=0.115",
     "locust>=2.32",
@@ -125,14 +125,6 @@ bench = [
     "uvicorn[standard]>=0.34",
 ]
 
-profile = [
-    "austin-dist>=3.6",
-    # provides the `austin2speedscope` converter (the `austin` sampler binary
-    # itself, from austin-dist, only writes its binary "mojo" format).
-    "austin-python>=2.2",
-    "py-spy>=0.4.2",
-    "pyinstrument>=5.0",
-]
 
 
 [tool.pyright]

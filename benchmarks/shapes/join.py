@@ -19,7 +19,7 @@ The shape is chosen so a join has something to be slow about:
 from __future__ import annotations
 
 import sqlalchemy as sa
-from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 import rowform as rf
 
@@ -81,29 +81,6 @@ class AuthorORM(ORMBase):
 
 
 class PostORM(ORMBase):
-    __tablename__ = POSTS_TABLE
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    author_id: Mapped[int] = mapped_column(sa.ForeignKey(f"{AUTHORS_TABLE}.id"))
-    title: Mapped[str]
-    score: Mapped[int]
-    published: Mapped[bool]
-
-
-class DCBase(MappedAsDataclass, DeclarativeBase):
-    pass
-
-
-class AuthorDC(DCBase):
-    __tablename__ = AUTHORS_TABLE
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str]
-    email: Mapped[str]
-    is_active: Mapped[bool]
-
-
-class PostDC(DCBase):
     __tablename__ = POSTS_TABLE
 
     id: Mapped[int] = mapped_column(primary_key=True)

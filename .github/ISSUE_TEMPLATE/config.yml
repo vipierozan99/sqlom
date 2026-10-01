@@ -4,7 +4,7 @@ contact_links:
     url: https://github.com/vipierozan99/sqlom/security/advisories/new
     about: Report privately instead — see SECURITY.md.
   - name: Benchmark numbers and how they were measured
-    url: https://github.com/vipierozan99/sqlom/blob/main/docs/METHODOLOGY.md
+    url: https://github.com/vipierozan99/sqlom/blob/main/docs/BENCHMARKS.md
     about: >
       Includes a log of eleven published claims that turned out to be wrong, and
       how each was caught. Read this before reporting a number as a bug.

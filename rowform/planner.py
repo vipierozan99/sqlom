@@ -1,22 +1,10 @@
 """Decide what a statement's rows mean, from the statement rather than the model.
 
-Two hazards shape this module.
-
-Planning hydration from a model's *declaration order* is silent corruption:
-`select(User.name, User.id)` selects a different column order, and the generated
-hydrator unpacks positionally (`compile.py`), so the fields would be mis-assigned
-with nothing to catch it. So the shape is planned from the statement's own
-columns, matched **by identity** — `Column.__eq__` builds a SQL expression, it
-does not compare.
-
-But the columns alone cannot tell a model from a tuple: `select(User)` and
-`select(User.id, User.name, User.active)` expand to the *same* selected columns,
-while SQLAlchemy yields a `User`-entity row for the first and a tuple of scalars
-for the second (R7). Only the raw select list distinguishes them — a whole
-`FromClause` (`Select._raw_columns`, or a write's `_returning`) versus
-hand-listed `Column`s. So a model entity is planned only where a from clause was
-selected whole; a hand-written full-column list stays scalars, matching both
-SQLAlchemy and rowform's typed overloads.
+Columns are matched **by identity** against `selected_columns` — `Column.__eq__`
+builds SQL — so `select(User.name, User.id)` can never mis-assign fields. A
+model entity is planned only where a whole `FromClause` was selected
+(`_raw_columns`, private); `select(User.id, User.name, ...)` listing every
+column by hand stays a tuple of scalars, as it does in SQLAlchemy.
 """
 
 from __future__ import annotations
@@ -43,16 +31,9 @@ class Plan:
     def __init__(self, entities: list[Entity], columns: list[Any]):
         self.entities = entities
         self.columns = columns
-        # One selected entity yields that entity; two or more yield a tuple.
-        #
-        # This is the one place the result shape deliberately departs from
-        # SQLAlchemy, which returns `Row` objects throughout and makes you call
-        # `.scalars()` to unwrap. Departing for models but not for scalars was
-        # the obvious middle, and it is worse on both counts: it needs two rules
-        # instead of one, and it is not expressible in the type system —
-        # `select(User)` and `select(User.name)` are `Select[Tuple[User]]` and
-        # `Select[Tuple[str]]`, distinguishable only by arity, so `fetch_all`
-        # can be typed exactly if and only if arity alone decides the shape.
+        # One entity yields that entity, two or more a tuple. Arity alone decides
+        # because arity is all a checker can see: `select(User)` and
+        # `select(User.name)` are both `Select[tuple[X]]`.
         self.wrap = len(entities) != 1
 
     def __repr__(self) -> str:
@@ -91,12 +72,7 @@ def plan(stmt: Any) -> Plan:
 def _match_model(
     columns: list[Any], index: int, nullable_froms: set[int]
 ) -> tuple[Entity, int] | None:
-    """Does the from clause selected whole at `index` yield a model?
-
-    Only reached at an `_entity_starts` index, so the run is known to be one
-    whole-entity selection; the identity check below still earns its keep for
-    aliases, whose columns are distinct objects proxying the table's.
-    """
+    """Does the from clause selected whole at `index` yield a model, and how wide is it?"""
     from_clause = getattr(columns[index], "table", None)
     if from_clause is None:
         return None
@@ -109,10 +85,7 @@ def _match_model(
     if index + width > len(columns):
         return None
 
-    # An alias has its own Column objects proxying the table's, so resolve each
-    # declared column through the from clause actually being selected. This is
-    # what lets a self-join hydrate both sides as models (R8) instead of
-    # degrading to scalars.
+    # An alias proxies the table's columns, so resolve through the selected from clause.
     pairs = []
     for attr, column in declared.items():
         try:
@@ -128,14 +101,9 @@ def _match_model(
 
 
 def _entity_starts(stmt: Any) -> set[int]:
-    """Selected-column indices where a from clause was selected as a whole entity.
-
-    `select(User)` and `select(User.id, User.name, User.active)` expand to the
-    same `selected_columns`, so promotion to a model can only be told from the
-    *raw* select list: a `FromClause` there was selected whole, a `Column` was
-    hand-listed. Each raw from clause expands to its `exported_columns`, so its
-    width is what advances the index (R7). A write's entities live on
-    `_returning` instead of `_raw_columns`.
+    """Selected-column indices where a whole from clause was selected. Only the raw
+    select list (`_raw_columns`, or `_returning` for a write) can tell a model
+    from a hand-listed full column set.
     """
     raw = getattr(stmt, "_raw_columns", None)
     if raw is None:
@@ -153,15 +121,11 @@ def _entity_starts(stmt: Any) -> set[int]:
 
 
 def _nullable_froms(stmt: Any) -> set[int]:
-    """`id()` of every from clause reachable only through an OUTER join.
-
-    "Nullable" for a model entity means the row can carry all-NULL columns for a
-    missing match, which `compile.py` turns into `None` rather than an object
-    with every field set to None.
+    """`id()` of every from clause reachable only through an OUTER join; an all-NULL
+    run of its columns hydrates to `None` rather than an object full of `None`s.
     """
     marked: set[int] = set()
-    # A write with RETURNING has one table and no joins, so there is nothing to
-    # walk — and no `get_final_froms` to walk it with.
+    # A write with RETURNING has no joins and no `get_final_froms`.
     if not hasattr(stmt, "get_final_froms"):
         return marked
 

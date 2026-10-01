@@ -9,7 +9,7 @@ name: Performance gate
 # recorded on some other machine would measure the machine. Even so this is a
 # gross-regression gate (an accidental per-row `setattr`, a lost hydrator cache),
 # not a few-percent instrument; that needs the pinned local harness
-# (docs/METHODOLOGY.md).
+# (benchmarks/README.md).
 
 on:
   pull_request:

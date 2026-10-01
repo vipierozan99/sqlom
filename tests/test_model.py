@@ -176,7 +176,7 @@ class TestInstances:
         assert Author(1, "ada", True).name == "ada"
 
     def test_instances_have_a_dict_so_orjson_can_read_them(self):
-        # docs/FINDINGS.md#the-orjson-dataclass-trap: a slotted model forces
+        # README "What it costs": a slotted model forces
         # orjson onto a much slower fallback, so non-slotted is the default.
         assert Author(id=1, name="ada", active=True).__dict__ == {
             "id": 1,
@@ -197,8 +197,8 @@ class TestInstances:
     def test_slots_true_still_builds_a_usable_model(self):
         """`slots=True` reaches `dataclasses.dataclass`, which rebuilds the class
         through this same metaclass — so the class-level Column interception has
-        to survive that rebuild and compose with `__slots__`. docs/FINDINGS.md
-        ("The `@model` metaclass") is the mechanism; this is the guarantee.
+        to survive that rebuild and compose with `__slots__`. `ModelMeta.__new__`
+        is the mechanism; this is the guarantee.
         """
         Scratch = make_base()
 

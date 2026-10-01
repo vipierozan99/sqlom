@@ -1,102 +1,66 @@
 # Goals
 
-## Speed, without leaving SQLAlchemy
+rowform is a row layer over SQLAlchemy Core for async services. Core compiles the
+SQL and owns the schema, the pool and the transactions; rowform turns driver rows
+into typed dataclasses and does nothing else.
 
-Two goals, and the second is not subordinate to the first.
+In order:
 
-1. **A read path that is faster than SQLAlchemy's result layer** — the reason the
-   project exists, and what the benchmarks defend.
-2. **A SQLAlchemy application can adopt rowform one query at a time**, without
-   giving up its engine, its sessions, its transactions, or its migrations.
+1. **Nothing implicit.** No lazy loads, autoflush, expiry or identity map. Every
+   round trip is a statement you wrote, so a request's query count is something a
+   test can assert.
+2. **Adopt one query at a time.** A rowform read runs inside a stock
+   `AsyncSession`/`AsyncConnection` transaction, sees its uncommitted writes and
+   rolls back with it (`tests/test_bind.py`). Nothing may make rowform a parallel
+   universe with its own engine, pool or vocabulary.
+3. **Values equal SQLAlchemy's.** Every column decodes through its own
+   `result_processor`; the suite uses Core as the oracle over generated statements.
+4. **Cost ≈ Core.** The benchmarks defend *not slower than Core's result layer,
+   2–5x faster than the ORM*. They do not claim rowform is faster than Core: a
+   plain dataclass constructor is as fast as the generated hydrator, and the
+   result layer is a few percent of a read. Do not add code whose only
+   justification is a row-layer speedup.
 
-Goal 2 is a design constraint, not a nicety. It rules out anything that makes
-rowform a parallel universe with its own vocabulary for what SQLAlchemy already
-names — and it is testable: rowform reads must work *inside* a stock
-`AsyncSession` transaction, seeing its uncommitted writes and rolling back with
-it. Where the two goals conflict, say so explicitly and measure the trade rather
-than picking silently (`docs/PLAN_SQLA_API.md`).
+Where a goal conflicts with a lower-numbered one, the lower number wins and the
+trade is stated, not made silently.
 
 # Principles
 
-## 1. Think Before Coding
+## Think before coding
+State assumptions. If several interpretations exist, present them. If a simpler
+approach exists, say so. If something is unclear, stop and ask.
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+## Simplicity first
+Minimum code that solves the problem. No speculative features, no abstractions for
+single-use code, no error handling for impossible cases. Comments and docstrings
+say *why*, not *what*, in one or two sentences; they never carry measurements or
+history — those go in git and in `docs/BENCHMARKS.md`.
 
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+## Surgical changes
+Touch only what the request requires. Match existing style. Remove only the dead
+code your own change created; mention other dead code, don't delete it.
 
-## 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-- Be succinct when writing comments or docstrings, focus on why something is there, not on what it does, use references to other code or docs, keep up to date.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+## Goal-driven execution
+Turn a task into a verifiable check first — a failing test, a benchmark cell, a
+type error — then make it pass.
 
 # Conventions
-- Reach the library through `import rowform as rf` — in docs, tests, benchmarks and examples alike. Not `import rowform`, not `from rowform import x`. One name for the package everywhere, so `rf` is free to mean nothing else.
+
+- `import rowform as rf` everywhere: docs, tests, benchmarks, examples.
+- Private SQLAlchemy API is read deliberately and listed in `pyproject.toml`
+  next to the `<2.1` pin. A new coupling needs a test that pins it.
+- Engine and transaction tests run on sqlite, asyncpg and psycopg from one
+  parametrised fixture; `--pg-required` makes a missing server a failure.
 
 # Workflow
 
-## Docs are written once, at the end
-
-**Do not update docs as you go.** Code and tests land per commit; prose lands in
-one pass when the PR is opened. Half the doc edits made mid-stream get rewritten
-by the next change anyway, and each one costs a review of text that is about to
-move.
-
-While working, keep a running list of what the changes have made stale — file,
-section, and what is now wrong — and write it all at PR time. Docs in scope:
-`README.md`, `docs/*.md`, `SECURITY.md`, and module docstrings that describe the
-public surface rather than the code beneath them.
-
-Docstrings *inside* code you are already editing are part of that edit, not a doc
-update — keep them true as you write.
+Docs are written once, at the end. Code and tests land per commit; `README.md`,
+`docs/*.md` and public-surface docstrings are updated in one pass when the PR is
+opened, from a running list of what the change made stale.
 
 # Commands
-- Run linting with: `just lint --fix` (`--fix` will already fix fixable errors)
-- Run typechecking with: `just typecheck`
-- Run tests with: `just test <test_selector>`
-- When you find an interesting benchmark result, make a branch and commit the results there, such that I can always go back to a commit an reproduce a benchmark. Also keep a document of those runs and their commits and results in the main branch
+
+- `just lint --fix`, `just typecheck`, `just test <selector>`
+- `just bench micro run` — dev loop; `benchmarks/README.md` has the publishing
+  recipe. A result worth keeping goes on a `bench/<date>-<topic>` branch and into
+  `docs/BENCHMARKS.md` with its commit sha.

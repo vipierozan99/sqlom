@@ -1,24 +1,15 @@
 """Single-table shape: the `users` table every published single-table figure uses.
 
-**This file is the rewrite's most visible dividend.** It used to carry four
-parallel declarations of the same four columns — a rowform `@model`, a bare
-`Table`, a `DeclarativeBase` model and a `MappedAsDataclass` one — plus two
-hand-written `CREATE TABLE` strings, one per dialect. It now carries two: the
-rowform model, which *is* the `Table`, and the ORM models it is measured
-against. The DDL is generated from the first of those (`harness/seed.py`), so a
+**This file is the rewrite's most visible dividend.** It carries two
+declarations: the rowform model, which *is* the `Table`, and the ORM model it is
+measured against. The DDL is generated from the first of those (`harness/seed.py`), so a
 benchmark can no longer seed a table that differs from the one it queries.
-
-Two ORM declarations remain on purpose. `UserORM` is stock declarative and
-`UserDC` is `MappedAsDataclass`; the second exists because the first returns
-instrumented objects carrying loader state, and comparing against only that
-would overstate the win — `MappedAsDataclass` is the closest thing the ORM has
-to what rowform produces.
 """
 
 from __future__ import annotations
 
 import sqlalchemy as sa
-from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 import rowform as rf
 
@@ -59,19 +50,6 @@ class ORMBase(DeclarativeBase):
 
 
 class UserORM(ORMBase):
-    __tablename__ = TABLE_NAME
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str]
-    email: Mapped[str]
-    is_active: Mapped[bool]
-
-
-class DCBase(MappedAsDataclass, DeclarativeBase):
-    pass
-
-
-class UserDC(DCBase):
     __tablename__ = TABLE_NAME
 
     id: Mapped[int] = mapped_column(primary_key=True)

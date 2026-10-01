@@ -1,8 +1,8 @@
-"""Bring up whatever backend a load-test/profile case needs — an ephemeral
+"""Bring up whatever backend a load-test case needs — an ephemeral
 sqlite file, or an ephemeral postgres container — already seeded for
 `shape`, and hand back the env var(s) `service/app.py` reads plus a teardown
-callable. `bench load run` and `bench profile load` both call this instead of
-each independently duplicating "start postgres, seed it, remember to stop
+callable. `bench load run` calls this instead of
+duplicating "start postgres, seed it, remember to stop
 it".
 """
 

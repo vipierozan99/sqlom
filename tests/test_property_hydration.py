@@ -4,7 +4,7 @@
 changes no value — over a fixed schema. That is the shape of test that already
 missed this once: an earlier converter table was checked against `int/str/str/bool`
 and passed, while getting 7 of 8 columns wrong on a wider row
-(docs/METHODOLOGY.md correction 11). A fixed schema can only catch what someone
+(docs/BENCHMARKS.md, lesson 11). A fixed schema can only catch what someone
 thought to put in it.
 
 So here the *statement* is generated: which columns, in which order, how many of
