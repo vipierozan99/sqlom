@@ -40,7 +40,7 @@ def assert_unpatched_threading() -> None:
         raise RuntimeError(
             "threading is gevent-monkey-patched — measurements taken here are "
             "~30% slow and the ratios are skewed. Something imported locust "
-            "(benchmarks.cli.load / .profile) into a timing process; see "
+            "(benchmarks.cli.load) into a timing process; see "
             "benchmarks/__main__.py, which mounts those lazily for this reason."
         )
 

@@ -118,7 +118,7 @@ def ratio_with_spread(numerator_trials: Sequence[float], denominator_trials: Seq
 
     `tie` is true when that interval contains 1.0, i.e. when the trials do not
     order the two contenders at all, or when the medians are within
-    `threshold_pct` (METHODOLOGY.md's "group ties instead of ranking them").
+    `threshold_pct` (docs/BENCHMARKS.md's "group ties instead of ranking them").
 
     Takes one value per *trial*, never raw within-run samples. The previous
     version summed the two `spread_pct` figures and tied whenever that sum

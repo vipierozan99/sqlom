@@ -3,7 +3,7 @@ pinned via `taskset` before the process image is even loaded.
 
 Deliberately not uvicorn's own `--workers`: that forks worker processes from
 one supervisor, which means affinity would have to be set *after* the fork —
-exactly the "pin before the pool opens" hazard `docs/METHODOLOGY.md` warns
+exactly the "pin before the pool opens" hazard `docs/BENCHMARKS.md` warns
 about, since a forked worker's connection pool may already exist by the time
 anything could reach in and pin it. `taskset -c ... uvicorn ...` pins before
 `exec()` replaces the process image, so there is no such window.

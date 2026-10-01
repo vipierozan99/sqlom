@@ -1,7 +1,7 @@
 """Ephemeral Postgres via docker: `--network host` avoids the
 unpinned docker-proxy userspace hop that would confound loopback latency
 measurements; `--cpuset-cpus` covers every backend from birth, structurally
-removing the "pin before the pool opens" hazard `docs/METHODOLOGY.md` warns
+removing the "pin before the pool opens" hazard `docs/BENCHMARKS.md` warns
 about (affinity is inherited across `fork()`, so pinning after backends have
 already forked misses them).
 

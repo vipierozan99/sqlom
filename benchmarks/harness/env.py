@@ -1,5 +1,5 @@
 """Machine + git + package-version capture, because absolutes drift with the
-machine while ratios travel. `docs/METHODOLOGY.md`
+machine while ratios travel. `docs/BENCHMARKS.md`
 records a run coming back ~1.35x slower for every contender after a machine
 change — recording the machine is how a later reader tells "the code changed"
 from "the box changed".
@@ -20,7 +20,7 @@ _PACKAGES = (
     "rowform", "sqlalchemy", "asyncpg", "psycopg", "orjson", "fastapi",
     "uvicorn", "uvloop", "aiosqlite", "locust", "httptools",
     # gevent's monkey-patch invalidated every early recorded run (correction 13
-    # in docs/METHODOLOGY.md) — its presence belongs in the artifact.
+    # in docs/BENCHMARKS.md) — its presence belongs in the artifact.
     "gevent", "greenlet",
 )
 

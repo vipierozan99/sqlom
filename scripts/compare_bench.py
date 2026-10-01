@@ -15,7 +15,7 @@ on either side harmless.
 so the tolerance has to be loose enough to absorb that — this catches a
 gross regression (an accidental per-row `setattr`, a lost hydrator cache), not a
 few percent. Fine-grained work needs the pinned local harness; see
-docs/METHODOLOGY.md.
+docs/BENCHMARKS.md.
 """
 
 from __future__ import annotations

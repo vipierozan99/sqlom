@@ -57,7 +57,7 @@ REFERENCE = "rowform"
 # `outliers m/s` is Tukey mild/severe (see stats.SampleShape); `max/p50` is an
 # interference detector, not a dispersion figure. `spread%` is the trial-to-trial
 # one and only appears with `--trials`; `vs rowform` likewise, since a ratio
-# without an interval around it is the thing METHODOLOGY.md's tie rule exists to
+# without an interval around it is the thing docs/BENCHMARKS.md's tie rule exists to
 # prevent.
 _BASE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("contender", "<38"),
@@ -306,11 +306,8 @@ def _reference_in(group: list[result.Cell]) -> result.Cell | None:
     """The cell everything else is measured against — exact `REFERENCE` name,
     or a unique `REFERENCE`-prefixed one.
 
-    Never for the mock group: each mock is its own row-layer floor and the two
-    mock seams exclude *different* layers by construction (`engines/mock.py`),
-    so a "SQLAlchemy (mock) vs rowform (mock)" ratio compares two different
-    timed regions — this used to be computed and recorded anyway, via the
-    prefix fallback picking `rowform (mock)`.
+    Never for the mock group: `rowform (mock)` is a regression floor against
+    its own history, not a comparison.
     """
     if group and group[0].params.get("backend") == "mock":
         return None

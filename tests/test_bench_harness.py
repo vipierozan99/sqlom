@@ -4,8 +4,7 @@ each pins a fix to a bug that made recorded numbers wrong or gates vacuous
 averages diluted by post-exit samples, a boost gate that silently passed when
 the sysfs knob was unreadable, an equivalence gate that only re-ran the
 reference contender, an auto pin plan reaching for CPUs outside the process
-cpuset, and profiler frame attribution crediting SQLAlchemy's driver adapters
-to the raw driver).
+cpuset).
 """
 
 import math
@@ -15,7 +14,6 @@ import pytest
 from benchmarks.harness import affinity, cpuacct, equivalence, stats
 from benchmarks.harness import env as env_module
 from benchmarks.harness.monitor import ProcessMonitor
-from benchmarks.profiling import attribution
 
 # --- stats ------------------------------------------------------------------
 
@@ -187,26 +185,3 @@ def test_auto_pin_never_leaves_the_process_affinity_mask(monkeypatch):
     assert cpus == [4, 5]
     # One core for a two-core plan is a share, and must be recorded as one.
     assert any("reuses physical core" in w for w in warnings)
-
-
-# --- profiler attribution ---------------------------------------------------
-
-
-def test_sqlalchemy_driver_adapters_are_not_credited_to_the_driver():
-    sa = "/venv/lib/python3.12/site-packages/sqlalchemy"
-    assert attribution.categorize(f"{sa}/dialects/sqlite/aiosqlite.py", "execute").startswith(
-        "SQLAlchemy"
-    )
-    assert attribution.categorize(f"{sa}/dialects/postgresql/psycopg.py", "connect").startswith(
-        "SQLAlchemy"
-    )
-    site = "/venv/lib/python3.12/site-packages"
-    assert attribution.categorize(f"{site}/aiosqlite/core.py", "fetchall") == "sqlite3 driver"
-    assert (
-        attribution.categorize(
-            "~", "<method 'execute' of 'sqlite3.Connection' objects>"
-        )
-        == "sqlite3 driver"
-    )
-    assert attribution.categorize(f"{site}/asyncpg/connection.py", "fetch") == "asyncpg"
-    assert attribution.categorize(f"{site}/psycopg/cursor.py", "execute") == "psycopg"

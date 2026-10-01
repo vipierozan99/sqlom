@@ -1,4 +1,4 @@
-"""The one locustfile every `bench load`/`bench profile load` case runs.
+"""The one locustfile every `bench load` case runs.
 
 Case identity lives in the service app's route table (`load/registry.py`
 derives cases from it); this file is deliberately just the traffic generator.
