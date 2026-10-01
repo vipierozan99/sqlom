@@ -1,62 +1,26 @@
 # Security
 
-## Supported versions
+## Reporting
 
-| Version | Supported |
-|---|---|
-| 0.1.x | yes — the only line, and pre-release |
+Use GitHub's private vulnerability reporting (**Security → Report a
+vulnerability** on <https://github.com/vipierozan99/sqlom>), not a public issue.
+Include the statement or declaration involved, the driver, and the Python,
+SQLAlchemy and driver versions. Only `0.1.x` exists; fixes land on `main`.
 
-The project is early: not on PyPI, and never run in production. There is no
-backport branch, so a fix lands on `main`.
+## What the codegen reaches
 
-## Reporting a vulnerability
+`rowform/compile.py` builds one hydrator per statement shape as Python source
+and `exec`s it. Everything interpolated into that source comes from your own
+model declarations: attribute names are `Mapped[]` field names, which are valid
+Python identifiers by construction; model classes and result processors enter
+the namespace as objects, not text. Row values and bind parameters are never
+interpolated — they arrive as call arguments. If you build model classes from
+untrusted input you are choosing what goes into generated code, as with
+`dataclasses.make_dataclass`. The source is on `hydrate.__source__`.
 
-Use GitHub's private vulnerability reporting: **Security → Report a
-vulnerability** on <https://github.com/vipierozan99/sqlom>. That keeps the report
-private until there is something to release. Please do not open a public issue
-for anything exploitable.
+## SQL
 
-Include what you'd want to receive: the statement or declaration involved, the
-driver (`aiosqlite`, `asyncpg`, `psycopg`), and the versions of
-Python, SQLAlchemy and the driver.
-
-## Two things worth knowing about this library
-
-### It generates and `exec`s Python at runtime
-
-`rowform/compile.py` builds a hydrator function per statement shape as source text
-and `exec`s it. That is the core of the design, so it deserves a plain statement of
-its boundary.
-
-Everything interpolated into that source comes from **your own model declarations,
-never from a query result or a request**:
-
-* attribute names come from `Mapped[]` field names, which Python has already
-  validated as identifiers,
-* model classes and each column's `result_processor` are inserted into the
-  namespace as objects, not as text,
-* row *values* are never interpolated — they arrive as arguments to the generated
-  function at call time, exactly as they would through `Row`.
-
-So a column's contents cannot reach the generated source, and neither can anything
-a caller passes as a bind parameter. What *is* in scope: if you build model classes
-dynamically from untrusted input — a field name taken from an HTTP request, say —
-you are choosing what goes into generated code, and the same caution applies as
-with `type()` or `dataclasses.make_dataclass`.
-
-The generated source is on `hydrate.__source__` and logged at DEBUG, so you can
-always read what was built.
-
-### SQL is compiled by SQLAlchemy, not by this library
-
-rowform generates no SQL. Statements are compiled by SQLAlchemy Core and executed
-as parameterised queries, with values bound through the driver — so the usual
-guidance applies unchanged: keep user input in bind parameters and out of
-`sa.text()` fragments and identifiers you interpolate yourself.
-
-One rowform-specific note: `Connection.exec_driver_sql()` takes a raw SQL string,
-for the DDL and session state a statement object cannot express. It is not
-compiled and its `parameters` go to the driver as-is, so anything you interpolate
-into the string itself is unescaped. Do not build those strings out of untrusted
-input. `execute()` and the `fetch_*` methods take statement objects, not strings,
-and are not a route to this.
+rowform generates no SQL. Statements are compiled by SQLAlchemy Core and run as
+parameterised queries with bound values. `copy_in` quotes table and column
+identifiers through the dialect's preparer. `Connection.exec_driver_sql()` sends
+a raw string uncompiled — do not build one from untrusted input.

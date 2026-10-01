@@ -282,7 +282,7 @@ class TestSqliteBeginCost:
     than a detail: through SQLAlchemy's cursor adapter it is three round trips to
     aiosqlite's worker thread — `cursor()`, `execute()`, `close()` — and on the
     driver connection it is one. Worth 0.10 ms per scope, per request rather than
-    per row, which is most of a small read (docs/RUNS.md).
+    per row, which is most of a small read (docs/BENCHMARKS.md).
 
     Asserted here because nothing else would notice it coming back: the cheaper
     spelling and the expensive one are behaviourally identical, and every test

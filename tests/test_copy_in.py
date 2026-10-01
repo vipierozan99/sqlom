@@ -2,7 +2,7 @@
 
 COPY bypasses the statement path, and with it the bind processors that turn a
 `Decimal`, `datetime`, `Enum`, `UUID` or `dict` into what the driver sends. That
-is the same class of mistake as docs/METHODOLOGY.md correction 11, in the other
+is the same class of mistake as docs/BENCHMARKS.md, lesson 11, in the other
 direction: values that look plausible and are not what came in.
 
 So `execute_many` is the oracle. Both paths load the same rows into the same

@@ -101,7 +101,7 @@ class Colour(enum.Enum):
 class Wide(Base):
     """Every type whose driver representation differs from its Python one.
 
-    This is the shape docs/METHODOLOGY.md correction 11 asks for: on sqlite, 8 of
+    This is the shape docs/BENCHMARKS.md, lesson 11 asks for: on sqlite, 8 of
     these come back as something other than what they went in as unless the right
     processor runs. `int/str/str/bool` — the old benchmark shape — is the one
     layout where that hazard is invisible.
@@ -268,7 +268,7 @@ async def engine(request):
     no implicit transaction, and psycopg's connection is transactional in its own
     right — so psycopg is the only one where such a write is rolled back on
     release. Running the matrix on the first two alone is how a discarded
-    `RETURNING` write survived (`docs/PLAN_SQLA_API.md` §8a).
+    `RETURNING` write survived (`Engine._acquire_for`).
     """
     if request.param == "sqlite":
         url = sqlite_url(request.getfixturevalue("sqlite_path"))

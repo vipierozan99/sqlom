@@ -1,6 +1,6 @@
 """`db.connect(bind=...)` — rowform's reads on a connection somebody else owns.
 
-This is the payoff for giving up rowform's own pool (`docs/PLAN_SQLA_API.md`), and
+This is the payoff for giving up rowform's own pool (CLAUDE.md, goal 2), and
 the thing an own pool structurally could not do: an application keeps its
 `AsyncEngine`, its `AsyncSession` and its migrations, and adopts rowform one query
 at a time. If these pass, `CLAUDE.md`'s goal 2 holds; if they fail, the checkout

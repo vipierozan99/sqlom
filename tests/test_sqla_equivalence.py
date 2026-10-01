@@ -6,7 +6,7 @@ The load-bearing claim of the whole design is that bypassing `Row` changes
 `JSON` column decodes to exactly the Python object SQLAlchemy's result layer
 would have produced. An earlier hand-written converter table got this wrong for 7
 of 8 columns, returning plausible-looking values of the wrong type
-(README "How it works" §4, docs/METHODOLOGY.md correction 11).
+(docs/BENCHMARKS.md, lesson 11).
 
 So this builds one physical schema and reads it two ways — through a rowform
 `Base` and through a stock SQLAlchemy `DeclarativeBase` ORM over the same rows —
