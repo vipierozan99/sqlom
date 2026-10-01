@@ -147,10 +147,10 @@ async def sqlite_flat_rowform(limit: int = Query(default=DEFAULT_LIMIT)) -> Resp
 async def sqlite_flat_floor_raw_driver_dict(limit: int = Query(default=DEFAULT_LIMIT)) -> Response:
     sql = "SELECT id, name, email, is_active FROM users WHERE is_active = 1 AND id > 100 LIMIT ?"
     async with app.state.aiosqlite.acquire() as conn:
+        await conn.execute("BEGIN")
         cur = await conn.execute(sql, (limit,))
         rows = await cur.fetchall()
-        # The DBAPI's commit, not a literal COMMIT: see `micro/contenders.py` — the
-        # SQL spelling would open a transaction no other contender here opens.
+        # Literal BEGIN + the DBAPI's commit, matching rowform on sqlite (`micro/contenders.py`).
         await conn.commit()
     payload = [
         {

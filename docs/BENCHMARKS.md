@@ -75,7 +75,8 @@ Raw `run.json` artifacts live on the `bench/<date>-<topic>` branches named above
 - A 1000-row read is ~92% per-row work, so a fixed per-request cost (checkout,
   `BEGIN`/`COMMIT`) is invisible there and legible only in `@1`.
 - Everything here is CPU on loopback. Over a network of 0.5 ms RTT the two round
-  trips a transaction costs exceed every row-layer difference in the table. The
+  trips a transaction costs (~1 ms) exceed the differences between rowform, Core and
+  the raw-driver floor, though not the ORM gap. The
   one-shot read exists for that reason.
 - The row layer itself is ~0.07 ms per 1000 rows of 4 columns, for dicts, for the
   generated hydrator, for a dataclass constructor and for SQLAlchemy's C `Row` alike.
@@ -93,6 +94,7 @@ for shape in flat join wide; do
 done
 just bench micro run --shape flat --limit 1 --iterations 20000 --warmup 2000 --trials 5 --isolate --record
 just bench db up && just bench micro run --backend postgres --isolate --trials 3 --record --pg-dsn "$(just bench db dsn)"
+sudo scripts/bench_cpu_boost.sh on     # put boost back
 ```
 
 Gates, all enforced by the harness rather than by review: byte-identical payload across

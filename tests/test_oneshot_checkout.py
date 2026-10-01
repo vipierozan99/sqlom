@@ -188,6 +188,47 @@ class TestPsycopgOneShotsSendNoTransaction:
                 assert conn.autocommit is True
 
 
+class TestPsycopgAutocommitYieldsToTransactions:
+    async def test_a_checkout_listener_transaction_is_kept(self, pg_dsn):
+        """`SET LOCAL` in a `checkout` listener leaves the connection INTRANS, where
+        psycopg refuses to change `autocommit`; the read must run inside it."""
+        async with engine_at(pg_url(pg_dsn, "psycopg"), pool_size=1, max_overflow=0) as db:
+            await seed(db)
+
+            @event.listens_for(db.sa_engine.sync_engine.pool, "checkout")
+            def _begin(dbapi_conn, record, proxy):
+                cur = dbapi_conn.cursor()
+                cur.execute("SET LOCAL statement_timeout = '5s'")
+                cur.close()
+
+            assert [r.name for r in await db.fetch_all(BY_NAME)] == NAMES
+
+    async def test_an_active_connection_is_closed_not_restored(self):
+        """A cancelled statement can leave psycopg ACTIVE; restoring `autocommit`
+        there raises ProgrammingError over the CancelledError."""
+        from psycopg.pq import TransactionStatus
+
+        class Conn:
+            autocommit = False
+            closed = False
+            info = type("Info", (), {"transaction_status": TransactionStatus.IDLE})()
+
+            async def set_autocommit(self, value):
+                if self.info.transaction_status != TransactionStatus.IDLE:
+                    raise AssertionError("restored while ACTIVE")
+                self.autocommit = value
+
+            async def close(self):
+                self.closed = True
+
+        conn = Conn()
+        with pytest.raises(KeyboardInterrupt):
+            async with rf.drivers.PsycopgDriver(None).autocommit(conn):
+                conn.info.transaction_status = TransactionStatus.ACTIVE
+                raise KeyboardInterrupt
+        assert conn.closed
+
+
 async def _kill(db: rf.Engine, driver_conn) -> None:
     """Close the connection underneath rowform and the pool, the way a server
     restart or a killed backend does, while it sits idle in the pool."""
@@ -222,7 +263,9 @@ class TestADeadConnectionIsRetired:
 
     @pytest.mark.parametrize("path", ["fetch_all", "fetch_iter", "begin"])
     async def test_the_next_read_gets_a_live_connection(self, url, path):
-        async with engine_at(url, pool_size=1, max_overflow=0) as db:
+        async with engine_at(
+            url, poolclass=sa.pool.AsyncAdaptedQueuePool, pool_size=1, max_overflow=0
+        ) as db:
             await seed(db)
             async with db.acquire() as victim:
                 pass

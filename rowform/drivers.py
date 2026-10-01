@@ -218,16 +218,26 @@ class PsycopgDriver(Driver):
     async def autocommit(self, conn):
         """psycopg's connection is transactional by default, so a bare SELECT costs a
         `BEGIN` and the pool's reset a `ROLLBACK`. `autocommit` is a local flag while
-        idle. Left alone when the caller's engine already runs in autocommit.
+        idle. Left alone when the caller's engine already runs in autocommit, or when
+        a pool `checkout` listener already opened a transaction (the flag cannot
+        change inside one, and that transaction is the caller's to keep).
         """
-        if conn.autocommit:
+        from psycopg.pq import TransactionStatus
+
+        if conn.autocommit or conn.info.transaction_status != TransactionStatus.IDLE:
             yield
             return
         await conn.set_autocommit(True)
         try:
             yield
         finally:
-            await conn.set_autocommit(False)
+            if conn.info.transaction_status == TransactionStatus.IDLE:
+                await conn.set_autocommit(False)
+            else:
+                # A cancelled statement can leave the connection ACTIVE, where the flag
+                # cannot be restored. Closing it makes the pool's reset fail and retire
+                # it, and lets the CancelledError through rather than a ProgrammingError.
+                await conn.close()
 
     async def fetch(self, conn, sql, params, describe):
         cursor = await conn.execute(sql, params)

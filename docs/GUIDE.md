@@ -46,7 +46,7 @@ when one statement is the whole job; scope when two statements must agree.
 ```python
 users = await db.fetch_all(sa.select(User).limit(100))      # one-shot, no BEGIN
 
-async with db.begin() as conn:                                # BEGIN ... COMMIT
+async with db.begin(isolation_level="REPEATABLE READ") as conn:  # postgres: one snapshot
     users = await conn.fetch_all(sa.select(User))
     posts = await conn.fetch_all(sa.select(Post))             # same snapshot
 ```
@@ -247,8 +247,9 @@ async def test_no_n_plus_one(db):
     assert len(seen) == 2
 ```
 
-Caveat: sqlite returns strings for temporal types and ints for booleans; assert
-type-sensitive results against the database you deploy on.
+Caveat: sqlite's raw driver returns strings for temporal types and ints for
+booleans; rowform applies SQLAlchemy's result processors. Still run type-sensitive
+tests against the database you deploy on.
 
 ## The metaclass conflict
 
