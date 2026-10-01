@@ -46,6 +46,7 @@ from typing import Any, TypeVar, overload
 import sqlalchemy as sa
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.util import greenlet_spawn
 
 from .connection import _ACTIVE, Connection
 from .drivers import Driver, driver_for
@@ -258,10 +259,13 @@ class Engine:
         `list[Any]`.
 
         Takes a connection from the pool for this one statement. A SELECT does not
-        open a transaction; a write with `RETURNING` does and commits, or the
-        pool's rollback on release would discard it (`_acquire_for`). To run
-        several statements together — or inside anyone else's transaction — use
-        `connect()` or `begin()`.
+        open a transaction, and takes the pool checkout with no SQLAlchemy
+        `Connection` around it (`_direct_connection`); a write with `RETURNING`
+        does open one and commits, or the pool's rollback on release would discard
+        it (`_acquire_for`). Outside a transaction no isolation level applies —
+        a lone SELECT is one snapshot on every driver — so a read that needs one
+        belongs in a scope. To run several statements together, or inside anyone
+        else's transaction, use `connect()` or `begin()`.
         """
         self._reject_if_in_transaction("fetch_all")
         query, extracted = self._require_rows(statement)
@@ -336,7 +340,7 @@ class Engine:
             raise ConfigurationError(f"chunk must be at least 1, got {chunk}")
         query, extracted = self._require_rows(statement)
         if acquire is None:
-            acquire = self._acquire_for(query)
+            acquire = self._acquire_for(query, stream=True)
         sql, bound = query.bind(params, extracted)
         observer = self.observer
         start = perf_counter() if observer is not None else 0.0
@@ -572,11 +576,12 @@ class Engine:
 
         Cancellation is the other thing this handles, and the driver connection is
         resolved *before* the yield so that path needs no await of its own while
-        unwinding.
+        unwinding. A disconnect is the third: see `_invalidate_if_disconnected`.
         """
         cm = self.sa_engine.begin() if commit else self.sa_engine.connect()
         async with cm as conn:
-            driver_conn = (await conn.get_raw_connection()).driver_connection
+            fairy = await conn.get_raw_connection()
+            driver_conn = fairy.driver_connection
             try:
                 yield conn, driver_conn
             except asyncio.CancelledError:
@@ -588,13 +593,79 @@ class Engine:
                 # which looks exactly like a leaked connection.
                 await self.driver.on_cancelled(driver_conn)
                 raise
+            except Exception as err:
+                if self._is_disconnect(err, fairy.dbapi_connection):
+                    await conn.invalidate()
+                raise
+
+    def _is_disconnect(self, err: Exception, dbapi_connection: Any) -> bool:
+        """Whether `err`, raised by a statement rowform ran, means the connection
+        is dead — asked of the dialect, which is what SQLAlchemy asks on its own
+        execution path.
+
+        rowform runs statements on the driver connection, so SQLAlchemy never
+        sees the exception and never runs this check itself. Without it a dead
+        connection goes back into the pool and is handed to the next borrower,
+        and only `pool_pre_ping` or `pool_recycle` would ever retire it. The
+        check is asked of the dialect because what "dead" looks like is the
+        driver's: a closed asyncpg connection, psycopg's `closed`/`broken`, a
+        pysqlite `ProgrammingError`.
+        """
+        return bool(self.dialect.is_disconnect(err, dbapi_connection, None))
+
+    @asynccontextmanager
+    async def _direct_connection(self) -> AsyncIterator[Any]:
+        """A pooled driver connection with no `Connection` around it, for the
+        one-shot reads.
+
+        `Engine.fetch_all` needs a connection and nothing else: no transaction,
+        no execution options, no `Result`. Taking it through `sa_engine.connect()`
+        builds a `Connection` and an `AsyncConnection`, crosses into a greenlet
+        three times (connect, `get_raw_connection`, close) and runs the `engine`
+        events on every checkout — measured at as much again as the pool
+        checkout itself on a one-row read (0.029 ms over 0.025 ms, aiosqlite).
+        Going to `Pool.connect()` directly keeps the pool — pre-ping, recycle,
+        `connect`/`checkout` events, the sqlite `connect` listener in
+        `SqliteDriver.configure` — and skips the rest.
+
+        What it skips is exactly the `engine_connect` event, and that is the
+        gate: `Engine.execution_options(isolation_level=...)` is applied by an
+        `engine_connect` listener, as is anything a caller registers there, so an
+        engine with any such listener takes the ordinary checkout instead
+        (`_acquire_for`). `create_async_engine(url, isolation_level=...)` is not
+        affected either way — the dialect applies that one at pool connect time.
+
+        The driver is also asked to put the connection in autocommit for the
+        block (`Driver.autocommit`), which is what makes "no transaction" true on
+        psycopg rather than only on the other two.
+        """
+        pool = self.sa_engine.sync_engine.pool
+        fairy = await greenlet_spawn(pool.connect)
+        dbapi_conn = fairy.dbapi_connection
+        assert dbapi_conn is not None  # a fresh checkout is never invalidated
+        driver_conn = dbapi_conn.driver_connection
+        try:
+            async with self.driver.autocommit(driver_conn):
+                yield driver_conn
+        except asyncio.CancelledError:
+            await self.driver.on_cancelled(driver_conn)
+            raise
+        except Exception as err:
+            if self._is_disconnect(err, dbapi_conn):
+                # Under `greenlet_spawn` because closing the dead connection goes
+                # through the dialect's async adapter, which needs one to await in.
+                await greenlet_spawn(fairy.invalidate)
+            raise
+        finally:
+            await greenlet_spawn(fairy.close)
 
     @asynccontextmanager
     async def _connection(self) -> AsyncIterator[Any]:
         """The read seam: a checked-out driver connection, nothing committed.
 
-        Every read goes through here, which is what makes a mock engine possible:
-        override this and nothing else changes.
+        Every read goes through here or through `_direct_connection`, which is
+        what makes a mock engine possible: override the two and nothing else
+        changes.
         """
         async with self._checkout() as (_, driver_conn):
             yield driver_conn
@@ -605,8 +676,8 @@ class Engine:
         async with self._checkout(commit=True) as (_, driver_conn):
             yield driver_conn
 
-    def _acquire_for(self, query: CoreQuery[Any]) -> Any:
-        """Which checkout a one-shot read should take.
+    def _acquire_for(self, query: CoreQuery[Any], *, stream: bool = False) -> Any:
+        """Which checkout a one-shot should take.
 
         Keyed on `is_select`, not on `returns_rows`: a write with `RETURNING`
         does both, and taking the non-committing checkout for it is the silent
@@ -614,8 +685,18 @@ class Engine:
         psycopg shows it — sqlite is put in autocommit by `SqliteDriver.configure`
         and asyncpg has no implicit transaction — which is why it survived a suite
         that runs the write matrix on sqlite and asyncpg alone.
+
+        A SELECT takes the direct checkout unless something listens on
+        `engine_connect` (`_direct_connection` says why that is the gate). A
+        stream does not: psycopg streams through a server-side cursor, which
+        postgres will only `DECLARE` inside a transaction, so the autocommit the
+        direct path asks for would break it.
         """
-        return self._connection if query.is_select else self._write_connection
+        if not query.is_select:
+            return self._write_connection
+        if stream or len(self.sa_engine.sync_engine.dispatch.engine_connect):
+            return self._connection
+        return self._direct_connection
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[Any]:

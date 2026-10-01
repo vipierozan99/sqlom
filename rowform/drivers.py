@@ -25,6 +25,7 @@ from __future__ import annotations
 import itertools
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from typing import Any
 
 import sqlalchemy as sa
@@ -69,6 +70,17 @@ class Driver(ABC):
         one is gone, because SQLAlchemy's dialect does it in its own `on_connect`
         now that SQLAlchemy is what opens the connection.
         """
+
+    @asynccontextmanager
+    async def autocommit(self, conn: Any) -> AsyncIterator[None]:
+        """Run the block with the driver connection outside any transaction.
+
+        For a one-shot read (`Engine._direct_connection`) a transaction is pure
+        round trips: a single SELECT already gets one snapshot. Default: nothing
+        to do, because sqlite is already in autocommit (`SqliteDriver.configure`)
+        and asyncpg has no implicit transaction. psycopg is the one that needs it.
+        """
+        yield
 
     async def on_cancelled(self, conn: Any) -> None:
         """Called while unwinding a `CancelledError`, before the connection goes
@@ -337,6 +349,27 @@ class PsycopgDriver(Driver):
     """psycopg3 — the one supported driver whose paramstyle is not positional, so
     `CoreQuery.bind()` hands it a dict where the others get a tuple. That branch
     is decided by the dialect, not by this class."""
+
+    @asynccontextmanager
+    async def autocommit(self, conn):
+        """psycopg's connection is transactional by default: a bare SELECT makes
+        it send `BEGIN` first, and the pool's reset then sends `ROLLBACK` — so a
+        "no transaction" one-shot was three round trips, the same as a scope.
+        Flipping `autocommit` is a local flag in psycopg (no round trip while the
+        connection is idle), and with it on the SELECT travels alone and the
+        reset finds the connection idle and sends nothing (`_rollback_gen`).
+
+        Left alone when the caller already runs the connection in autocommit, so
+        an engine configured that way is not switched *out* of it on the way back.
+        """
+        if conn.autocommit:
+            yield
+            return
+        await conn.set_autocommit(True)
+        try:
+            yield
+        finally:
+            await conn.set_autocommit(False)
 
     async def fetch(self, conn, sql, params, describe):
         cursor = await conn.execute(sql, params)

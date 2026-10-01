@@ -178,6 +178,10 @@ class MockEngine(rf.Engine):
         """There is no connection to check out, and `fetch` never looks at one."""
         yield None
 
+    # The one-shot reads take `_direct_connection` (`rf.Engine._acquire_for`);
+    # the mock has to stub both seams or `fetch_all` would reach the real pool.
+    _direct_connection = _connection
+
 
 async def canned_rows(shape: str, limit: int) -> list[tuple]:
     """Real rows sourced from a throwaway sqlite db, once, at setup — the
