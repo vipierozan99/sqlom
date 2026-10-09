@@ -37,8 +37,8 @@ jobs:
         with:
           enable-cache: true
           # Pin the interpreter so a new default in uv can't silently change what
-          # CI runs against; matches `requires-python = ">=3.11"`.
-          python-version: "3.11"
+          # CI runs against.
+          python-version: "3.14"
 
       - name: Install just
         uses: extractions/setup-just@v4
@@ -57,15 +57,6 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        # Every version `requires-python = ">=3.11"` promises. Worth a matrix here
-        # specifically: the row path is generated code that leans on CPython's
-        # specialising interpreter, and `slots=True` models depend on dataclass
-        # internals that have moved between releases.
-        python: ["3.11", "3.12", "3.13", "3.14"]
 
     # The postgres half of the suite (see tests/conftest.py) connects to
     # 127.0.0.1:5432 with the default ROWFORM_TEST_DSN. `--pg-required` below
@@ -94,7 +85,7 @@ jobs:
         uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
-          python-version: ${{ matrix.python }}
+          python-version: "3.14"
 
       - name: Install just
         uses: extractions/setup-just@v4
@@ -136,6 +127,9 @@ jobs:
         uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
+          # 3.11, not 3.14 like the rest: the declared minimums predate 3.14
+          # wheels (psycopg-binary 3.1.4 ships cp311 only), so this is the one
+          # interpreter they install on.
           python-version: "3.11"
 
       - name: Install just
@@ -184,7 +178,7 @@ jobs:
         uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Install just
         uses: extractions/setup-just@v4
@@ -192,7 +186,7 @@ jobs:
       - name: Sync dependencies
         run: uv sync --all-groups
 
-      # The gate sits below the measured figure (93% branch coverage) rather than
+      # The gate sits below the measured figure (97% statements and branches) rather than
       # at it: a threshold set exactly at today's number fails on rounding and
       # teaches people to ignore the gate.
       - name: Coverage
@@ -212,7 +206,7 @@ jobs:
         uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Build sdist and wheel
         run: uv build
