@@ -29,6 +29,7 @@ import tempfile
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -38,6 +39,7 @@ from benchmarks.backends.sqlite import EphemeralSqlite
 from benchmarks.engines import mock as mock_engines
 from benchmarks.harness import affinity, equivalence, registry, result
 from benchmarks.harness import env as env_module
+from benchmarks.harness import memory as memory_module
 from benchmarks.harness import seed as seed_module
 from benchmarks.harness.registry import ContenderInit
 from benchmarks.harness.stats import ratio_with_spread, sample_shape
@@ -300,6 +302,82 @@ async def _measure(
     with gc_control(gc_mode):
         samples = [s * 1000 for s in await per_iteration(target, iterations, warmup)]
     return asdict(sample_shape(samples)), None
+
+
+_MEMORY_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("contender", "<38"),
+    ("peak KiB", ">10"),
+    ("bytes/row", ">10"),
+    ("net KiB", ">9"),
+    (f"vs {REFERENCE}", ">12"),
+)
+
+
+@app.command()
+def memory(
+    shape: str = typer.Option("flat", help=f"one of {seed_module.SHAPES}"),
+    rows: int = typer.Option(200_000, help="rows seeded into the database"),
+    limit: int = typer.Option(1000, help="rows per request"),
+    only: str | None = typer.Option(None, help=registry.ONLY_HELP),
+    backend: str = typer.Option("sqlite", "--backend", help="'sqlite' or 'postgres'"),
+    calls: int = typer.Option(3, help="traced reads per contender"),
+    pg_dsn: str | None = typer.Option(None, "--pg-dsn", help="required for postgres"),
+) -> None:
+    """Peak allocation per read, per contender, behind the same equivalence gate.
+
+    Not a timing run and not recorded: tracemalloc taxes what it measures.
+    """
+    if shape not in seed_module.SHAPES:
+        raise typer.BadParameter(f"shape must be one of {seed_module.SHAPES}")
+    if backend not in ("sqlite", "postgres"):
+        raise typer.BadParameter("--backend must be 'sqlite' or 'postgres'")
+    if backend == "postgres" and not pg_dsn:
+        raise typer.BadParameter("--pg-dsn is required for --backend postgres")
+    assert_unpatched_threading()
+    asyncio.run(_memory(shape, rows, limit, only, backend, calls, pg_dsn))
+
+
+async def _memory(
+    shape: str, rows: int, limit: int, only: str | None, backend: str, calls: int,
+    pg_dsn: str | None,
+) -> None:
+    specs = registry.select(shape=shape, only=only, backend=backend)
+    if not specs:
+        raise typer.BadParameter(f"no {backend} contenders match shape={shape!r} only={only!r}")
+    db = EphemeralSqlite.create(shape, rows) if backend == "sqlite" else None
+    if db is None:
+        await postgres_backend.attach(str(pg_dsn)).seed(shape, rows)
+    handle = db.path if db is not None else str(pg_dsn)
+    instances: dict[str, tuple[Any, Any]] = {}
+    try:
+        for spec in specs:
+            instances[spec.name] = await spec.factory(ContenderInit(handle=handle, limit=limit))
+        # A contender allocating less because it built less is not a smaller row layer.
+        eq = await equivalence.check({name: req for name, (req, _) in instances.items()})
+        typer.echo(f"\n[{shape}/{backend}] equivalence: {'PASS' if eq.passed else 'FAIL'}")
+        for failure in eq.failures:
+            typer.echo(f"  ! {failure}")
+        if not eq.passed:
+            return
+        measured = {
+            spec.name: await memory_module.measure(instances[spec.name][0], calls=calls)
+            for spec in specs
+        }
+        baseline = measured[REFERENCE].peak_bytes if REFERENCE in measured else 0
+        typer.echo(_row(_MEMORY_COLUMNS, *(label for label, _ in _MEMORY_COLUMNS)))
+        for name, alloc in measured.items():
+            typer.echo(_row(
+                _MEMORY_COLUMNS, name,
+                f"{alloc.peak_bytes / 1024:.1f}",
+                f"{alloc.peak_per_row(limit):.0f}",
+                f"{alloc.net_bytes / 1024:.1f}",
+                f"{alloc.peak_bytes / baseline:.2f}x" if baseline else "—",
+            ))
+    finally:
+        for _, teardown in instances.values():
+            await teardown()
+        if db is not None:
+            db.close()
 
 
 def _reference_in(group: list[result.Cell]) -> result.Cell | None:
