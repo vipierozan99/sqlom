@@ -202,7 +202,8 @@ async with db.begin() as conn:
 ```
 
 Caveat: a unique violation is asyncpg's or psycopg's own exception — rowform does
-not wrap driver errors.
+not wrap driver errors, so an `except sa.exc.IntegrityError` stops catching a write
+once it moves to rowform.
 
 ## Alembic
 

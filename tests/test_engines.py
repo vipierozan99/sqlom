@@ -1,16 +1,15 @@
 """Engine behaviour, on both backends.
 
-Every test here runs twice — once on aiosqlite, once on asyncpg — because the
-two differ in exactly the place the design is most exposed. sqlite hands back
-strings for temporal types and integers for booleans; postgres decodes natively.
-A result asserted on only one of them has not been tested.
+Every test here runs once per driver — aiosqlite, asyncpg, psycopg — because
+they differ in exactly the place the design is most exposed: sqlite hands back
+strings for temporal types and integers for booleans, postgres decodes natively.
 """
 
 from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
-from conftest import Author, Base, Book, Tag, sqlite_url
+from conftest import Author, Base, Book, Tag, engine_at, sqlite_url
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 import rowform as rf
@@ -299,6 +298,17 @@ class TestWrites:
         )
         assert isinstance(rows[0], Author)
         assert (rows[0].name, rows[0].active) == ("frank", False)
+
+    async def test_an_unscoped_write_is_committed_not_merely_visible(self, engine):
+        """Read back through a second engine: the pool that wrote would still see a
+        write psycopg's release-time rollback discards."""
+        await engine.execute(
+            sa.insert(Author.__table__).values(id=95, name="unscoped", active=True)
+        )
+        url = engine.sa_engine.url.render_as_string(hide_password=False)
+        async with engine_at(url) as elsewhere:
+            name = await elsewhere.fetch_one(sa.select(Author.name).where(Author.id == 95))
+        assert name == "unscoped"
 
     async def test_execute_returns_a_sqlalchemy_result(self, engine):
         result = await engine.execute(sa.select(Author).order_by(Author.id))

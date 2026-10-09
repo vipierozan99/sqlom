@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 import sqlalchemy as sa
 from conftest import Author, engine_at, pg_url
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 import rowform
 
@@ -91,3 +92,63 @@ class TestWhereThereIsNone:
         async with pg_engine.begin() as conn:
             with pytest.raises(rowform.UnsupportedError, match="no pipeline mode"):
                 conn.pipeline()
+
+
+class TestOnSomebodyElsesConnection:
+    """Pipelined statements on a `bind=` connection land in the caller's
+    transaction and unwind with it."""
+
+    async def test_pipelined_writes_are_in_the_callers_transaction(self, psycopg_engine):
+        sa_engine = psycopg_engine.sa_engine
+        async with sa_engine.connect() as their, their.begin():
+            async with psycopg_engine.connect(bind=their) as conn, conn.pipeline():
+                await conn.execute(
+                    sa.update(Author.__table__).where(Author.id == 1).values(name="piped")
+                )
+            seen = await their.scalar(sa.text("SELECT name FROM t_authors WHERE id = 1"))
+            assert seen == "piped"
+        assert await psycopg_engine.fetch_one(sa.select(Author.name).where(Author.id == 1)) == (
+            "piped"
+        )
+
+    async def test_they_roll_back_with_the_callers_block(self, psycopg_engine):
+        sa_engine = psycopg_engine.sa_engine
+        async with sa_engine.connect() as their, their.begin():
+            async with psycopg_engine.connect(bind=their) as conn, conn.pipeline():
+                await conn.execute(sa.update(Author.__table__).values(name="clobbered"))
+            await their.rollback()
+        names = [a.name for a in await psycopg_engine.fetch_all(sa.select(Author))]
+        assert "clobbered" not in names
+
+    async def test_it_works_inside_an_async_session(self, psycopg_engine):
+        session_factory = async_sessionmaker(psycopg_engine.sa_engine)
+        async with (
+            session_factory() as session,
+            session.begin(),
+            psycopg_engine.connect(bind=session) as conn,
+            conn.pipeline(),
+        ):
+            for author_id in (1, 2, 3):
+                await conn.execute(
+                    sa.update(Author.__table__)
+                    .where(Author.id == author_id)
+                    .values(name=f"sess-{author_id}")
+                )
+        rows = await psycopg_engine.fetch_all(
+            sa.select(Author).where(Author.id.in_([1, 2, 3])).order_by(Author.id)
+        )
+        assert [a.name for a in rows] == ["sess-1", "sess-2", "sess-3"]
+
+    async def test_the_error_arrives_when_the_block_closes(self, psycopg_engine):
+        """Wrapping the `await` instead of the block catches nothing."""
+        sa_engine = psycopg_engine.sa_engine
+        returned = False
+        with pytest.raises(Exception) as caught:
+            async with sa_engine.connect() as their, their.begin():
+                async with psycopg_engine.connect(bind=their) as conn, conn.pipeline():
+                    await conn.execute(
+                        sa.insert(Author.__table__).values(id=1, name="dupe", active=True)
+                    )
+                    returned = True
+        assert returned, "the statement raised at the call site, not at the synchronise"
+        assert not isinstance(caught.value, rowform.RowformError)
