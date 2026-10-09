@@ -126,6 +126,9 @@ await db.copy_in(User.__table__, rows)          # postgres COPY
 await db.create_all(Base.metadata)              # bootstrap; Alembic: target_metadata = Base.metadata
 ```
 
+Driver errors are SQLAlchemy's: a unique violation raises `sa.exc.IntegrityError`, with
+the driver's exception as `.orig`.
+
 ## Performance
 
 Medians, ms per read of 1000 rows (`@1` is one row), one contender per process, GC

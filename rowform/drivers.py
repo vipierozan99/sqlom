@@ -11,6 +11,7 @@ import itertools
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from functools import cached_property
 from typing import Any
 
 import sqlalchemy as sa
@@ -53,6 +54,19 @@ class Driver(ABC):
         """Called while unwinding a `CancelledError`, before the connection goes back
         to the pool. Default: nothing; asyncpg and psycopg cancel server-side.
         """
+
+    @cached_property
+    def errors(self) -> tuple[type[Exception], ...]:
+        """What `fetch`/`execute`/... raise for a server or connection error; `translate()`
+        turns each into the DBAPI exception SQLAlchemy's adapter would have raised.
+        """
+        return (self.dialect.loaded_dbapi.Error,)
+
+    def translate(self, err: Exception) -> Exception:
+        """The DBAPI exception SQLAlchemy's own adapter would have raised for `err`.
+        Default: `err` itself — aiosqlite and psycopg already raise DBAPI errors.
+        """
+        return err
 
     @abstractmethod
     async def fetch(
@@ -167,6 +181,23 @@ class AsyncpgDriver(Driver):
         adapted = sa_conn.sync_connection.connection.dbapi_connection
         if not adapted._started:
             await adapted._start_transaction()
+
+    @cached_property
+    def errors(self):
+        return tuple(self.dialect.loaded_dbapi._asyncpg_error_translate)
+
+    def translate(self, err):
+        """SQLAlchemy's asyncpg adapter keeps this map; asyncpg's own errors are not DBAPI
+        ones. Every class in `errors` is a key, so the walk always finds one.
+        """
+        mapping = self.dialect.loaded_dbapi._asyncpg_error_translate
+        for cls in type(err).__mro__:
+            if cls in mapping:
+                translated = mapping[cls](f"{type(err)}: {err}")
+                translated.pgcode = translated.sqlstate = getattr(err, "sqlstate", None)
+                translated.__cause__ = err
+                return translated
+        raise AssertionError(f"{type(err)} is not in the asyncpg error map") from err
 
     async def fetch(self, conn, sql, params, describe):
         if not describe:

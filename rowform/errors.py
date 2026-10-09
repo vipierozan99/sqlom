@@ -2,7 +2,7 @@
 
 Each class also inherits the builtin it replaces (`TypeError`, `ValueError`,
 `RuntimeError`), so existing `except` clauses keep working. Driver errors are
-not wrapped: they mean what the driver's documentation says.
+raised as SQLAlchemy's own `sa.exc.DBAPIError` subclasses, as `Connection` would.
 """
 
 from __future__ import annotations

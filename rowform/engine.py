@@ -18,6 +18,7 @@ from typing import Any, TypeVar, overload
 
 import sqlalchemy as sa
 from sqlalchemy import Select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.util import greenlet_spawn
 
@@ -256,15 +257,18 @@ class Engine:
         total = 0
         try:
             async with acquire() as conn:
-                async for rows, description in self.driver.stream(
-                    conn, sql, bound, chunk, query
-                ):
-                    hydrate = query._hydrate
-                    if hydrate is None:
-                        hydrate = query.hydrator(self.dialect, description)
-                    total += len(rows)
-                    for row in hydrate(rows):
-                        yield row
+                try:
+                    async for rows, description in self.driver.stream(
+                        conn, sql, bound, chunk, query
+                    ):
+                        hydrate = query._hydrate
+                        if hydrate is None:
+                            hydrate = query.hydrator(self.dialect, description)
+                        total += len(rows)
+                        for row in hydrate(rows):
+                            yield row
+                except self.driver.errors as err:
+                    raise self._wrap(err, sql, bound)
         finally:
             # One call per stream, rows actually delivered, consumer time included;
             # in `finally` so an abandoned iteration is still reported.
@@ -385,7 +389,10 @@ class Engine:
         observer = self.observer
         start = perf_counter() if observer is not None else 0.0
         label = f"COPY {table.name} ({', '.join(names)})"
-        copied = await self.driver.copy_in(conn, table, [c.name for c in selected], records)
+        try:
+            copied = await self.driver.copy_in(conn, table, [c.name for c in selected], records)
+        except self.driver.errors as err:
+            raise self._wrap(err, label, None)
         self._observe(observer, label, start, copied)
         return copied
 
@@ -435,9 +442,35 @@ class Engine:
 
         rowform runs statements on the driver connection, so SQLAlchemy never sees the
         exception and never runs this itself; without it a dead connection goes back
-        into the pool.
+        into the pool. A wrapped error is asked about by its `orig`, and marked
+        `connection_invalidated` as SQLAlchemy marks it.
         """
-        return bool(self.dialect.is_disconnect(err, dbapi_connection, None))
+        orig = getattr(err, "orig", err)
+        dead = bool(self.dialect.is_disconnect(orig, dbapi_connection, None))
+        if dead and isinstance(err, DBAPIError):
+            err.connection_invalidated = True
+        return dead
+
+    def _wrap(
+        self, err: Exception, sql: str | None, params: Any, *, multi: bool = False
+    ) -> Exception:
+        """`err`, a driver error, as the `sa.exc.DBAPIError` subclass SQLAlchemy's
+        `Connection` would have raised, so `except sa.exc.IntegrityError` keeps working.
+        Its `orig` is the DBAPI exception and its cause the same, as in SQLAlchemy.
+        """
+        dbapi = self.dialect.loaded_dbapi
+        translated = self.driver.translate(err)
+        wrapped = DBAPIError.instance(
+            sql,
+            params,
+            translated,
+            dbapi.Error,
+            hide_parameters=self.sa_engine.sync_engine.hide_parameters,
+            dialect=self.dialect,
+            ismulti=multi,
+        )
+        wrapped.__cause__ = translated
+        return wrapped
 
     @asynccontextmanager
     async def _direct_connection(self) -> AsyncIterator[Any]:
@@ -625,7 +658,10 @@ class Engine:
         async with acquire() as conn:
             # Timed from here: the observer's contract is the driver round trip.
             start = perf_counter() if observer is not None else 0.0
-            rows, description = await self.driver.fetch(conn, sql, bound, hydrate is None)
+            try:
+                rows, description = await self.driver.fetch(conn, sql, bound, hydrate is None)
+            except self.driver.errors as err:
+                raise self._wrap(err, sql, bound)
         if hydrate is None:
             hydrate = query.hydrator(self.dialect, description)
         self._observe(observer, sql, start, len(rows))
@@ -647,14 +683,17 @@ class Engine:
             start = perf_counter() if observer is not None else 0.0
             total = 0
             async with acquire() as conn:
-                async for rows, description in self.driver.stream(
-                    conn, sql, bound, wanted, query
-                ):
-                    hydrate = query._hydrate
-                    if hydrate is None:
-                        hydrate = query.hydrator(self.dialect, description)
-                    total += len(rows)
-                    yield hydrate(rows)
+                try:
+                    async for rows, description in self.driver.stream(
+                        conn, sql, bound, wanted, query
+                    ):
+                        hydrate = query._hydrate
+                        if hydrate is None:
+                            hydrate = query.hydrator(self.dialect, description)
+                        total += len(rows)
+                        yield hydrate(rows)
+                except self.driver.errors as err:
+                    raise self._wrap(err, sql, bound)
             self._observe(observer, sql, start, total)
 
         return chunks

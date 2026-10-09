@@ -187,7 +187,15 @@ committed.
 A driver exception that `dialect.is_disconnect` recognises invalidates the pooled
 connection, on both the direct and the ordinary checkout, so the next borrower
 gets a fresh one. Bound scopes (`bind=`) are never invalidated by rowform — the
-connection is the caller's. Driver exceptions are otherwise **not** wrapped.
+connection is the caller's.
+
+### Errors
+
+A driver error is raised as SQLAlchemy raises it: the matching `sa.exc.DBAPIError`
+subclass (`IntegrityError`, `OperationalError`, ...) with `.statement`, `.params` and
+`.orig`. Code that catches `asyncpg.UniqueViolationError` or `psycopg.errors.*`
+directly must catch the SQLAlchemy class instead, or read `.orig` (asyncpg's own
+exception is `.orig.__cause__`). Inside a pipeline the error has no `.statement`.
 
 ### `engine.prepare(statement) -> CoreQuery`
 
@@ -255,6 +263,9 @@ All inherit `RowformError` and the builtin they replaced.
 | `PlanError` | `ValueError` | the result's shape and the plan disagree |
 | `EngineStateError` | `RuntimeError` | an engine one-shot inside a scope; ending a `bind=` transaction |
 
+Driver errors are not `RowformError`s: they are `sa.exc.DBAPIError` subclasses, as in
+SQLAlchemy (see [Disconnects](#disconnects) and the Errors note below it).
+
 ## Lower level
 
 | | |
@@ -263,5 +274,5 @@ All inherit `RowformError` and the builtin they replaced.
 | `rf.plan(statement) -> Plan` | what the rows mean: a from clause selected whole is a model, anything else a scalar; a hand-listed full column list stays scalars. `Plan.wrap` is true at two or more entities |
 | `rf.compile_hydrator(plan, dialect, coltypes)` | the generated `rows -> list` function; source on `__source__`; `PlanError` if the column counts disagree |
 | `rf.result_processor(column, dialect, coltype)` | the dialect-adapted type's decoder, or `None` for a bare store |
-| `rf.Driver` / `rf.driver_for(dialect)` | per-driver `fetch`/`stream`/`execute`/`execute_many`/`copy_in`/`pipeline`/`autocommit`; the seam a mock replaces |
+| `rf.Driver` / `rf.driver_for(dialect)` | per-driver `fetch`/`stream`/`execute`/`execute_many`/`copy_in`/`pipeline`/`autocommit`, plus `errors`/`translate` for SQLAlchemy-compatible driver errors; the seam a mock replaces |
 | `rf.__version__` | single-sourced into the package metadata |

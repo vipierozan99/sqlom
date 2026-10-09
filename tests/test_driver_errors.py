@@ -1,7 +1,6 @@
-"""Server errors arrive as each driver's own exception, never `sa.exc.IntegrityError`.
-
-Characterisation: an `except sa.exc.IntegrityError` stops catching a write once it
-moves to rowform, and this file is what changes if rowform ever wraps them.
+"""Server errors arrive as the `sa.exc.DBAPIError` SQLAlchemy would have raised, with
+the driver's own exception as `.orig`, so an `except sa.exc.IntegrityError` keeps
+catching a write after it moves to rowform.
 """
 
 from __future__ import annotations
@@ -25,15 +24,28 @@ UNDEFINED_COLUMN = {
     "psycopg": ("psycopg.errors", "UndefinedColumn"),
 }
 
+#: SQLAlchemy classes sqlite and postgres drivers map a missing column to.
+WRONG_COLUMN_WRAPPER = {
+    "aiosqlite": sa.exc.OperationalError,
+    "asyncpg": sa.exc.ProgrammingError,
+    "psycopg": sa.exc.ProgrammingError,
+}
+
 
 def duplicate() -> Any:
     return sa.insert(Author.__table__).values(id=1, name="already-taken", active=True)
 
 
-def assert_raised_by_the_driver(caught, expected: tuple[str, str]) -> None:
+def assert_wrapped(caught, wrapper: type[sa.exc.DBAPIError], expected: tuple[str, str]) -> None:
+    """`expected` is the driver's own class; asyncpg's sits one `__cause__` below `.orig`,
+    which is SQLAlchemy's adapter class.
+    """
     error = caught.value
-    assert (type(error).__module__, type(error).__name__) == expected
-    assert not isinstance(error, sa.exc.SQLAlchemyError), "driver errors are wrapped now"
+    assert type(error) is wrapper
+    root = error.orig
+    while root.__cause__ is not None:
+        root = root.__cause__
+    assert (type(root).__module__, type(root).__name__) == expected
 
 
 class TestUniqueViolation:
@@ -41,19 +53,36 @@ class TestUniqueViolation:
         with pytest.raises(Exception) as caught:
             async with engine.begin() as conn:
                 await conn.execute(duplicate())
-        assert_raised_by_the_driver(caught, UNIQUE_VIOLATION[engine.dialect.driver])
+        assert_wrapped(caught, sa.exc.IntegrityError, UNIQUE_VIOLATION[engine.dialect.driver])
 
     async def test_a_one_shot_raises_the_same_way(self, engine):
         """Write one-shots go through `sa_engine.begin()`, which could have wrapped it."""
         with pytest.raises(Exception) as caught:
             await engine.execute(duplicate())
-        assert_raised_by_the_driver(caught, UNIQUE_VIOLATION[engine.dialect.driver])
+        assert_wrapped(caught, sa.exc.IntegrityError, UNIQUE_VIOLATION[engine.dialect.driver])
 
-    async def test_sqlalchemy_wraps_the_very_same_statement(self, engine):
-        """What an application's existing `except` clause is written against."""
-        with pytest.raises(sa.exc.IntegrityError):
+    async def test_it_matches_what_sqlalchemy_raises_for_the_same_statement(self, engine):
+        with pytest.raises(sa.exc.IntegrityError) as theirs:
             async with engine.sa_engine.begin() as sa_conn:
                 await sa_conn.execute(duplicate())
+        with pytest.raises(sa.exc.IntegrityError) as ours:
+            await engine.execute(duplicate())
+        assert type(ours.value.orig) is type(theirs.value.orig)
+        assert ours.value.statement == theirs.value.statement
+        assert ours.value.code == theirs.value.code
+
+    async def test_execute_many_marks_the_failure_as_multi(self, engine):
+        with pytest.raises(sa.exc.IntegrityError) as caught:
+            async with engine.begin() as conn:
+                await conn.execute_many(
+                    sa.insert(Author.__table__), [{"id": 1, "name": "x", "active": True}]
+                )
+        assert caught.value.params is not None
+
+    async def test_a_driver_sql_error_is_wrapped_too(self, engine):
+        with pytest.raises(sa.exc.DBAPIError):
+            async with engine.begin() as conn:
+                await conn.exec_driver_sql("SELECT no_such_column FROM t_authors")
 
 
 class TestMalformedStatement:
@@ -61,11 +90,11 @@ class TestMalformedStatement:
         missing = sa.select(sa.column("nope")).select_from(sa.table("t_authors"))
         with pytest.raises(Exception) as caught:
             await engine.fetch_all(missing)
-        assert_raised_by_the_driver(caught, UNDEFINED_COLUMN[engine.dialect.driver])
+        assert_wrapped(caught, WRONG_COLUMN_WRAPPER[engine.dialect.driver], UNDEFINED_COLUMN[engine.dialect.driver])
 
     async def test_the_engine_is_still_usable_afterwards(self, engine):
         """An aborted statement must not leave a poisoned connection in the pool."""
         for _ in range(3):
-            with pytest.raises(Exception):  # noqa: B017
+            with pytest.raises(sa.exc.DBAPIError):
                 await engine.execute(sa.text("SELECT no_such_column FROM t_authors"))
         assert len(await engine.fetch_all(sa.select(Author))) == 4

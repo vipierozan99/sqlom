@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import contextvars
 from collections.abc import Sequence
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, TypeVar, overload
 
@@ -223,7 +223,10 @@ class Connection:
         await self._autobegin()
         observer = engine.observer
         start = perf_counter() if observer is not None else 0.0
-        report = await engine.driver.execute(self.connection, sql, parameters)
+        try:
+            report = await engine.driver.execute(self.connection, sql, parameters)
+        except engine.driver.errors as err:
+            raise engine._wrap(err, sql, parameters)
         engine._observe(observer, sql, start, None)
         return _result.no_rows(report)
 
@@ -362,9 +365,11 @@ class Connection:
         sql = shaped[0][0]
         observer = engine.observer
         start = perf_counter() if observer is not None else 0.0
-        report = await engine.driver.execute_many(
-            self.connection, sql, [bound for _, bound in shaped]
-        )
+        bound_sets = [bound for _, bound in shaped]
+        try:
+            report = await engine.driver.execute_many(self.connection, sql, bound_sets)
+        except engine.driver.errors as err:
+            raise engine._wrap(err, sql, bound_sets, multi=True)
         engine._observe(observer, sql, start, None)
         return report
 
@@ -385,9 +390,19 @@ class Connection:
         """psycopg's pipeline mode: statements go out without waiting for each result.
         Worth it only when the round trip is the cost. A statement's result is not
         available until the pipeline synchronises, and an error raises there rather
-        than at the statement. Other drivers raise `UnsupportedError`.
+        than at the statement; it is wrapped like any other, with no `statement` since
+        the driver cannot say which one failed. Other drivers raise `UnsupportedError`.
         """
-        return self._engine.driver.pipeline(self.connection)
+        return self._wrapped(self._engine.driver.pipeline(self.connection))
+
+    @asynccontextmanager
+    async def _wrapped(self, pipeline: Any) -> AsyncIterator[Any]:
+        engine = self._engine
+        try:
+            async with pipeline as entered:
+                yield entered
+        except engine.driver.errors as err:
+            raise engine._wrap(err, None, None)
 
     # --- plumbing ------------------------------------------------------------
 
@@ -396,7 +411,10 @@ class Connection:
         sql, bound = query.bind(params, extracted)
         observer = engine.observer
         start = perf_counter() if observer is not None else 0.0
-        report = await engine.driver.execute(self.connection, sql, bound)
+        try:
+            report = await engine.driver.execute(self.connection, sql, bound)
+        except engine.driver.errors as err:
+            raise engine._wrap(err, sql, bound)
         engine._observe(observer, sql, start, None)
         return report
 

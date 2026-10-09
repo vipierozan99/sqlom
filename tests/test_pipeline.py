@@ -69,12 +69,12 @@ class TestItWorks:
     async def test_a_failing_statement_still_raises(self, psycopg_engine):
         """The error surfaces when the pipeline synchronises rather than at the
         statement — but it does surface."""
-        with pytest.raises(Exception) as caught:
+        with pytest.raises(sa.exc.IntegrityError) as caught:
             async with psycopg_engine.begin() as conn, conn.pipeline():
                 await conn.execute(
                     sa.insert(Author.__table__).values(id=1, name="dupe", active=True)
                 )
-        assert not isinstance(caught.value, rowform.RowformError)  # the driver's own
+        assert caught.value.statement is None  # the driver cannot say which one failed
 
     async def test_reads_still_work_inside_one(self, psycopg_engine):
         async with psycopg_engine.begin() as conn, conn.pipeline():
@@ -143,7 +143,7 @@ class TestOnSomebodyElsesConnection:
         """Wrapping the `await` instead of the block catches nothing."""
         sa_engine = psycopg_engine.sa_engine
         returned = False
-        with pytest.raises(Exception) as caught:
+        with pytest.raises(sa.exc.IntegrityError):
             async with sa_engine.connect() as their, their.begin():
                 async with psycopg_engine.connect(bind=their) as conn, conn.pipeline():
                     await conn.execute(
@@ -151,4 +151,3 @@ class TestOnSomebodyElsesConnection:
                     )
                     returned = True
         assert returned, "the statement raised at the call site, not at the synchronise"
-        assert not isinstance(caught.value, rowform.RowformError)

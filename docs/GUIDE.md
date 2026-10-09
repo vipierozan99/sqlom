@@ -201,9 +201,8 @@ async with db.begin() as conn:
         await conn.execute(...)
 ```
 
-Caveat: a unique violation is asyncpg's or psycopg's own exception — rowform does
-not wrap driver errors, so an `except sa.exc.IntegrityError` stops catching a write
-once it moves to rowform.
+A unique violation raises `sa.exc.IntegrityError`, as it does through SQLAlchemy;
+the driver's own exception is `.orig` (asyncpg's, one `__cause__` below).
 
 ## Alembic
 
