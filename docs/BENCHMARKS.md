@@ -26,16 +26,21 @@ off the engine and opens no transaction. `raw driver` is the driver alone, no SQ
 sending the same transaction. Absolute times are not comparable to runs taken with
 boost on; ratios are.
 
-### postgres 16 (asyncpg, docker on loopback) — `bench/2026-08-16-pg-join-floors`, `033812a`
+### postgres 16 (asyncpg, loopback) — `bench/2026-08-27-postgres-attached`, `e28c2e0`
 
-| contender | flat | join | wide | | vs Core flat | vs Core join | vs Core wide |
-|---|---|---|---|---|---|---|---|
-| raw driver → dicts (floor) | 1.001 | 1.947 | — | | 0.78x | 0.89x | — |
-| **rowform** | 1.364 | 2.641 | 5.160 | | 1.06x | 1.21x | 1.00x |
-| rowform (idiomatic) | 1.140 | 2.089 | 4.613 | | 0.89x | 0.96x | 0.89x |
-| rowform (one-shot) | 1.303 | — | — | | 1.02x | — | — |
-| SQLAlchemy Core | 1.282 | 2.180 | 5.165 | | 1.00x | 1.00x | 1.00x |
-| SQLAlchemy ORM | 7.342 | 12.035 | 12.541 | | 5.73x | 5.52x | 2.43x |
+| contender | flat @1000 | join @1000 | wide @1000 | flat @1 | | vs Core flat | vs Core join | vs Core wide | vs Core flat @1 |
+|---|---|---|---|---|---|---|---|---|---|
+| raw driver → dicts (floor) | 0.990 | 1.946 | — | 0.338 | | 0.77x | 0.89x | — | 0.91x |
+| **rowform** | 1.374 | 2.708 | 4.367 | 0.338 | | 1.08x | 1.24x | 1.02x | 0.91x |
+| rowform (idiomatic) | 1.135 | 2.132 | 3.774 | 0.332 | | 0.89x | 0.97x | 0.88x | 0.90x |
+| rowform (one-shot) | 1.324 | — | — | 0.194 | | 1.04x | — | — | 0.52x |
+| SQLAlchemy Core | 1.278 | 2.189 | 4.273 | 0.370 | | 1.00x | 1.00x | 1.00x | 1.00x |
+| SQLAlchemy ORM | 6.780 | 11.412 | 12.144 | 0.589 | | 5.31x | 5.21x | 2.84x | 1.59x |
+
+On postgres the transaction is two real round trips: the `@1` column puts it at 43% of
+a single-row read (`one-shot` against `rowform`), where on sqlite it is Python.
+Recorded against a different postgres 16 than the `033812a` table it replaces, so
+absolutes do not compare across the two; ratios do.
 
 ### sqlite (aiosqlite, 200k-row file) — `bench/2026-08-26-sqlite-begin`, `17e867e`
 
@@ -53,7 +58,7 @@ sends no `BEGIN` before a `SELECT`, and rowform applies SQLAlchemy's pysqlite re
 so that savepoints work. That round trip is a real difference in what the two provide,
 and it is most of the `@1` gap.
 
-Trial-to-trial spread: under 4.2% on every `@1000` cell quoted; the `@1` cell is
+Trial-to-trial spread: under 4.2% on every `@1000` cell quoted (4.0% on postgres); the `@1` cell is
 looser (up to 20% on the one-shot row) and its medians reproduced across two runs to
 within 4%. The sqlite `join`/`wide` cells do not reproduce reliably on the recording
 box — later trials come back 15–30% slower than the first with no diagnosed cause —
@@ -64,8 +69,8 @@ so they are quoted from the sweep that reproduces and flagged here.
 Rows were recorded under their previous names (`SQLAlchemy Core (positional)`,
 `rowform (no transaction)`); the contenders are the same code. Two things have
 changed since: the one-shot read now takes a direct pool checkout (`ce8ac4f`), which
-the `@1` column has not been re-recorded for, and the contender set was cut from 66 to
-the rows above. A fresh sweep supersedes this section when it lands; until then these
+neither table's `one-shot` row has been re-recorded for, and the contender set was
+cut from 66 to the rows above. A fresh sweep supersedes this section when it lands; until then these
 are the numbers.
 
 Raw `run.json` artifacts live on the `bench/<date>-<topic>` branches named above.
