@@ -138,11 +138,11 @@ postgres 16 (asyncpg, loopback):
 
 | contender | flat | join | wide | | vs Core |
 |---|---|---|---|---|---|
-| raw driver → dicts *(floor)* | 1.001 | 1.947 | — | | 0.78x / 0.89x / — |
-| **rowform** | 1.364 | 2.641 | 5.160 | | 1.06x / 1.21x / 1.00x |
-| rowform (idiomatic) | 1.140 | 2.089 | 4.613 | | 0.89x / 0.96x / 0.89x |
-| SQLAlchemy Core | 1.282 | 2.180 | 5.165 | | 1.00x |
-| SQLAlchemy ORM | 7.342 | 12.035 | 12.541 | | 5.73x / 5.52x / 2.43x |
+| raw driver → dicts *(floor)* | 0.990 | 1.946 | — | | 0.77x / 0.89x / — |
+| **rowform** | 1.374 | 2.708 | 4.367 | | 1.08x / 1.24x / 1.02x |
+| rowform (idiomatic) | 1.135 | 2.132 | 3.774 | | 0.89x / 0.97x / 0.88x |
+| SQLAlchemy Core | 1.278 | 2.189 | 4.273 | | 1.00x |
+| SQLAlchemy ORM | 6.780 | 11.412 | 12.144 | | 5.31x / 5.21x / 2.84x |
 
 **rowform costs about what Core costs and returns typed dataclasses where Core
 returns tuples; the ORM costs 2–6x.** It is not faster than Core's result layer:
