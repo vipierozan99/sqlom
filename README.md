@@ -176,6 +176,6 @@ recipe, the gates and the lessons are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md
 - [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md)
 
 ```bash
-git clone https://github.com/vipierozan99/sqlom && cd sqlom && uv sync --all-groups
+git clone https://github.com/vipierozan99/rowform && cd rowform && uv sync --all-groups
 just test && just lint && just typecheck
 ```

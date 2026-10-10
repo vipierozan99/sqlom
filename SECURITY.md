@@ -3,7 +3,7 @@
 ## Reporting
 
 Use GitHub's private vulnerability reporting (**Security → Report a
-vulnerability** on <https://github.com/vipierozan99/sqlom>), not a public issue.
+vulnerability** on <https://github.com/vipierozan99/rowform>), not a public issue.
 Include the statement or declaration involved, the driver, and the Python,
 SQLAlchemy and driver versions. Only `0.1.x` exists; fixes land on `main`.
 

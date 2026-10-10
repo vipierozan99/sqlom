@@ -1,7 +1,7 @@
 # Contributing
 
 ```bash
-git clone https://github.com/vipierozan99/sqlom && cd sqlom
+git clone https://github.com/vipierozan99/rowform && cd rowform
 uv sync --all-groups
 just test            # sqlite always; PostgreSQL when 127.0.0.1:5432 answers
 just lint --fix

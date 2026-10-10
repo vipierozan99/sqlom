@@ -48,11 +48,11 @@ classifiers = [
 dependencies = ["sqlalchemy>=2.0.18,<2.1"]
 
 [project.urls]
-Homepage = "https://github.com/vipierozan99/sqlom"
-Repository = "https://github.com/vipierozan99/sqlom"
-Issues = "https://github.com/vipierozan99/sqlom/issues"
-Documentation = "https://github.com/vipierozan99/sqlom/blob/main/docs/GUIDE.md"
-Benchmarks = "https://github.com/vipierozan99/sqlom/blob/main/docs/BENCHMARKS.md"
+Homepage = "https://github.com/vipierozan99/rowform"
+Repository = "https://github.com/vipierozan99/rowform"
+Issues = "https://github.com/vipierozan99/rowform/issues"
+Documentation = "https://github.com/vipierozan99/rowform/blob/main/docs/GUIDE.md"
+Benchmarks = "https://github.com/vipierozan99/rowform/blob/main/docs/BENCHMARKS.md"
 
 [project.optional-dependencies]
 asyncpg = ["asyncpg>=0.29"]

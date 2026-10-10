@@ -5,7 +5,7 @@ Recipes. [API.md](API.md) is the reference. `rf` is `import rowform as rf`.
 ## Install and declare
 
 ```bash
-uv add "rowform @ git+https://github.com/vipierozan99/sqlom" asyncpg   # or psycopg[binary], aiosqlite
+uv add "rowform @ git+https://github.com/vipierozan99/rowform" asyncpg   # or psycopg[binary], aiosqlite
 ```
 
 ```python
